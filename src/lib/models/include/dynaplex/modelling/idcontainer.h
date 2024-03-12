@@ -12,7 +12,7 @@ namespace DynaPlex {
     class IdContainer {
     private:    
        std::vector<std::optional<std::pair<int64_t, T>>> backstore;
-        size_t first_empty_id = 1;
+        size_t first_empty_id = 0;
         size_t num_items = 0;
 
         void updateFirstEmptyIndex() {
@@ -36,8 +36,8 @@ namespace DynaPlex {
                 if (id >= backstore.size()) {
                     backstore.resize(id + 1);
                 }
-                if (id <= 0)
-                    throw DynaPlex::Error("IdContainer:: item key/index should be >0.");
+                if (id < 0)
+                    throw DynaPlex::Error("IdContainer:: item key/index should be >=0.");
 
                 DynaPlex::VarGroup vg;
                 varGroup.Get(key, vg);
