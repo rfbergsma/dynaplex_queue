@@ -80,7 +80,7 @@ namespace DynaPlex {
         }
 
         void Delete(int64_t id) {
-            if (id >0 && id < backstore.size() && backstore[id]) {
+            if (id >=0 && id < backstore.size() && backstore[id]) {
                 backstore[id] = std::nullopt;
                 num_items--;
                 if (id < first_empty_id) {
