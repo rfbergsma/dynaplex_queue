@@ -2,6 +2,7 @@
 #include <vector>
 #include <functional>
 #include <limits>
+#include <sstream>
 #include "dynaplex/error.h"
 #include "dynaplex/modelling/graph.h"
 
@@ -49,17 +50,32 @@ namespace DynaPlex {
 			if (format == std::string("grid"))
 			{
 				format_is_grid = true;
-				std::vector<std::string> nodes;
-					config.Get("nodes", nodes);
-				if (!config.HasKey("num_rows"))
-					throw DynaPlex::Error("Graph : Please provide int `num_rows` for format grid");
-				config.Get("num_rows", height);
-				if (height <= 0 || height > nodes.size())
-					throw DynaPlex::Error("Graph: Height should be >0 and <= length of nodes");
+			
+				std::vector<std::string> rows;
+				config.Get("rows", rows); // Assuming `config` can retrieve a vector of strings for "rows"
 
-				width = nodes.size() / height;
-				if (width * height != nodes.size())
-					throw DynaPlex::Error("Graph:: initiating from grid, but number of elements in grid is not a multiple of grid height");
+				// The number of rows is simply the size of the `rows` vector
+				height = rows.size();
+			
+				// Assuming all rows are of the same length, so calculate width based on the first row
+				// Counting the number of '|' plus one gives us the number of nodes per row
+				width = std::count(rows[0].begin(), rows[0].end(), '|') + 1;
+			
+				std::vector<std::string> nodes;
+				// Flatten the rows into a single vector of node strings
+				for (const std::string& row : rows) {
+					int row_width = std::count(row.begin(), row.end(), '|') + 1;
+					if (row_width != width)
+						throw DynaPlex::Error("Graph: number of | separators is different for different rows. Only rectangular grids are supported.");
+
+					std::istringstream iss(row);
+					std::string node;
+					while (std::getline(iss, node, '|')) {
+						// Trim spaces from the node string if necessary
+						node.erase(std::remove_if(node.begin(), node.end(), isspace), node.end());
+						nodes.push_back(node);
+					}
+				}		
 				
 				
 				for (int64_t row = 0; row < height; ++row) {
@@ -143,6 +159,17 @@ namespace DynaPlex {
 		if (col < 0 || col >= width)
 			throw DynaPlex::Error("Graph::NodeAt - invalid col");
 		return row * width + col;
+	}
+
+	int64_t Graph::Width() const {
+		if (!format_is_grid)
+			throw DynaPlex::Error("Graph::NodeAt - format is not a grid.");
+		return width;
+	}
+	int64_t Graph::Height() const {
+		if (!format_is_grid)
+			throw DynaPlex::Error("Graph::NodeAt - format is not a grid.");
+		return height;
 	}
 
 	Graph::Coords Graph::Coordinates(int64_t node) const	{

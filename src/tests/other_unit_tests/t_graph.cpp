@@ -99,19 +99,18 @@ namespace DynaPlex::Tests {
     TEST(Graph, Grid)
     {
         DynaPlex::VarGroup vars;
-        std::vector<std::string> nodes =
+        std::vector<std::string> rows =
         {
-            "R ", "R ", "RD", "R " , "R ", "R ", "D ",
-            "U ", "  ", "D ", "  " , "U ", "  ", "D ",
-            "U ", "  ", "D ", "  " , "U ", "  ", "D ",
-            "U ", "  ", "D ", "  " , "U ", "  ", "D ",
-            "U ", "  ", "D ", "  " , "U ", "  ", "D ",
-            "U ", "  ", "D ", "  " , "U ", "  ", "D ",
-            "U ", "  ", "D ", "  " , "U ", "  ", "D ",
-            "UR", "R ", "R ", "R " , "UR", "R ", "  "
+            "R |R |RD|R |R |R |D ",
+            "U |  |D |  |U |  |D ",
+            "U |  |D |  |U |  |D ",
+            "U |  |D |  |U |  |D ",
+            "U |  |D |  |U |  |D ",
+            "U |  |D |  |U |  |D ",
+            "U |  |D |  |U |  |D ",
+            "UR|R |R |R |UR|R |  "
         };
-        vars.Add("nodes", nodes);
-        vars.Add("num_rows", 8);
+        vars.Add("rows", rows);
         vars.Add("format", "grid");
 
        

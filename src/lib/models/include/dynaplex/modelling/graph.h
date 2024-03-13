@@ -37,6 +37,13 @@ namespace DynaPlex {
         std::vector<Edge> Path(int64_t origin_node, int64_t destination_node) const;
         const Edge& NextEdge(int64_t origin_node, int64_t destination_node) const;
 
+
+        const std::vector<Edge>& Edges() const { return edges; }
+        std::vector<Edge>& Edges() { return edges; }
+        int64_t NumNodes() const { return numNodes; }
+        int64_t Width() const;
+        int64_t Height() const;
+
     private:
         int64_t numNodes{ 0 };
         std::vector<Edge> edges;
