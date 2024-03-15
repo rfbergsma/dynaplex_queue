@@ -69,7 +69,7 @@ namespace DynaPlex {
             if (id < 0 || id >= static_cast<int64_t>(backstore.size()) || !backstore[id]) {
                 throw Error("IdContainer::GetItem: Invalid ID or item does not exist");
             }
-            return *(backstore[id].second);
+            return backstore[id]->second;
         }
 
         T& operator[](int64_t id) {
