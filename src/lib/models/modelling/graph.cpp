@@ -64,6 +64,9 @@ namespace DynaPlex {
 				std::vector<std::string> nodes;
 				// Flatten the rows into a single vector of node strings
 				for (const std::string& row : rows) {
+					if (!row.empty() && row.front() == '|') {
+						nodes.push_back("");
+					}
 					int row_width = std::count(row.begin(), row.end(), '|') + 1;
 					if (row_width != width)
 						throw DynaPlex::Error("Graph: number of | separators is different for different rows. Only rectangular grids are supported.");
@@ -75,9 +78,14 @@ namespace DynaPlex {
 						node.erase(std::remove_if(node.begin(), node.end(), isspace), node.end());
 						nodes.push_back(node);
 					}
-				}		
-				
-				
+					if (!row.empty() && row.back() == '|') {
+						nodes.push_back(""); // Add an empty node for the last position
+					}
+				}
+
+				if (nodes.size() != width * height)
+					throw DynaPlex::Error("Graph: issue while parsing grid");
+
 				for (int64_t row = 0; row < height; ++row) {
 					for (int64_t col = 0; col < width; ++col) {
 						uint32_t idx = NodeAt(row, col);
