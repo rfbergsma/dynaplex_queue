@@ -72,9 +72,13 @@ namespace DynaPlex {
 	{
 		return DynaPlex::DynaPlexProvider::Get().GetPolicyComparer(mdp, kwargs);
 	}
-	//define bindings for this. 
+
 	DynaPlex::Algorithms::DCL GetDCL(DynaPlex::MDP mdp, DynaPlex::Policy policy, py::kwargs& kwargs) {
 		return DynaPlex::DynaPlexProvider::Get().GetDCL(mdp, policy, kwargs);
+	}
+
+	DynaPlex::Algorithms::ExactSolver GetExactSolver(DynaPlex::MDP mdp, py::kwargs& kwargs) {
+		return DynaPlex::DynaPlexProvider::Get().GetExactSolver(mdp, kwargs);
 	}
 
 	DynaPlex::DCL::SampleGenerator GetSampleGenerator(DynaPlex::MDP mdp, py::kwargs& kwargs) {
@@ -96,6 +100,9 @@ void define_provider_bindings(pybind11::module_& m) {
 		py::arg("mdp"),
 		py::arg("policy") = nullptr,
 		"Returns a class that can be used to run dcl algorithm based on mdp, policy and keyword arguments.");
+	m.def("get_exact_solver", &DynaPlex::GetExactSolver,
+		py::arg("mdp"),
+		"Returns a class that attempts to apply policy iteration to solve the MDP exactly; fails if there are too many states. kw arguments: silent: bool, max_states: int (sets the number of states above which the algorithm fails)");
 	m.def("get_sample_generator", &DynaPlex::GetSampleGenerator,
 		py::arg("mdp"),
 		"Returns a class that can be used to generate roll-out samples for a specific mdp.");

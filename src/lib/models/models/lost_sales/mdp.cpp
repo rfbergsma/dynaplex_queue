@@ -40,7 +40,7 @@ namespace DynaPlex::Models {
 		MDP::MDP(const VarGroup& config)
 		{
 			config.Get("p", p);
-			config.Get("h", h);
+			config.GetOrDefault("h", h, 1.0);
 			config.Get("leadtime", leadtime);
 			config.Get("demand_dist",demand_dist);
 			demand_dist.OptimizeForSampling();
@@ -57,8 +57,13 @@ namespace DynaPlex::Models {
 			{
 				DemOverLeadtime = DemOverLeadtime.Add(demand_dist);
 			}
+			bool bound_order_size_to_max_system_inv;
+			config.GetOrDefault("bound_order_size_to_max_system_inv", bound_order_size_to_max_system_inv, false);
+
 			MaxOrderSize = demand_dist.Fractile(p / (p + h));
 			MaxSystemInv = DemOverLeadtime.Fractile(p / (p + h));
+			if (bound_order_size_to_max_system_inv)
+				MaxOrderSize = MaxSystemInv;
 
 
 		}
@@ -104,7 +109,7 @@ namespace DynaPlex::Models {
 		 //to the corresponding id given below.
 			registry.Register<BaseStockPolicy>("base_stock",
 				"Base-stock policy with parameter base_stock_level - default parameter is equal"
-				" to the bound on system inventory discussed in Zipkin (2008)");
+				" to the bound on system inventory discussed in Zipkin (2008). Note that this policy emits legal actions in the MDP, and hence a bound on individual orders is present based on the Zipkin single-period order bound.");
 		}
 		
 		DynaPlex::StateCategory MDP::GetStateCategory(const State& state) const

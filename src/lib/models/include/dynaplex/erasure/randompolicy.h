@@ -24,11 +24,7 @@ namespace DynaPlex::Erasure
 
 		int64_t GetAction(const State& state, DynaPlex::RNG& rng) const
 		{
-			int64_t numAllowedActions{ 0 };
-			for (const int64_t action: provider(state))
-			{				
-				numAllowedActions++;				
-			}
+			int64_t numAllowedActions{ provider.CountAllowedActions(state)};
 			if (numAllowedActions == 0)
 			{
 				throw DynaPlex::Error("RandomPolicy: Not a single action allowed.");
