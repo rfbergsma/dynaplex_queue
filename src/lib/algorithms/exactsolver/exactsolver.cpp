@@ -11,6 +11,8 @@ namespace DynaPlex::Algorithms {
 		bool silent;
 		bool exact_policy_computed{ false };
 		bool exact_policy_exported{ false };
+		bool statemap_created{ false };
+		int64_t num_sample_states;
 		//for numerical stability of hybrid iteration algorithm when discountfactor = 1, 
 		//we need to add self-transitions to avoid periodicity. 
 		static constexpr double self_transition_prob = 0.02;
@@ -18,7 +20,7 @@ namespace DynaPlex::Algorithms {
 			: system(sys), mdp(mdp), hasher{}, statemap{}, action_states{} {
 
 			conf.GetOrDefault("silent", silent, false);
-
+			conf.GetOrDefault("num_sample_states", num_sample_states, 10);
 			if (!mdp->ProvidesEventProbs()) {
 				throw DynaPlex::Error("ExactSolver: MDP does not provide event probabilities. Note that exact algorithms need event probabilities.");
 			}
@@ -154,13 +156,17 @@ namespace DynaPlex::Algorithms {
 				if (action_states.size() >= max_states)
 				{
 					std::string message = "ExactSolver: Number of action states in mdp exceeds option max_states (=";
-					message += std::to_string(max_states); message += "). It may not be feasible to solve this MDP exactly. Consider adapting the max_states option.";
+					message += std::to_string(max_states); message += "). It may not be feasible to solve this MDP exactly. Consider adapting the max_states option.\n Some sample states:\n";
+					for (int64_t i = 0; i < num_sample_states; i++)
+					{
+						message += action_states.at(i*action_states.size()/ num_sample_states).state->ToVarGroup().Dump()+ "\n";
+					}
 					throw DynaPlex::Error(message);
 				}
 				if (action_states.size() > LastReportedTotalStates)
 				{
-					if(!silent)
-						system << LastReportedTotalStates << "  ";
+					if (!silent)
+						system << LastReportedTotalStates << "  " << std::flush;
 					LastReportedTotalStates *= 2;
 
 				}
@@ -228,6 +234,8 @@ namespace DynaPlex::Algorithms {
 				mdp->InitiateState({ &traj,1 }, storage.state);
 				pol->SetAction({ &traj,1 });
 				storage.current_action = traj.NextAction;
+				if (!mdp->IsAllowedAction(traj.GetState(), traj.NextAction))
+					throw DynaPlex::Error("Illegal action proposed by policy.");
 			}
 		}
 		//This populates/determines the transitions and costs for the actions currently set 
@@ -451,9 +459,20 @@ namespace DynaPlex::Algorithms {
 			//strange errors, hence better throw an error now. 
 			if (exact_policy_exported)
 				throw DynaPlex::Error("Illegal call to ExactPolicy::ComputeCosts: Exact policy has allready been exported. ");
-			statemap.reserve(max_states);
-			action_states.reserve(max_states);
-			CreateStateMap();
+			if (!statemap_created)
+			{
+				statemap.reserve(max_states);
+				action_states.reserve(max_states);
+				CreateStateMap();
+				statemap_created = true;
+			}
+			else
+			{
+				if (!silent)
+					system << "ExactSolver : Computing costs - reusing statemap" << std::endl;
+			}
+
+
 			SetActions(policy);
 			DetermineTransitions();
 			do {
