@@ -20,4 +20,6 @@ int main() {
 
 	DynaPlex::MDP mdp = dp.GetMDP(config);
 	auto policy = mdp->GetPolicy("base_stock");
+	auto solver = dp.GetExactSolver(mdp);
+	solver.ComputeCosts();
 }

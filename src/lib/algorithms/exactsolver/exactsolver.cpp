@@ -108,7 +108,7 @@ namespace DynaPlex::Algorithms {
 		std::vector<StateStorage> action_states;
 		//to keep count of any hash collisions 
 		size_t hash_collisions;
-
+		size_t LastReportedTotalStates;
 	
 		LookupValue& GetStateValue(const DynaPlex::dp_State& state) {
 			auto hash = GetHash(state);
@@ -157,6 +157,14 @@ namespace DynaPlex::Algorithms {
 					message += std::to_string(max_states); message += "). It may not be feasible to solve this MDP exactly. Consider adapting the max_states option.";
 					throw DynaPlex::Error(message);
 				}
+				if (action_states.size() > LastReportedTotalStates)
+				{
+					if(!silent)
+						system << LastReportedTotalStates << "  ";
+					LastReportedTotalStates *= 2;
+
+				}
+
 				statemap[hash].emplace_front(action_states.size());
 				action_states.push_back(std::move(state));
 			}
@@ -272,6 +280,9 @@ namespace DynaPlex::Algorithms {
 		///This populates the key data structures action_states and statemap
 		void CreateStateMap()
 		{
+			if (!silent)
+				system << "adding states to state map:" << std::endl;
+			LastReportedTotalStates = 1;
 			hash_collisions = 0;
 			auto state = mdp->GetInitialState();
 			ProcessState(state);
@@ -282,6 +293,7 @@ namespace DynaPlex::Algorithms {
 				expanded_action_states++;
 			}
 			if (!silent) {
+				system << std::endl;
 				system << "Created complete state list consisting of " << action_states.size() << " states." << std::endl;
 				if (hash_collisions > 0)
 					system << "There are " << hash_collisions << " collided hashes. " << std::endl;
