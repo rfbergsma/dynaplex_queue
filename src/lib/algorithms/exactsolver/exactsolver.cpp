@@ -13,12 +13,13 @@ namespace DynaPlex::Algorithms {
 		bool exact_policy_exported{ false };
 		bool statemap_created{ false };
 		int64_t num_sample_states;
+		double epsilon; 
 		//for numerical stability of hybrid iteration algorithm when discountfactor = 1, 
 		//we need to add self-transitions to avoid periodicity. 
 		static constexpr double self_transition_prob = 0.02;
 		Impl(const System& sys, DynaPlex::MDP mdp, const DynaPlex::VarGroup& conf)
 			: system(sys), mdp(mdp), hasher{}, statemap{}, action_states{} {
-
+			conf.GetOrDefault("epsilon", epsilon, 0.0001);
 			conf.GetOrDefault("silent", silent, false);
 			conf.GetOrDefault("num_sample_states", num_sample_states, 10);
 			if (!mdp->ProvidesEventProbs()) {
@@ -485,7 +486,7 @@ namespace DynaPlex::Algorithms {
 				}
 				IterateValues();
 				CheckConvergence();
-			} while (maxChange > 0.0001);
+			} while (maxChange > epsilon);
 			if (!policy)
 				exact_policy_computed = true;
 			else
