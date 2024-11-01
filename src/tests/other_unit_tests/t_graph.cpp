@@ -29,8 +29,13 @@ namespace DynaPlex::Tests {
         EXPECT_DOUBLE_EQ(14.0, g.Distance(1, 0));  //2+3+4+5
 
 
-        // Test Path
-        auto path = g.Path(0, 2); // Path from 0 to 2
+       
+        std::vector<Graph::Edge> path;
+        for (auto& edge : g.Path(0, 2))
+        {
+            path.push_back(edge);
+        }
+
         ASSERT_EQ(2, path.size()); // Check the number of edges in the path
         EXPECT_EQ(0, path[0].orig); // Check the first edge
         EXPECT_EQ(1, path[0].dest);
@@ -38,8 +43,11 @@ namespace DynaPlex::Tests {
         EXPECT_EQ(2, path[1].dest);
 
 
-
-        auto path00 = g.Path(0, 0);
+        std::vector<Graph::Edge> path00;
+        for (auto& edge : g.Path(0, 0))
+        {
+            path00.push_back(edge);
+        }
         ASSERT_EQ(0, path00.size()); // Check the number of edges in the path
 
         // Test NextEdge
@@ -74,9 +82,11 @@ namespace DynaPlex::Tests {
         EXPECT_DOUBLE_EQ(5.0, g.Distance(4, 0)); //5 
         EXPECT_DOUBLE_EQ(1.0, g.Distance(1, 0));  //1 (note: undirected now)
 
-
-        // Test Path
-        auto path = g.Path(0, 2); // Path from 0 to 2
+        std::vector<Graph::Edge> path;
+        for (auto& edge : g.Path(0, 2))
+        {
+            path.push_back(edge);
+        }
         ASSERT_EQ(2, path.size()); // Check the number of edges in the path
         EXPECT_EQ(0, path[0].orig); // Check the first edge
         EXPECT_EQ(1, path[0].dest);
@@ -84,8 +94,11 @@ namespace DynaPlex::Tests {
         EXPECT_EQ(2, path[1].dest);
 
 
-
-        auto path00 = g.Path(0, 0);
+        std::vector<Graph::Edge> path00;
+        for (auto& edge : g.Path(0, 0))
+        {
+            path00.push_back(edge);
+        }
         ASSERT_EQ(0, path00.size()); // Check the number of edges in the path
 
         // Test NextEdge
@@ -117,6 +130,9 @@ namespace DynaPlex::Tests {
         //note that we have a double edge, so this should throw:
         EXPECT_NO_THROW(DynaPlex::Graph g(vars));
         DynaPlex::Graph g(vars);
+
+        EXPECT_THROW(g.AddEdge(0, 1), DynaPlex::Error);
+
         auto final = g.NodeAt(7, 6);
         auto origin = g.NodeAt(7, 0);
         auto one_up_origin = g.NodeAt(6, 0);
@@ -167,6 +183,34 @@ namespace DynaPlex::Tests {
         EXPECT_NO_THROW(DynaPlex::Graph g(vars));
         DynaPlex::Graph g(vars);
         EXPECT_EQ(g.Distance(0, 1), 0.5);
+    }
+
+    TEST(Graph, GridFromScratch)
+    {
+        DynaPlex::Graph g(2, 2);
+        g.AddEdge(0, 1);
+        g.AddEdge(1, 3);
+        g.AddEdge(3, 2);
+        g.AddEdge(2, 0);
+        EXPECT_THROW(g.AddEdge(1, 4), DynaPlex::Error);
+        g.Finalize();
+
+        EXPECT_EQ(g.NumNodes(), 4);
+        EXPECT_EQ(g.Distance(0, 2), 3);
+    }
+
+    TEST(Graph, GraphFromScratch)
+    {
+        DynaPlex::Graph g{};
+        g.AddEdge(0, 1, 10.0);
+        g.AddEdge(1, 2,10.0);
+        g.Finalize();
+
+        EXPECT_THROW(g.Finalize(), DynaPlex::Error);
+
+        EXPECT_EQ(g.NumNodes(), 3);
+        EXPECT_EQ(g.Distance(0, 2), 20);
+
     }
 
 }

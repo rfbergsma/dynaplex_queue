@@ -1,3 +1,4 @@
+#include "dynaplex/modelling/graph.h"
 #include <queue>
 #include <vector>
 #include <functional>
@@ -49,7 +50,7 @@ namespace DynaPlex {
 		{
 			if (format == std::string("grid"))
 			{
-				format_is_grid = true;
+				is_grid = true;
 			
 				std::vector<std::string> rows;
 				config.Get("rows", rows); // Assuming `config` can retrieve a vector of strings for "rows"
@@ -153,35 +154,35 @@ namespace DynaPlex {
 	
 		bool allow_double_edges{};
 		config.GetOrDefault("allow_double_edges", allow_double_edges, false);
-		ValidateEdgeVectorAndComputeNumNodes(allow_double_edges);
+		UpdateNumNodes();
+		ValidateEdgeVector(allow_double_edges);
 		PCSP();
 	}
 
 
 	int64_t Graph::NodeAt(int64_t row, int64_t col) const {
-		if (!format_is_grid)
+		if (!is_grid)
 			throw DynaPlex::Error("Graph::NodeAt - format is not a grid.");
 		if (row < 0 || row >= height)
 			throw DynaPlex::Error("Graph::NodeAt - invalid row");
-
 		if (col < 0 || col >= width)
 			throw DynaPlex::Error("Graph::NodeAt - invalid col");
 		return row * width + col;
 	}
 
 	int64_t Graph::Width() const {
-		if (!format_is_grid)
+		if (!is_grid)
 			throw DynaPlex::Error("Graph::NodeAt - format is not a grid.");
 		return width;
 	}
 	int64_t Graph::Height() const {
-		if (!format_is_grid)
+		if (!is_grid)
 			throw DynaPlex::Error("Graph::NodeAt - format is not a grid.");
 		return height;
 	}
 
 	Graph::Coords Graph::Coordinates(int64_t node) const	{
-		if (!format_is_grid)
+		if (!is_grid)
 			throw DynaPlex::Error("Graph::Coordinates - format is not a grid.");
 		if (node < 0 || node >= width * height)
 			throw DynaPlex::Error("Graph::Coordinates - node not part of grid.");
@@ -191,74 +192,164 @@ namespace DynaPlex {
 	}
 
 
-	Graph::Graph() : numNodes(0) {
+	Graph::Graph() : numNodes(0), is_grid{ false }, is_manual{ true } {
 	}
+
+	Graph::Graph(int64_t width, int64_t height)
+		:width{ width }, height{ height },is_grid{true},is_manual{true}
+	{
+	}
+
+	void Graph::AddEdge(uint32_t origin, uint32_t destination, WeightType weight)
+	{
+		if (!is_manual)
+			throw DynaPlex::Error("Graph::AddEdge - only supported when graph was constructed manually using Graph(width,height) constructor.");
+		if (is_finalized)
+			throw DynaPlex::Error("Graph::AddEdge - cannot add edges anymode after finalizing.");
+
+		if (is_grid)
+		{
+			if (origin >= width * height || origin < 0)
+				throw DynaPlex::Error("Graph::AddEdge - origin falls outside of the grid");
+			if (destination >= width * height || destination < 0)
+				throw DynaPlex::Error("Graph::AddEdge - origin falls outside of the grid");
+		}
+
+		edges.emplace_back(origin, destination, weight);
+	}
+
+	void Graph::Finalize() {
+		if(is_finalized)
+			throw DynaPlex::Error("Graph::Finalize - allready finalized.");
+		if (is_grid)
+		{
+			numNodes = width * height;
+		}
+		else
+		{
+			this->UpdateNumNodes();
+		}	
+		this->PCSP();
+	}
+
 
 	bool Graph::ExistsPath(int64_t origin_node, int64_t destination_node) const {
 		if (origin_node < 0 || origin_node >= numNodes || destination_node < 0 || destination_node >= numNodes) {
-			throw DynaPlex::Error("Invalid node index in Graph::Distance query");
+			throw DynaPlex::Error("Invalid node index in Graph::Distance query " + TypeSetNode(origin_node) + " -> " + TypeSetNode(destination_node));
 		}
-		return distances[origin_node][destination_node] != std::numeric_limits<double>::max();
+		return distances[destination_node][origin_node] != std::numeric_limits<double>::max();
 	}
 
 	Graph::WeightType Graph::Distance(int64_t origin_node, int64_t destination_node) const {
 		if (origin_node < 0 || origin_node >= numNodes || destination_node < 0 || destination_node >= numNodes) {
-			throw DynaPlex::Error("Invalid node index in Graph::Distance query");
+			throw DynaPlex::Error("Invalid node index in Graph::Distance query " + TypeSetNode(origin_node) + " -> " + TypeSetNode(destination_node));
 		}
-		if (distances[origin_node][destination_node] == std::numeric_limits<double>::max()) {
-			throw DynaPlex::Error("No valid path exists in Distance query");
+		if (distances[destination_node][origin_node] == std::numeric_limits<double>::max()) {
+			throw DynaPlex::Error("No valid path exists in Distance query " + TypeSetNode(origin_node) + " -> " + TypeSetNode(destination_node));
 		}
-		return distances[origin_node][destination_node];
+		return distances[destination_node][origin_node];
+	}
+
+	Graph::PathIterable Graph::Path(int64_t origin_node, int64_t destination_node) const {
+		return PathIterable(*this, origin_node, destination_node);
 	}
 
 
-	std::vector<Graph::Edge> Graph::Path(int64_t origin_node, int64_t destination_node) const {
-		if (origin_node < 0 || origin_node >= numNodes || destination_node < 0 || destination_node >= numNodes) {
-			throw DynaPlex::Error("Invalid node index in Graph::Path query");
+	Graph::PathIterator::PathIterator(const Graph* graph, int64_t currentNode, int64_t destinationNode)
+		: graph_(graph), currentNode_(currentNode), destinationNode_(destinationNode),
+		atEnd_(currentNode == destinationNode || currentNode == -1) {
+		if (!atEnd_) {
+			updateNextEdge();
 		}
-		if (distances[origin_node][destination_node] == std::numeric_limits<double>::max()) {
-			throw DynaPlex::Error("No valid path exists in Path query");
+	}
+
+	bool Graph::PathIterator::operator==(const PathIterator& other) const {
+		return (atEnd_ && other.atEnd_) || (currentNode_ == other.currentNode_ && destinationNode_ == other.destinationNode_);
+	}
+
+	bool Graph::PathIterator::operator!=(const PathIterator& other) const {
+		return !(*this == other);
+	}
+
+	Graph::PathIterator& Graph::PathIterator::operator++() {
+		if (!atEnd_) {
+			currentNode_ = nextEdge_.dest;
+			if (currentNode_ == destinationNode_) {
+				atEnd_ = true;
+			}
+			else {
+				updateNextEdge();
+			}
+		}
+		return *this;
+	}
+
+	Graph::PathIterator Graph::PathIterator::operator++(int) {
+		PathIterator tmp = *this;
+		++(*this);
+		return tmp;
+	}
+
+	Graph::PathIterator::reference Graph::PathIterator::operator*() const {
+		return nextEdge_;
+	}
+
+	Graph::PathIterator::pointer Graph::PathIterator::operator->() const {
+		return &nextEdge_;
+	}
+
+	void Graph::PathIterator::updateNextEdge() {
+		if (currentNode_ == destinationNode_ || atEnd_) {
+			atEnd_ = true;
+			return;
 		}
 
-		std::vector<Edge> path;
-		int64_t currentNode = origin_node;
-		while (currentNode != destination_node) {
-			int edgeIndex = edgeIndices[currentNode][destination_node];
-			if (edgeIndex == -1) {
-				throw DynaPlex::Error("Failed to construct path in Path query");
-			}
-			path.push_back(edges[edgeIndex]);
-			currentNode = edges[edgeIndex].dest;
-
-			if (currentNode == destination_node) {
-				break;
-			}
+		int edgeIndex = graph_->edgeIndices[destinationNode_][currentNode_];
+		if (edgeIndex == -1) {
+			// No valid next edge, mark iterator as at the end
+			atEnd_ = true;
 		}
-		return path;
+		else {
+			// Update `nextEdge_` to the next edge in the path
+			nextEdge_ = graph_->edges[edgeIndex];
+		}
 	}
 
 
+	Graph::PathIterable::PathIterable(const Graph& graph, int64_t origin, int64_t dest)
+		: graph_(graph), origin_(origin), dest_(dest) {}
+
+	Graph::PathIterator Graph::PathIterable::begin() const {
+		return PathIterator(&graph_, origin_, dest_);
+	}
+
+	Graph::PathIterator Graph::PathIterable::end() const {
+		return Graph::PathIterator(&graph_, dest_, dest_);
+	}
 
 	const Graph::Edge& Graph::NextEdge(int64_t origin_node, int64_t destination_node) const {
-		if (origin_node < 0 || origin_node >= numNodes || destination_node < 0 || destination_node >= numNodes) {
-			throw DynaPlex::Error("Invalid node index in NextEdge query");
+		if (origin_node < 0 || origin_node >= numNodes){			
+			throw DynaPlex::Error("Invalid origin node index in NextEdge query"+ TypeSetNode(origin_node) );
 		}
-				
-		if (distances[origin_node][destination_node] == std::numeric_limits<WeightType>::max()) {
-			throw DynaPlex::Error("No valid path for NextEdge query");
+
+		if (destination_node < 0 || destination_node >= numNodes) {
+			throw DynaPlex::Error("Invalid destination node index in NextEdge query" + TypeSetNode(destination_node) );
+		}
+		if (distances[destination_node][origin_node] == std::numeric_limits<WeightType>::max()) {
+			throw DynaPlex::Error("No valid path for NextEdge query " + TypeSetNode(origin_node)+ " -> " + TypeSetNode(destination_node));
 		}
 
 		if (origin_node == destination_node)
-			throw DynaPlex::Error("origin equals destination in NextEdge query");
+			throw DynaPlex::Error("origin equals destination in NextEdge query " + TypeSetNode(origin_node) + " -> " + TypeSetNode(destination_node));
 
-		int edgeIndex = edgeIndices[origin_node][destination_node];
+		int edgeIndex = edgeIndices[destination_node][origin_node];
 		if (edgeIndex == -1 || edgeIndex >= edges.size()) {
-			throw DynaPlex::Error("Failed to find next edge in NextEdge query");
+			throw DynaPlex::Error("Failed to find next edge in NextEdge query " + TypeSetNode(origin_node) + " -> " + TypeSetNode(destination_node));
 		}
 
 		return edges[edgeIndex];
 	}
-	void Graph::ValidateEdgeVectorAndComputeNumNodes(bool allow_double_edges) {
+	void Graph::UpdateNumNodes() {
 		for (auto& edge : edges)
 		{
 			if (edge.dest >= numNodes)
@@ -266,6 +357,10 @@ namespace DynaPlex {
 			if (edge.orig >= numNodes)
 				numNodes = edge.orig + 1;
 		}
+	}
+
+	void Graph::ValidateEdgeVector(bool allow_double_edges) {
+		
 
 		std::sort(edges.begin(), edges.end(), [](const Edge& a, const Edge& b) {
 			return a.orig < b.orig || (a.orig == b.orig && a.dest < b.dest);
@@ -310,52 +405,57 @@ namespace DynaPlex {
 	
 	//precomputeshortestpath
 	void Graph::PCSP() {
+		is_finalized = true;
 		distances.resize(numNodes, std::vector<WeightType>(numNodes, std::numeric_limits<WeightType>::max()));
 		edgeIndices.resize(numNodes, std::vector<int32_t>(numNodes, -1));
+		
+		// Define the Connection structure within this function
+		struct Connection {
+			uint32_t orig; // Destination node of the edge
+			WeightType weight; // Weight of the edge
+			uint32_t edge_index;
+		};
 
-		for (int64_t source = 0; source < numNodes; ++source) {
-			std::vector<WeightType> minDistance(numNodes, std::numeric_limits<WeightType>::max());
-			std::vector<int> previous(numNodes, -1);
+		// Create the adjacency list from the existing edges
+		std::vector<std::vector<Connection>> reverseAdjacencyList(numNodes);
+		for (uint32_t i=0;i<edges.size();i++) {
+			auto& edge = edges[i];
+			reverseAdjacencyList[edge.dest].push_back(Connection{ edge.orig, edge.weight,i });
+		}
+		
+		using QueueElement = std::pair<WeightType, uint32_t>;
 
-			minDistance[source] = 0;
-			using QueueElement = std::pair<WeightType, int64_t>;
+		for (uint32_t target = 0; target < numNodes; ++target) {
+			distances[target][target] = static_cast<WeightType>(0);
 			std::priority_queue<QueueElement, std::vector<QueueElement>, std::greater<QueueElement>> activeVertices;
-			activeVertices.push({ 0.0, source });
+			activeVertices.push({ static_cast<WeightType>(0), target });
 
 			while (!activeVertices.empty()) {
-				int64_t where = activeVertices.top().second;
+				auto where = activeVertices.top().second;
 				WeightType dist = activeVertices.top().first;
 				activeVertices.pop();
 
-				if (dist > minDistance[where]) continue;
+				if (dist > distances[target][where]) continue;
 
-				for (auto& edge : edges) {
-					if (edge.orig == where) {
-						if (minDistance[edge.dest] > minDistance[where] + edge.weight) {
-							minDistance[edge.dest] = minDistance[where] + edge.weight;
-							previous[edge.dest] = where;
-							activeVertices.push({ minDistance[edge.dest], edge.dest });
-						}
+				for (const auto& connection : reverseAdjacencyList[where]) {
+					if (distances[target][connection.orig] > distances[target][where] + connection.weight) {
+						distances[target][connection.orig] = distances[target][where] + connection.weight;
+						edgeIndices[target][connection.orig] = connection.edge_index;
+						activeVertices.push({ distances[target][connection.orig], connection.orig });
 					}
-				}
-			}
-
-			for (int64_t dest = 0; dest < numNodes; ++dest) {
-				distances[source][dest] = minDistance[dest];
-				// Backtrack to find the edge index
-				int64_t current = dest;
-				while (current != source && previous[current] != -1) {
-					int64_t pred = previous[current];
-					// Find the edge index from pred to current
-					for (size_t i = 0; i < edges.size(); ++i) {
-						if (edges[i].orig == pred && edges[i].dest == current) {
-							edgeIndices[source][dest] = i;
-							break;
-						}
-					}
-					current = pred;
 				}
 			}
 		}
+
+	}
+	std::string DynaPlex::Graph::TypeSetNode(int64_t node_id) const
+	{
+		if (is_grid && width>0)
+		{
+			int64_t row = node_id / width;
+			int64_t col = node_id - row * width;
+			return std::to_string(node_id) + "=(" + std::to_string(row) + ","+ std::to_string(col) + ")";
+		}
+		return std::to_string(node_id);
 	}
 }

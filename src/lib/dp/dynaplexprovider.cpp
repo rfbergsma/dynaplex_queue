@@ -117,7 +117,7 @@ namespace DynaPlex {
     // Destructor
     DynaPlexProvider::~DynaPlexProvider() {
      
-        System() << "DynaPlex: Finalizing. Time Elapsed: " << System().Elapsed() << std::endl;
+        m_systemInfo << "DynaPlex: Finalizing. Time Elapsed: " << m_systemInfo.Elapsed() << std::endl;
         // If MPI is available, finalize it
 #ifdef DP_MPI_AVAILABLE
         int mpi_finalized;
