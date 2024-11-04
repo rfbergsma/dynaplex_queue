@@ -158,7 +158,7 @@ class demonstrator:
         gets a trace for demonstration and rendering purposes.
         """
 class exact_solver:
-    def compute_costs(self, policy: Policy = None) -> float:
+    def compute_costs(self, optimize: bool = True, policy: Policy = None) -> float:
         """
         Computes exact return (costs/rewards) for the given policy or computes exact optimal costs if no policy is provided.
         """

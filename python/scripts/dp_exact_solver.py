@@ -11,7 +11,7 @@ mdp = dynaplex.get_mdp(id="lost_sales",
 base_policy = mdp.get_policy("base_stock")
 
 exact_solver = dynaplex.get_exact_solver(mdp)
-cost = exact_solver.compute_costs(base_policy)
+cost = exact_solver.compute_costs(False, base_policy)
 print(cost)
 exact_cost = exact_solver.compute_costs()
 print(exact_cost)
