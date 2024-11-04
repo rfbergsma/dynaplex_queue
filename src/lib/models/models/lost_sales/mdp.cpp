@@ -8,10 +8,8 @@ namespace DynaPlex::Models {
 		VarGroup MDP::GetStaticInfo() const
 		{
 			VarGroup vars;		
-			vars.Add("valid_actions", MaxOrderSize + 1);
-			
+			vars.Add("valid_actions", MaxOrderSize + 1);			
 			vars.Add("discount_factor", discount_factor);
-
 			//potentially add any stuff that was computed for diagnostics purposes
 			//not used by dynaplex framework itself. 
 			VarGroup diagnostics{};			
@@ -28,9 +26,16 @@ namespace DynaPlex::Models {
 			{				
 				throw DynaPlex::Error("Lost Sales: action not allowed: state.total_inv: " + std::to_string(state.total_inv) + "  action: " + std::to_string(action) + "  MaxSystemInv: " + std::to_string(MaxSystemInv) + " MaxOrderSize " + std::to_string(MaxOrderSize));
 			}
+			//if (state.cat.Index() == 0)
+			//{
+			//	state.cat = StateCategory::AwaitAction(1);
+			//}
+			//else
+			//{
 			state.state_vector.push_back(action);
 			state.total_inv += action;
 			state.cat = StateCategory::AwaitEvent();
+			//}
 			return 0.0;
 		}
 
@@ -100,6 +105,7 @@ namespace DynaPlex::Models {
 
 		void MDP::GetFeatures(const State& state, DynaPlex::Features& features) const {
 			features.Add(state.state_vector);
+			features.Add(state.cat.Index());
 		}
 		
 		void MDP::RegisterPolicies(DynaPlex::Erasure::PolicyRegistry<MDP>& registry) const

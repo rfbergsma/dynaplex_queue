@@ -6,6 +6,9 @@ namespace DynaPlex::Models {
 	namespace lost_sales {
 		void Register(DynaPlex::Registry&);
 	}
+	namespace exact_test_case {
+		void Register(DynaPlex::Registry&);
+	}
 	namespace bin_packing {
 		void Register(DynaPlex::Registry&);
 	}
@@ -29,5 +32,6 @@ namespace DynaPlex::Models {
 		perishable_systems::Register(registry);
 		resource_allocation::Register(registry);
 		collaborative_picking::Register(registry);
+		exact_test_case::Register(registry);
 	}
 }

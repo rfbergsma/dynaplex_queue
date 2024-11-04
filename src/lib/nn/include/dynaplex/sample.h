@@ -15,11 +15,11 @@ namespace DynaPlex::NN
         DynaPlex::dp_State state;
         //for implementation verification purposes.
         int64_t sample_number{ 0 };
-        std::vector<double> q_hat_vec;
+        std::vector<double> q_hat_vec{};
         double z_stat{ 0.0 };
         double q_hat{ 0.0 };
-        std::vector<double> cost_improvement;
-        std::vector<double> probabilities;
+        std::vector<double> cost_improvement{};
+        std::vector<double> probabilities{};
 
         Sample() = default;
         Sample(int64_t action_label, DynaPlex::dp_State state);

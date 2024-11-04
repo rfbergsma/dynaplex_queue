@@ -211,9 +211,9 @@ namespace DynaPlex::Algorithms {
 			mdp->IncorporateAction(trajectories);
 			for (DynaPlex::Trajectory& traj : trajectories)
 			{
-				if (traj.Category.IsAwaitAction())
-					throw DynaPlex::Error("ExactSolver: Action states following immediately after action states in MDP; this is currently not supported. MDP is expected to alternate between events and actions, and may transition to final state.");				
-				if (traj.Category.Index() != 0)
+			//	if (traj.Category.IsAwaitAction())
+			//		throw DynaPlex::Error("ExactSolver: Action states following immediately after action states in MDP; this is currently not supported. MDP is expected to alternate between events and actions, and may transition to final state.");				
+				if (traj.Category.IsAwaitEvent() && traj.Category.Index() != 0)
 					throw DynaPlex::Error("ExactSolver: Event states must have index 0, i.e. correspond to a time step, in current version of ExactSolver. ");
 				
 				ProcessState(traj.GetState());
@@ -277,8 +277,18 @@ namespace DynaPlex::Algorithms {
 				else
 				{
 					if (trajectories[0].Category.IsAwaitAction())
-						throw DynaPlex::Error("ExactSolver: Action states following immediately after action states in MDP; this is currently not supported. MDP is expected to alternate between events and actions, and may transition to final state.");
-					if (trajectories[0].Category.Index() != 0)
+					{
+						auto& value = GetStateValue(trajectories[0].GetState());
+						storage.transitions.clear();
+						storage.transitions.emplace_back(1.0, &value);
+						storage.costs_until_transition = trajectories[0].CumulativeReturn;				
+					}
+					else
+					{
+						storage.transitions.clear();
+						storage.costs_until_transition = trajectories[0].CumulativeReturn;
+					}
+					if (trajectories[0].Category.IsAwaitEvent() && trajectories[0].Category.Index() != 0)
 						throw DynaPlex::Error("ExactSolver: Event states must have index 0, i.e. correspond to a time step, in current version of ExactSolver. ");
 
 				}
@@ -364,16 +374,16 @@ namespace DynaPlex::Algorithms {
 				}
 			}
 
-			for (auto& [key, list] : statemap)
-			{
-				for (auto& lookupValue : list)
-				{
-					action_states[lookupValue.state_index].new_value -= lowestValue;
-					lookupValue.value -= lowestValue;
-				}
-			}
 			if (mdp->IsInfiniteHorizon() && mdp->DiscountFactor() == 1.0)
 			{
+				for (auto& [key, list] : statemap)
+				{
+					for (auto& lookupValue : list)
+					{
+						action_states[lookupValue.state_index].new_value -= lowestValue;
+						lookupValue.value -= lowestValue;
+					}
+				}
 				maxChange = (deltaMax - deltaMin) / 2.0 / (1.0 - self_transition_prob);
 				currentCost = (deltaMax + deltaMin) / 2.0 / (1.0 - self_transition_prob);
 			}
@@ -437,8 +447,27 @@ namespace DynaPlex::Algorithms {
 					else
 					{
 						if (trajectories[0].Category.IsAwaitAction())
-							throw DynaPlex::Error("ExactSolver: Action states following immediately after action states in MDP; this is currently not supported. MDP is expected to alternate between events and actions, and may transition to final state.");
-						if (trajectories[0].Category.Index() != 0)
+						{
+							auto& LookupValue = GetStateValue(trajectories[0].GetState());							
+							auto future_return = LookupValue.value;
+							auto total_return = trajectories[0].CumulativeReturn + future_return;
+							total_return *= objective;
+							if (total_return > best_action_return)
+							{
+								best_action_return = total_return;
+								stateStorage.current_action = current_action;
+							}
+						}
+						else {
+							auto total_return = trajectories[0].CumulativeReturn;
+							total_return *= objective;
+							if (total_return > best_action_return)
+							{
+								best_action_return = total_return;
+								stateStorage.current_action = current_action;
+							}
+						}
+						if (trajectories[0].Category.IsAwaitEvent() && trajectories[0].Category.Index() != 0)
 							throw DynaPlex::Error("ExactSolver: Event states must have index 0, i.e. correspond to a time step, in current version of ExactSolver. ");
 
 					}
@@ -451,7 +480,7 @@ namespace DynaPlex::Algorithms {
 
 		}
 
-		double ComputeCosts(DynaPlex::Policy policy) {
+		double ComputeCosts(bool optimize, DynaPlex::Policy policy) {
 			feats_holder.resize(mdp->NumFlatFeatures(), 0.0f);
 			feats_holder2.resize(mdp->NumFlatFeatures(), 0.0f);
 
@@ -479,7 +508,7 @@ namespace DynaPlex::Algorithms {
 			do {
 				for (size_t i = 0; i < 10; i++)
 					IterateValues();
-				if (!policy)
+				if (optimize)
 				{
 					UpdateActionsForValues();
 					DetermineTransitions();
@@ -487,7 +516,7 @@ namespace DynaPlex::Algorithms {
 				IterateValues();
 				CheckConvergence();
 			} while (maxChange > epsilon);
-			if (!policy)
+			if (optimize)
 				exact_policy_computed = true;
 			else
 				exact_policy_computed = false;
@@ -500,6 +529,8 @@ namespace DynaPlex::Algorithms {
 					throw DynaPlex::Error("Issue with state index");
 
 			}
+
+			
 
 			return currentCost;
 		}
@@ -562,14 +593,14 @@ namespace DynaPlex::Algorithms {
 		: pImpl(std::make_unique<Impl>(system, mdp, config)) {
 	}
 
-	double ExactSolver::ComputeCosts(DynaPlex::Policy policy) {
-		return pImpl->ComputeCosts(policy);
+	double ExactSolver::ComputeCosts(bool optimize, DynaPlex::Policy policy) {
+		return pImpl->ComputeCosts(optimize, policy);
 	}
 
 	DynaPlex::Policy ExactSolver::GetOptimalPolicy() {
 		//compute the optimal policy if not allready computed. 
 		if (!pImpl->exact_policy_computed)
-			ComputeCosts();
+			ComputeCosts(true);
 		//We set this flag, so that trying to compute the costs for another policy after 
 		//exporting the optimal policy raises an error. (Note that the memory of the ActionStates is shared between policy
 		// and optimizer..)

@@ -3,6 +3,8 @@
 using namespace DynaPlex;
 
 namespace DynaPlex::Tests {
+	
+	
 	TEST(ExactAlgorithm, LostSalesSmallInstances) {
 		auto& dp = DynaPlexProvider::Get();
 
@@ -29,8 +31,8 @@ namespace DynaPlex::Tests {
 		{
 			auto ExactSolver = dp.GetExactSolver(mdp, exact_config);
 			double bs_costs, opt_costs;
-			ASSERT_NO_THROW({ bs_costs = ExactSolver.ComputeCosts(policy); });
-			ASSERT_NO_THROW({ opt_costs = ExactSolver.ComputeCosts(); });
+			ASSERT_NO_THROW({ bs_costs = ExactSolver.ComputeCosts(false, policy); });
+			ASSERT_NO_THROW({ opt_costs = ExactSolver.ComputeCosts(true); });
 
 			//from Zipkin paper (pois, L=2, p=9):
 			EXPECT_NEAR(bs_costs, 4.94, 0.005);
@@ -53,12 +55,40 @@ namespace DynaPlex::Tests {
 			policy = mdp->GetPolicy("base_stock");
 			auto ExactSolver = dp.GetExactSolver(mdp, exact_config);
 			double bs_costs, opt_costs;
-			ASSERT_NO_THROW({ bs_costs = ExactSolver.ComputeCosts(policy); });
-			ASSERT_NO_THROW({ opt_costs = ExactSolver.ComputeCosts(); });
+			ASSERT_NO_THROW({ bs_costs = ExactSolver.ComputeCosts(false, policy); });
+			ASSERT_NO_THROW({ opt_costs = ExactSolver.ComputeCosts(true); });
 
 			//from Zipkin paper:(pois, L=1, p=4):
 			EXPECT_NEAR(bs_costs, 4.39, 0.005);
 			EXPECT_NEAR(opt_costs, 4.04, 0.01);
 		}
 	}
+	
+	TEST(ExactAlgorithm, exact_test_case) {
+		auto& dp = DynaPlexProvider::Get();
+
+		DynaPlex::VarGroup config;
+		//retrieve MDP registered under the id string "lost_sales":
+		config.Add("id", "exact_test_case");
+
+		DynaPlex::MDP mdp;
+		DynaPlex::Policy policy;
+		DynaPlex::VarGroup exact_config = DynaPlex::VarGroup{ {"max_states",100000}, {"silent", true } };
+
+		ASSERT_NO_THROW({ mdp = dp.GetMDP(config); });
+		ASSERT_NO_THROW({ policy = mdp->GetPolicy("greedy"); });
+		{
+			auto ExactSolver = dp.GetExactSolver(mdp, exact_config);
+			double bs_costs, opt_costs;
+			ASSERT_NO_THROW({ bs_costs = ExactSolver.ComputeCosts(false, policy); });
+			ASSERT_NO_THROW({ opt_costs = ExactSolver.ComputeCosts(true); });
+
+			EXPECT_NEAR(bs_costs, 20, 0.005);
+			EXPECT_NEAR(opt_costs, 20, 0.005);
+		}
+		
+	}
+
+
+
 }

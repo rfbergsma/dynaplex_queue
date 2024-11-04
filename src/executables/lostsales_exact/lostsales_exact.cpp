@@ -21,9 +21,9 @@ int main() {
 		DynaPlex::MDP mdp = dp.GetMDP(config);
 		auto policy = mdp->GetPolicy("base_stock");
 		auto solver = dp.GetExactSolver(mdp, { {"silent",false }, {"max_states",1000000} });
-		double d = solver.ComputeCosts(policy);
+		double d = solver.ComputeCosts(true, policy);
 		std::cout << "base_stock: " << d << std::endl;
-		double d2 = solver.ComputeCosts();
+		double d2 = solver.ComputeCosts(true);
 		std::cout << "optimal   : " << d2 << std::endl;
 	}
 	catch (DynaPlex::Error& e)

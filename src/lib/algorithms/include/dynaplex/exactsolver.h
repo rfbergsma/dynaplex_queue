@@ -22,7 +22,7 @@ namespace DynaPlex::Algorithms {
 		 * @param Policy for the MDP
 		 * @return For finite-horizon MDP and discounted MDP: Expected return when starting in the initial state. 
 		*/
-		double ComputeCosts(DynaPlex::Policy policy = nullptr);
+		double ComputeCosts(const bool optimize, DynaPlex::Policy policy = nullptr);
 
 
 		/**
