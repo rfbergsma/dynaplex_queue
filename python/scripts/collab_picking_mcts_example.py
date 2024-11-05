@@ -43,13 +43,9 @@ if __name__ == '__main__':
     search_times = []
     dec_times = []
 
-    picked_items = []
-    heur_picked_items = []
-    startup_picked_items = []
-
     start_time = time()
 
-    n_episodes = 1
+    n_episodes = 10
     for ep in range(n_episodes):
 
         print(f"Episode {ep}")
@@ -72,7 +68,6 @@ if __name__ == '__main__':
         print(f"POST STARTUP STATE: {traj.state_as_dict()}")
 
         startup_rewards.append(-traj.cumulative_return)
-        startup_picked_items.append(traj.state_as_dict()['picked_items'])
 
         heur_traj = mdp.deep_copy(traj)  # Trajectory object for the baseline heuristic experiment
 
@@ -144,9 +139,7 @@ if __name__ == '__main__':
         heur_rewards.append(-heur_traj.cumulative_return)
 
         state = traj.state_as_dict()
-        picked_items.append(state['picked_items'])
         heur_state = heur_traj.state_as_dict()
-        heur_picked_items.append(heur_state['picked_items'])
 
     eval_time = time() - start_time
 
@@ -164,17 +157,6 @@ if __name__ == '__main__':
 
     print("Performance gain considering startup period: ",
           ((np.mean(useful_rewards) - np.mean(useful_heur_rewards)) / np.mean(useful_heur_rewards)).round(2))
-
-    print()
-
-    # Check if the number of picked items matches the reward if objective is maximization of picked items or
-    # compare them if the objective is minimization of picker travelling time
-    useful_picked_items = np.array(picked_items) - np.array(startup_picked_items)
-    useful_heur_picked_items = np.array(heur_picked_items) - np.array(startup_picked_items)
-
-    print(
-        f"Average heuristic picked items, considering startup period: {np.mean(useful_heur_picked_items).round(2)} +- {np.std(useful_heur_picked_items).round(2)}")
-    print(f"Average MCTS picked items, considering startup period: {np.mean(useful_picked_items).round(2)} +- {np.std(useful_picked_items).round(2)}")
 
     # print(f"Average search time: {np.mean(search_times)} +- {np.std(search_times)}, n searches: {len(search_times)}")
     # print(f"Average decision time: {np.mean(dec_times)} +- {np.std(dec_times)}, n decisions: {len(dec_times)}")
