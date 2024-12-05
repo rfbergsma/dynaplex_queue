@@ -4,6 +4,7 @@
 #include <functional>
 #include <limits>
 #include <sstream>
+#include <algorithm>
 #include "dynaplex/error.h"
 #include "dynaplex/modelling/graph.h"
 
