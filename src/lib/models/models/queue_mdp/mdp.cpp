@@ -4,17 +4,16 @@
 
 
 namespace DynaPlex::Models {
-	namespace empty_example /*keep this in line with id below and with namespace name in header*/
+	namespace queue_mdp /*keep this in line with id below and with namespace name in header*/
 	{
 		VarGroup GetSubGroup(const VarGroup& group, const std::string& key) {
 			VarGroup subgroup;
 			group.Get(key, subgroup); // Assuming VarGroup has a Get method to retrieve subgroups
 			return subgroup;
 		}
-		
+
 		VarGroup MDP::GetStaticInfo() const
 		{
-
 			VarGroup vars;
 			//Needs to update later:
 			vars.Add("valid_actions", 1);
@@ -59,6 +58,17 @@ namespace DynaPlex::Models {
 			State state{};
 			state.cat = StateCategory::AwaitEvent();//or AwaitAction(), depending on logic
 			//initiate other variables. 
+			// initialize server manager state
+			state.server_manager.busy_on.resize(server_static_info.size());
+			for (size_t k = 0; k < server_static_info.size(); ++k) {
+				state.server_manager.busy_on[k].resize(server_static_info[k].can_serve.size(), 0);
+			}
+			// Link static info
+			state.server_manager.static_info = &server_static_info;
+			// Update idle capacity
+			state.server_manager.update_idle_capacity(state.server_manager.busy_on);
+
+			
 			return state;
 		}
 
@@ -73,7 +83,20 @@ namespace DynaPlex::Models {
 				config.Get("discount_factor", discount_factor);
 			else
 				discount_factor = 1.0;
+		
+			config.Get("k_servers", k_servers);
+			config.Get("n_jobs", n_jobs);
+			config.Get("arrival_rates", arrival_rates);
 
+			//initialize server manager
+			std::vector<ServerStaticInfo> server_static_info;
+
+			for (int64_t i = 0; i < k_servers; ++i) {
+				VarGroup serverConfig = GetSubGroup(config, "server_type_" + std::to_string(i));
+				serverConfig.Get("n_servers", server_static_info[i].servers);
+				serverConfig.Get("service_rate", server_static_info[i].mu_k);
+				serverConfig.Get("can_serve", server_static_info[i].can_serve);
+			}
 			
 		}
 
@@ -108,7 +131,7 @@ namespace DynaPlex::Models {
 		{
 			//this typically works, but state.cat must be kept up-to-date when modifying states. 
 			return state.cat;
-		}
+		}	
 
 		bool MDP::IsAllowedAction(const State& state, int64_t action) const {
 			throw DynaPlex::NotImplementedError();
@@ -117,7 +140,7 @@ namespace DynaPlex::Models {
 
 		void Register(DynaPlex::Registry& registry)
 		{
-			DynaPlex::Erasure::MDPRegistrar<MDP>::RegisterModel("empty_example", "nonempty description", registry);
+			DynaPlex::Erasure::MDPRegistrar<MDP>::RegisterModel("queue_mdp", "mdp for analyzing queueing models", registry);
 			//To use this MDP with dynaplex, register it like so, setting name equal to namespace and directory name
 			// and adding appropriate description. 
 			//DynaPlex::Erasure::MDPRegistrar<MDP>::RegisterModel(

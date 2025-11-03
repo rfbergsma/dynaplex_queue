@@ -25,6 +25,10 @@ namespace DynaPlex::Models {
 		void Register(DynaPlex::Registry&);
 	}
 
+	namespace queue_mdp {
+		void Register(DynaPlex::Registry&);
+	}
+
 	void RegistrationManager::RegisterAll(DynaPlex::Registry& registry) {
 		lost_sales::Register(registry);
 		bin_packing::Register(registry);
@@ -33,5 +37,6 @@ namespace DynaPlex::Models {
 		resource_allocation::Register(registry);
 		collaborative_picking::Register(registry);
 		exact_test_case::Register(registry);
+		queue_mdp::Register(registry);
 	}
 }
