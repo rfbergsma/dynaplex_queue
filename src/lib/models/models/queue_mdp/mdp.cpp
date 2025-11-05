@@ -67,8 +67,13 @@ namespace DynaPlex::Models {
 			state.server_manager.static_info = &server_static_info;
 			// Update idle capacity
 			state.server_manager.update_idle_capacity(state.server_manager.busy_on);
-
 			
+			
+			state.server_manager.update_total_service_rate();
+			
+			
+
+
 			return state;
 		}
 
@@ -89,7 +94,8 @@ namespace DynaPlex::Models {
 			config.Get("arrival_rates", arrival_rates);
 
 			//initialize server manager
-			std::vector<ServerStaticInfo> server_static_info;
+			server_static_info.clear();
+			server_static_info.resize((size_t)k_servers);
 
 			for (int64_t i = 0; i < k_servers; ++i) {
 				VarGroup serverConfig = GetSubGroup(config, "server_type_" + std::to_string(i));
@@ -101,7 +107,7 @@ namespace DynaPlex::Models {
 		}
 
 
-		MDP::Event MDP::GetEvent(RNG& rng) const {
+		MDP::Event MDP::GetEvent(RNG& rng, const State& state) const {
 			throw DynaPlex::NotImplementedError();
 		}
 

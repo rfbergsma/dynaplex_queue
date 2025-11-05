@@ -94,10 +94,16 @@ namespace DynaPlex::Models {
 
 				// Reference to static info (not owned)
 				const std::vector<ServerStaticInfo>* static_info = nullptr;
-
+				
 				std::vector<std::vector<int64_t>> busy_on;
-
+				
 				double total_service_rate;
+
+				static int canServeIndex(const std::vector<ServerStaticInfo>& S, int64_t k, int64_t job) {
+					const auto& v = S[(size_t)k].can_serve;
+					auto it = std::find(v.begin(), v.end(), job);
+					return (it == v.end()) ? -1 : (int)std::distance(v.begin(), it);
+				}
 
 				// Update idle capacity info based on busy_on (passed in)
 				void update_idle_capacity(const std::vector<std::vector<int64_t>>& busy_on) {
@@ -121,26 +127,67 @@ namespace DynaPlex::Models {
 							}
 						}
 					}
+
+
 				}
 
-				double get_total_service_rate(const ServerDynamicState& dyn, const std::vector<ServerStaticInfo>& static_info) {
-					double total_rate = 0.0;
-					for (size_t k = 0; k < static_info.size(); ++k) {
-						const auto& st = static_info[k];
-						for (size_t j = 0; j < st.can_serve.size(); ++j) {
-							// busy_on[k][j] is the number of servers of type k busy on job st.can_serve[j]
-							total_rate += dyn.busy_on[k][j] * st.mu_k;
-						}
+				//update total service rate
+				void update_total_service_rate() {
+					if (!static_info) {
+						total_service_rate = 0.0;
+						return;
 					}
-					return total_rate;
+					total_service_rate = get_total_service_rate(*this, *static_info);
 				}
 
-				void assign_job(ServerDynamicState& dyn, const std::vector<ServerStaticInfo>& static_info, int64_t k, int64_t job_type) {
-					auto it = std::find(static_info[k].can_serve.begin(), static_info[k].can_serve.end(), job_type);
-					if (it != static_info[k].can_serve.end()) {
-						size_t idx = std::distance(static_info[k].can_serve.begin(), it);
-						dyn.busy_on[k][idx]++;
-					}
+				inline double get_total_service_rate(const ServerDynamicState& dyn,
+					const std::vector<ServerStaticInfo>& S) {
+					double r = 0.0;
+					for (size_t k = 0; k < S.size(); ++k)
+						for (size_t j = 0; j < S[k].can_serve.size(); ++j)
+							r += dyn.busy_on[k][j] * S[k].mu_k;
+					return r;
+				}
+
+				inline bool assign_job(ServerDynamicState& dyn,
+					const std::vector<ServerStaticInfo>& S,
+					int64_t k, int64_t job) {
+					int idx = canServeIndex(S, k, job);
+					if (idx < 0) return false;
+					if (dyn.busy_on[(size_t)k][(size_t)idx] >= S[(size_t)k].servers) return false;
+					dyn.busy_on[(size_t)k][(size_t)idx] += 1;
+					return true;
+				}
+
+				inline int sample_next_fil_after_completion(
+					int i,              // current FIL (ticks)
+					double lambda,      // arrival rate
+					double gamma,       // tick rate
+					DynaPlex::RNG& rng  // your RNG with Uniform01()
+				) {
+					if (i <= 0) return 0;
+
+					const double denom = lambda + gamma;
+					if (denom <= 0.0) return 0;        // no events at all => stays empty
+					const double q = gamma / denom;    // in (0,1) unless lambda=0 or gamma=0
+					const double p = 1.0 - q;
+
+					// Edge cases
+					if (p <= 0.0) return 0;            // lambda=0 -> no arrivals -> empties
+					if (q <= 0.0) return i;            // gamma=0 -> arrival immediately -> J=i
+
+					// Inverse-CDF geometric draw: H = floor( ln(U)/ln(q) )
+					double U = rng.genUniform();
+					// Guard U from hitting 0
+					if (U <= 0.0) U = std::numeric_limits<double>::min();
+					if (U >= 1.0) U = std::nextafter(1.0, 0.0);
+
+					const double lnq = std::log(q); // negative
+					int H = static_cast<int>(std::floor(std::log(U) / lnq));
+
+					// Cap behavior: if first arrival happens after >= i ticks, queue empties
+					if (H >= i) return 0;
+					return i - H;
 				}
 			};
 
@@ -155,18 +202,26 @@ namespace DynaPlex::Models {
 			struct multi_queue {
 				// vector of first in line waiting times jobs length n jobs, -1 if empty
 				std::vector<int64_t> FIL_waiting;
+				double total_tick_rate;
+				double total_arrival_rate;
 
-
-				// function that calculates total tick rate
-				double total_tick_rate(const double tick_rate) const {
-					double total_rate = 0.0;
-					for (size_t n = 0; n < FIL_waiting.size(); ++n) {
-						if (FIL_waiting[n] >= 0) {
-							total_rate += tick_rate;
-						}
-					}
-					return total_rate;
+				// update total arrival rate
+				void update_total_arrival_rate(const std::vector<double>& arrival_rates) {
+					total_arrival_rate = get_total_arrival_rate(arrival_rates);
 				}
+				
+				// update total tick rate
+				void update_total_tick_rate(double tick_rate) {
+					total_tick_rate = compute_total_tick_rate(tick_rate);
+				}
+				
+				// function that calculates total tick rate
+				double compute_total_tick_rate(double tick_rate) const {
+					double total = 0.0;
+					for (auto w : FIL_waiting) if (w >= 0) total += tick_rate;
+					return total;
+				}
+
 				double get_total_arrival_rate(const std::vector<double>& arrival_rates) const {
 					double total_rate = 0.0;
 					for (size_t n = 0; n < FIL_waiting.size(); ++n) {
@@ -221,7 +276,7 @@ namespace DynaPlex::Models {
 
 			double ModifyStateWithAction(State&, int64_t action) const;
 			double ModifyStateWithEvent(State&, const Event& ) const;
-			Event GetEvent(DynaPlex::RNG& rng) const;
+			Event GetEvent(DynaPlex::RNG& rng, const State&) const;
 			std::vector<std::tuple<Event,double>> EventProbabilities() const;
 			DynaPlex::VarGroup GetStaticInfo() const;
 			DynaPlex::StateCategory GetStateCategory(const State&) const;
