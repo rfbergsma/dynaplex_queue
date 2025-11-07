@@ -6,6 +6,7 @@
 namespace DynaPlex::Models {
 	namespace queue_mdp /*keep this in line with id below and with namespace name in header*/
 	{
+		// helper for using config file
 		VarGroup GetSubGroup(const VarGroup& group, const std::string& key) {
 			VarGroup subgroup;
 			group.Get(key, subgroup); // Assuming VarGroup has a Get method to retrieve subgroups
@@ -23,6 +24,10 @@ namespace DynaPlex::Models {
 
 		double MDP::ModifyStateWithEvent(State& state, const Event& event) const
 		{
+			if (event.type == Event::Type::JobCompletion) {
+				
+			}
+			
 			throw DynaPlex::NotImplementedError();
 			//implement change to state
 			// do not forget to update state.cat. 
@@ -31,6 +36,8 @@ namespace DynaPlex::Models {
 
 		double MDP::ModifyStateWithAction(MDP::State& state, int64_t action) const
 		{
+			
+			
 			throw DynaPlex::NotImplementedError();
 			//implement change to state. 
 			// do not forget to update state.cat. 
@@ -57,22 +64,9 @@ namespace DynaPlex::Models {
 		{			
 			State state{};
 			state.cat = StateCategory::AwaitEvent();//or AwaitAction(), depending on logic
-			//initiate other variables. 
-			// initialize server manager state
-			state.server_manager.busy_on.resize(server_static_info.size());
-			for (size_t k = 0; k < server_static_info.size(); ++k) {
-				state.server_manager.busy_on[k].resize(server_static_info[k].can_serve.size(), 0);
-			}
-			// Link static info
-			state.server_manager.static_info = &server_static_info;
-			// Update idle capacity
-			state.server_manager.update_idle_capacity(state.server_manager.busy_on);
 			
-			
-			state.server_manager.update_total_service_rate();
-			
-			
-
+			state.server_manager.initialize(&server_static_info,n_jobs);			
+			state.queue_manager.initialize(n_jobs);
 
 			return state;
 		}
@@ -99,16 +93,54 @@ namespace DynaPlex::Models {
 
 			for (int64_t i = 0; i < k_servers; ++i) {
 				VarGroup serverConfig = GetSubGroup(config, "server_type_" + std::to_string(i));
-				serverConfig.Get("n_servers", server_static_info[i].servers);
+				serverConfig.Get("servers", server_static_info[i].servers);
 				serverConfig.Get("service_rate", server_static_info[i].mu_k);
 				serverConfig.Get("can_serve", server_static_info[i].can_serve);
 			}
-			
+
+			uniformization_rate = tick_rate * n_jobs;
+			// + sum of arrival rates
+			for (const auto& rate : arrival_rates) {
+				uniformization_rate += rate;
+			}
+			// sum of all service rates
+			for (int64_t i = 0; i < k_servers; ++i) {
+				uniformization_rate += server_static_info[i].mu_k;
+			}
+
 		}
 
 
 		MDP::Event MDP::GetEvent(RNG& rng, const State& state) const {
-			throw DynaPlex::NotImplementedError();
+			double event_sample = rng.genUniform() * uniformization_rate;
+			//consume random number to avoid unused parameter warning
+			if (event_sample < state.queue_manager.total_arrival_rate) {
+				// Arrival event
+				double cumulative_rate = 0.0;
+				for (int64_t n = 0; n < n_jobs; ++n) {
+					cumulative_rate += arrival_rates[(size_t)n];
+					if (event_sample < cumulative_rate) {
+						return Event{ Event::Type::Arrival, n };
+					}
+				}
+			}
+			else if (event_sample < state.queue_manager.total_arrival_rate + state.queue_manager.total_tick_rate) {
+				// Tick event
+				return Event{ Event::Type::Tick, -1 };
+			}
+			else {
+				// Job completion event
+				double cumulative_rate = state.queue_manager.total_arrival_rate + state.queue_manager.total_tick_rate;
+				for (int64_t k = 0; k < k_servers; ++k) {
+					for (size_t j = 0; j < server_static_info[(size_t)k].can_serve.size(); ++j) {
+						cumulative_rate += state.server_manager.busy_on[(size_t)k][j] * server_static_info[(size_t)k].mu_k;
+						if (event_sample < cumulative_rate) {
+							return Event{ Event::Type::JobCompletion, static_cast<int64_t>(server_static_info[k].can_serve[j])};
+						}
+					}
+				}
+			}
+			return Event{ Event::Type::Nothing, -1 }; // Should not reach here
 		}
 
 		std::vector<std::tuple<MDP::Event, double>> MDP::EventProbabilities() const

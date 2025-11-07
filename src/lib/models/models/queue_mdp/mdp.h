@@ -80,8 +80,8 @@ namespace DynaPlex::Models {
 			
 			
 			struct ServerStaticInfo {
-				int64_t servers;
-				double mu_k;
+				int64_t servers = 0;
+				double mu_k = 0.0;
 				std::vector<int64_t> can_serve; // types of jobs it can serve
 			};
 
@@ -99,6 +99,31 @@ namespace DynaPlex::Models {
 				
 				double total_service_rate;
 
+				void initialize(const std::vector<ServerStaticInfo>* static_info_ptr, int64_t n_jobs) {
+					static_info = static_info_ptr;
+					busy_on.clear();
+					if (!static_info) return;
+					busy_on.resize(static_info->size());
+					for (size_t k = 0; k < static_info->size(); ++k) {
+						busy_on[k].resize((*static_info)[k].can_serve.size(), 0);
+					}
+					has_idle_capacity_per_job.assign(n_jobs, 0);
+					has_idle_capacity = false;
+					total_service_rate = 0.0;
+					// Optionally, call update_idle_capacity() and update_total_service_rate() here
+					update_idle_capacity();
+				}
+				
+				//complete job n at server k remove job from busy_on
+				void complete_job(int64_t k, int64_t job) {
+					int idx = canServeIndex(*static_info, k, job);
+					if (idx < 0) return;
+					if (busy_on[(size_t)k][(size_t)idx] <= 0) return;
+					busy_on[(size_t)k][(size_t)idx] -= 1;
+				}
+				
+
+				//returns the index of job in can_serve vector of server k, -1 if cannot serve
 				static int canServeIndex(const std::vector<ServerStaticInfo>& S, int64_t k, int64_t job) {
 					const auto& v = S[(size_t)k].can_serve;
 					auto it = std::find(v.begin(), v.end(), job);
@@ -106,7 +131,7 @@ namespace DynaPlex::Models {
 				}
 
 				// Update idle capacity info based on busy_on (passed in)
-				void update_idle_capacity(const std::vector<std::vector<int64_t>>& busy_on) {
+				void update_idle_capacity() {
 					if (!static_info || static_info->empty() || busy_on.empty()) {
 						has_idle_capacity_per_job.clear();
 						has_idle_capacity = false;
@@ -127,8 +152,6 @@ namespace DynaPlex::Models {
 							}
 						}
 					}
-
-
 				}
 
 				//update total service rate
@@ -159,36 +182,7 @@ namespace DynaPlex::Models {
 					return true;
 				}
 
-				inline int sample_next_fil_after_completion(
-					int i,              // current FIL (ticks)
-					double lambda,      // arrival rate
-					double gamma,       // tick rate
-					DynaPlex::RNG& rng  // your RNG with Uniform01()
-				) {
-					if (i <= 0) return 0;
-
-					const double denom = lambda + gamma;
-					if (denom <= 0.0) return 0;        // no events at all => stays empty
-					const double q = gamma / denom;    // in (0,1) unless lambda=0 or gamma=0
-					const double p = 1.0 - q;
-
-					// Edge cases
-					if (p <= 0.0) return 0;            // lambda=0 -> no arrivals -> empties
-					if (q <= 0.0) return i;            // gamma=0 -> arrival immediately -> J=i
-
-					// Inverse-CDF geometric draw: H = floor( ln(U)/ln(q) )
-					double U = rng.genUniform();
-					// Guard U from hitting 0
-					if (U <= 0.0) U = std::numeric_limits<double>::min();
-					if (U >= 1.0) U = std::nextafter(1.0, 0.0);
-
-					const double lnq = std::log(q); // negative
-					int H = static_cast<int>(std::floor(std::log(U) / lnq));
-
-					// Cap behavior: if first arrival happens after >= i ticks, queue empties
-					if (H >= i) return 0;
-					return i - H;
-				}
+				
 			};
 
 			std::vector<ServerStaticInfo> server_static_info;
@@ -198,12 +192,19 @@ namespace DynaPlex::Models {
 			int64_t k_servers; // number of servers
 			std::vector<double> arrival_rates; // arrival rates for each job type n
 			double tick_rate = 1.0; // tick rate
+			double uniformization_rate;
 
 			struct multi_queue {
 				// vector of first in line waiting times jobs length n jobs, -1 if empty
 				std::vector<int64_t> FIL_waiting;
 				double total_tick_rate;
 				double total_arrival_rate;
+
+				void initialize(int64_t n_jobs) {
+					FIL_waiting.resize((size_t)n_jobs, -1);
+					total_tick_rate = 0.0;
+					total_arrival_rate = 0.0;
+				}
 
 				// update total arrival rate
 				void update_total_arrival_rate(const std::vector<double>& arrival_rates) {
@@ -245,8 +246,38 @@ namespace DynaPlex::Models {
 					}
 					return total_rate;
 				}
-			};
 
+				inline int sample_next_fil_after_completion(
+					int i,              // current FIL (ticks)
+					double lambda,      // arrival rate
+					double gamma,       // tick rate
+					DynaPlex::RNG& rng  // your RNG with Uniform01()
+				) {
+					if (i <= 0) return 0;
+
+					const double denom = lambda + gamma;
+					if (denom <= 0.0) return 0;        // no events at all => stays empty
+					const double q = gamma / denom;    // in (0,1) unless lambda=0 or gamma=0
+					const double p = 1.0 - q;
+
+					// Edge cases
+					if (p <= 0.0) return 0;            // lambda=0 -> no arrivals -> empties
+					if (q <= 0.0) return i;            // gamma=0 -> arrival immediately -> J=i
+
+					// Inverse-CDF geometric draw: H = floor( ln(U)/ln(q) )
+					double U = rng.genUniform();
+					// Guard U from hitting 0
+					if (U <= 0.0) U = std::numeric_limits<double>::min();
+					if (U >= 1.0) U = std::nextafter(1.0, 0.0);
+
+					const double lnq = std::log(q); // negative
+					int H = static_cast<int>(std::floor(std::log(U) / lnq));
+
+					// Cap behavior: if first arrival happens after >= i ticks, queue empties
+					if (H >= i) return 0;
+					return i - H;
+				}
+			};
 
 			struct State {
 				//using this is recommended:
@@ -258,6 +289,7 @@ namespace DynaPlex::Models {
 				
 				//initialize ServerDynamicState
 				ServerDynamicState server_manager;
+				multi_queue queue_manager;
 
 				DynaPlex::StateCategory cat;
 				DynaPlex::VarGroup ToVarGroup() const;
