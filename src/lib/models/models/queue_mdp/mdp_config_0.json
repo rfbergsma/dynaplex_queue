@@ -10,8 +10,9 @@
     "discount_factor": 1.0,
     //other variables that are read by the constructor go here
     "k_servers": 2,
-    "n_jobs": 2,
-    "arrival_rates": [0.1,0.2],
+    "n_jobs": 3,
+    "tick_rate":  1,
+    "arrival_rates": [0.1,0.2,0.2],
     "server_type_0": {
         "servers": 1,
         "can_serve": [ 0, 1 ],

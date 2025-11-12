@@ -1,6 +1,7 @@
 #include "mdp.h"
 #include "dynaplex/erasure/mdpregistrar.h"
 #include "policies.h"
+#include <deque>
 
 
 namespace DynaPlex::Models {
@@ -25,19 +26,32 @@ namespace DynaPlex::Models {
 		double MDP::ModifyStateWithEvent(State& state, const Event& event) const
 		{
 			if (event.type == Event::Type::JobCompletion) {
-				
+				//complete job at server
+				state.server_manager.complete_job(event.server_index, event.job_type);
+				state.queue_manager.complete_job(event.job_type); // job completed, remove from queue
+				state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+				state.cat = StateCategory::AwaitAction();
+				return 0.0; // no cost for job completion
 			}
-			
-			throw DynaPlex::NotImplementedError();
-			//implement change to state
-			// do not forget to update state.cat. 
-			//returns costs.
+			else if (event.type == Event::Type::Arrival) {
+				state.queue_manager.arrival(event.arrival_index);
+				state.cat = StateCategory::AwaitAction();
+				state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+				return 0.0; // cost for arrival
+			}
+			else if (event.type == Event::Type::Tick) {
+				state.queue_manager.tick();
+				state.cat = StateCategory::AwaitAction();
+				return 0.0; // cost for tick
+			}
+			else {
+				// No event
+				return 0.0;
+			}
 		}
 
 		double MDP::ModifyStateWithAction(MDP::State& state, int64_t action) const
 		{
-			
-			
 			throw DynaPlex::NotImplementedError();
 			//implement change to state. 
 			// do not forget to update state.cat. 
@@ -54,7 +68,7 @@ namespace DynaPlex::Models {
 
 		MDP::State MDP::GetState(const VarGroup& vars) const
 		{
-			State state{};			
+			State state{};		
 			vars.Get("cat", state.cat);
 			//initiate any other state variables. 
 			return state;
@@ -66,7 +80,7 @@ namespace DynaPlex::Models {
 			state.cat = StateCategory::AwaitEvent();//or AwaitAction(), depending on logic
 			
 			state.server_manager.initialize(&server_static_info,n_jobs);			
-			state.queue_manager.initialize(n_jobs);
+			state.queue_manager.initialize(n_jobs,tick_rate, arrival_rates);
 
 			return state;
 		}
@@ -86,6 +100,8 @@ namespace DynaPlex::Models {
 			config.Get("k_servers", k_servers);
 			config.Get("n_jobs", n_jobs);
 			config.Get("arrival_rates", arrival_rates);
+			config.Get("tick_rate", tick_rate);
+
 
 			//initialize server manager
 			server_static_info.clear();
@@ -98,7 +114,7 @@ namespace DynaPlex::Models {
 				serverConfig.Get("can_serve", server_static_info[i].can_serve);
 			}
 
-			uniformization_rate = tick_rate * n_jobs;
+			uniformization_rate = tick_rate;
 			// + sum of arrival rates
 			for (const auto& rate : arrival_rates) {
 				uniformization_rate += rate;
@@ -114,13 +130,22 @@ namespace DynaPlex::Models {
 		MDP::Event MDP::GetEvent(RNG& rng, const State& state) const {
 			double event_sample = rng.genUniform() * uniformization_rate;
 			//consume random number to avoid unused parameter warning
+			
+			//std::cout << "uniformization rate " << uniformization_rate << "\n";
+			//std::cout << "tota1 arrival rate: " << state.queue_manager.total_arrival_rate << "\n";
+			//std::cout << "total service rate: " << state.server_manager.total_service_rate << "\n";
+			//std::cout << "total tick rate: " << state.queue_manager.total_tick_rate << "\n";
+
 			if (event_sample < state.queue_manager.total_arrival_rate) {
 				// Arrival event
 				double cumulative_rate = 0.0;
 				for (int64_t n = 0; n < n_jobs; ++n) {
-					cumulative_rate += arrival_rates[(size_t)n];
-					if (event_sample < cumulative_rate) {
-						return Event{ Event::Type::Arrival, n };
+					if (state.queue_manager.FIL_waiting[n] == -1) {
+						cumulative_rate += arrival_rates[(size_t)n];
+
+						if (event_sample < cumulative_rate) {
+							return Event{ Event::Type::Arrival, n };
+						}
 					}
 				}
 			}
@@ -153,6 +178,7 @@ namespace DynaPlex::Models {
 
 
 		void MDP::GetFeatures(const State& state, DynaPlex::Features& features)const {
+			
 			throw DynaPlex::NotImplementedError();
 		}
 		
