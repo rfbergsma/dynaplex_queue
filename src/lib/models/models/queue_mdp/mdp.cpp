@@ -52,7 +52,29 @@ namespace DynaPlex::Models {
 
 		double MDP::ModifyStateWithAction(MDP::State& state, int64_t action) const
 		{
-			throw DynaPlex::NotImplementedError();
+			
+			Action current_action = state.server_manager.action_queue.at(state.server_manager.get_action_counter());
+
+
+			if (action == 1) {
+				// assign job
+				state.server_manager.assign_job(current_action.server_index, current_action.job_type);
+				// remove jobs from queue to decreased size
+				state.server_manager.take_action(current_action);
+			}
+			else {
+				// do not assign job
+				state.server_manager.set_action_counter(state.server_manager.get_action_counter() + 1);
+			}
+
+			
+			
+			if (state.server_manager.get_action_counter() >= static_cast<int64_t>(state.server_manager.action_queue.size())) {
+				// all actions processed
+				state.server_manager.set_action_counter(0);
+				state.cat = StateCategory::AwaitEvent();
+			}
+			
 			//implement change to state. 
 			// do not forget to update state.cat. 
 			//returns costs. 
@@ -198,7 +220,7 @@ namespace DynaPlex::Models {
 		}	
 
 		bool MDP::IsAllowedAction(const State& state, int64_t action) const {
-			throw DynaPlex::NotImplementedError();
+			Action current_action = state.server_manager.action_queue.at(state.server_manager.get_action_counter());
 		}
 
 

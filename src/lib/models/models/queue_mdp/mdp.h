@@ -34,7 +34,7 @@ namespace DynaPlex::Models {
 				std::vector<std::vector<int64_t>> busy_on;
 				
 				std::deque<Action> action_queue;
-				
+				int64_t action_counter;
 
 				double total_service_rate;
 
@@ -54,6 +54,7 @@ namespace DynaPlex::Models {
 
 					//initialize empty queue
 					action_queue.clear();
+					action_counter = 0;
 
 					// Optionally, call update_idle_capacity() and update_total_service_rate() here
 					update_idle_capacity();
@@ -82,11 +83,39 @@ namespace DynaPlex::Models {
 				}
 
 
+				// function takes action and modifies the server dynamic state accordingly
+				// increases busy_on for the corresponding server and job type
+				// removes actions from the queue that can no longer be taken
+				// Reduces the action counter by number of jobs taken out of queue
+				void take_action(Action taken_action) {
+					assign_job(taken_action.server_index, taken_action.job_type);
+					int64_t current_queue_length = action_queue.size();
+					// remove actions that can no longer be taken
+					action_queue.erase(std::remove_if(action_queue.begin(), action_queue.end(),
+						[this](const Action& action) {
+							int idx = canServeIndex(*static_info, action.server_index, action.job_type);
+							if (idx < 0) return true;
+							return busy_on[(size_t)action.server_index][(size_t)idx] >= (*static_info)[(size_t)action.server_index].servers;
+						}), action_queue.end());
+					int64_t new_queue_length = action_queue.size();
+					action_counter = action_counter - (current_queue_length - new_queue_length);
+				}
+
+
+				void set_action_counter(int64_t count) {
+					action_counter = count;
+				}
+
+				int64_t get_action_counter() const {
+					return static_cast<int64_t>(action_queue.size());
+				}
+
 				void assign_job(int64_t k, int64_t job) {
 					int idx = canServeIndex(*static_info, k, job);
 					if (idx < 0) return;
 					if (busy_on[(size_t)k][(size_t)idx] >= (*static_info)[(size_t)k].servers) return;
 					busy_on[(size_t)k][(size_t)idx] += 1;
+
 				}
 
 
