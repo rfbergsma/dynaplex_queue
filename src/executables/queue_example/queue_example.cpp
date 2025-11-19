@@ -20,6 +20,22 @@ using DynaPlex::RNG;
 
 
 
+double expected_next_fil(int i, double lambda, double gamma) {
+	if (i <= 0) return 0.0;
+	double denom = lambda + gamma;
+	if (denom <= 0.0) return 0.0;
+	double alpha = lambda / denom;
+	double beta = gamma / denom;
+
+	double EX = 0.0;
+	for (int j = 1; j <= i; ++j) {
+		double p = std::pow(beta, i - j) * alpha;
+		EX += j * p;
+	}
+	return EX;
+}
+
+
 int main() {
 
 	auto& dp = DynaPlexProvider::Get();
@@ -227,12 +243,156 @@ int main() {
 			std::cout << "\n";
 		}
 
-		//event.type
 
+
+		std::cout << "Action update checker: \n";
+		std::cout << "Case 1: server 0 free, server 1 has 1 capacity left, jobs in queue 0,1,2,: \n";
+
+
+		auto new_state = mdp.GetInitialState();
+		new_state.queue_manager.arrival(0); // add job of type 0 to queue
+		new_state.queue_manager.arrival(1); // add job of type 1 to queue
+		new_state.queue_manager.arrival(2); // add job of type 2 to queue
+		new_state.server_manager.assign_job(new_state.server_manager, mdp.server_static_info, 1, 1);
+
+
+		new_state.server_manager.generate_actions(new_state.queue_manager.get_FIL_waiting());
+		new_state.server_manager.set_action_counter(3);
+		new_state.server_manager.print_actions();
 		
+		std::cout << "action counter = " << new_state.server_manager.get_action_counter() << " \n";
+		new_state.server_manager.take_action(1);
+		std::cout << "After taking current action: \n";
+		new_state.server_manager.print_actions();
+		std::cout << "action counter = " << new_state.server_manager.get_action_counter() << " \n";
+
+
+		std::cout << "\nCase 2: server 0 has capacity 1, both servers free, jobs 0,1,2 in queue:\n";
+
+		{
+			auto state = mdp.GetInitialState();
+
+			// Jobs in queue: 0, 1, 2
+			state.queue_manager.arrival(0);
+			//state.queue_manager.arrival(1);
+			state.queue_manager.arrival(1); // second job type 1
+			state.queue_manager.arrival(2);
+
+			// No servers busy initially
+			state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+
+			// Expected action list (conceptually): [0,0], [0,1], [1,1], [1,2]
+			state.server_manager.set_action_counter(1);  // execute [0,1]
+			std::cout << "Before taking action:\n";
+			state.server_manager.print_actions();
+			std::cout << "action counter = " << state.server_manager.get_action_counter() << "\n";
+
+			// Take current action (server 0 does job 1)
+			state.server_manager.take_action(1);
+
+			std::cout << "After taking current action:\n";
+			state.server_manager.print_actions();
+			std::cout << "action counter = " << state.server_manager.get_action_counter() << "\n";
+			std::cout << "Expected: new queue ~ [1,1], [1,2], action_counter = 0\n";
+		}
+
+		std::cout << "\nCase 3: server 0 (capacity 1) already full, server 1 free, jobs 1 and 2 in queue:\n";
+
+		{
+			auto state = mdp.GetInitialState();
+
+			// Make server 0 busy so it cannot be used in actions
+			// (job type here doesn't matter much, just something server 0 can serve)
+			state.queue_manager.arrival(0);
+			//state.server_manager.assign_job(state.server_manager, mdp.server_static_info, 0, 0);
+
+			// Now put jobs 1 and 2 in the queue
+			state.queue_manager.arrival(1);
+			state.queue_manager.arrival(2);
+
+			//state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+
+			state.server_manager.action_queue.push_back(DynaPlex::Models::queue_mdp::MDP::Action { 0, 0 });
+			state.server_manager.action_queue.push_back(DynaPlex::Models::queue_mdp::MDP::Action{ 1, 1 });
+			state.server_manager.action_queue.push_back(DynaPlex::Models::queue_mdp::MDP::Action{ 0, 1 });
+			state.server_manager.action_queue.push_back(DynaPlex::Models::queue_mdp::MDP::Action{ 1, 2 });
+			
+			// Expected action list conceptually: [1,1], [1,2]
+			state.server_manager.set_action_counter(2);  // execute [1,1]
+			std::cout << "Before taking action:\n";
+			state.server_manager.print_actions();
+			std::cout << "action counter = " << state.server_manager.get_action_counter() << "\n";
+
+			// Take current action (server 1 does job 1)
+			state.server_manager.take_action(1);
+
+			std::cout << "After taking current action:\n";
+			state.server_manager.print_actions();
+			std::cout << "action counter = " << state.server_manager.get_action_counter() << "\n";
+			std::cout << "Expected: new queue ~ [1,1],[1,2], action_counter = 0\n";
+		}
 	}
+
+
+	std::cout << "\nCase 4: server 1 has capacity 2, both servers free, multiple jobs of type 1:\n";
+
+	{
+		auto state = mdp.GetInitialState();
+
+		// Jobs 0, 1, 1, 2 in queue:
+		state.queue_manager.arrival(0);
+		state.queue_manager.arrival(1);
+		state.queue_manager.arrival(2);
+
+		// Both servers free; server 1 has capacity 2 (from your static info)
+		state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+
+		// Expected action order conceptually: [0,0], [0,1], [1,1], [1,2]
+		state.server_manager.set_action_counter(2);  // execute [1,1]
+		std::cout << "Before taking action:\n";
+		state.server_manager.print_actions();
+		std::cout << "action counter = " << state.server_manager.get_action_counter() << "\n";
+
+		// Take current action (server 1 does job 1)
+		state.server_manager.take_action(1);
+
+		std::cout << "After taking current action:\n";
+		state.server_manager.print_actions();
+		std::cout << "action counter = " << state.server_manager.get_action_counter() << "\n";
+		std::cout << "Expected: queue unchanged, action_counter = 3\n";
+	}
+
+
+	// write a short script that samples the next fil and compares to expected value.
 	
 	
+	
+	int64_t number_of_samples = 10000;
+	std::vector<int64_t> sampled_fils;
+	sampled_fils.resize(number_of_samples);
+	double arrival_rate = 0.2;
+	double tick_rate = 1;
+	int64_t max_current_fil = 10;
+	DynaPlex::RNG rng(true, 123456789, 0, 0, 1);
+	
+
+	for (int64_t fil = 0; fil < max_current_fil; fil++) {
+		
+		for (int64_t i = 0; i < number_of_samples; ++i) {
+			int64_t next_fil = state.queue_manager.sample_next_fil_after_completion(fil, arrival_rate, tick_rate, rng);
+			sampled_fils.at(i) = next_fil;
+		}
+
+		std::cout << "Current FIL: " << fil << "\n";
+		// compute empirical mean
+		double empirical_mean = std::accumulate(sampled_fils.begin(), sampled_fils.end(), 0.0) / number_of_samples;
+		std::cout << "Empirical mean of sampled next FIL: " << empirical_mean << "\n";
+		std::cout << "Expected mean of next FIL: " << expected_next_fil(fil, arrival_rate, tick_rate) << "\n";
+		//percentage deviation
+		std::cout << "percentage difference: " << std::abs(empirical_mean - expected_next_fil(fil, arrival_rate, tick_rate)) / expected_next_fil(fil, arrival_rate, tick_rate) * 100.0 << " %\n";
+	
+	}
+
 	// initialize 
 	//initialize server manager
 	

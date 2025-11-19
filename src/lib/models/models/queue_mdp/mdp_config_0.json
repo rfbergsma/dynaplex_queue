@@ -12,7 +12,9 @@
     "k_servers": 2,
     "n_jobs": 3,
     "tick_rate":  1,
-    "arrival_rates": [0.1,0.2,0.2],
+    "arrival_rates": [ 0.1, 0.2, 0.2 ],
+    "cost_rates": [ 1.0, 1.0, 1.0 ],
+    "due_times": [ 2.0, 2.0, 2.0 ],
     "server_type_0": {
         "servers": 1,
         "can_serve": [ 0, 1 ],
@@ -20,7 +22,7 @@
     },
 
     "server_type_1": {
-        "servers": 1,
+        "servers": 2,
         "can_serve": [ 1, 2 ],
         "service_rate": 0.4
     }

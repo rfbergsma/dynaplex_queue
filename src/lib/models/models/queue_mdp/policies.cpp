@@ -6,16 +6,17 @@ namespace DynaPlex::Models {
 	{
 
 		//MDP and State refer to the specific ones defined in current namespace
-		EmptyPolicy::EmptyPolicy(std::shared_ptr<const MDP> mdp, const VarGroup& config)
+		FIFOPolicy::FIFOPolicy(std::shared_ptr<const MDP> mdp, const VarGroup& config)
 			:mdp{ mdp }
 		{
 			//Here, you may initiate any policy parameters.
 		}
 
-		int64_t EmptyPolicy::GetAction(const MDP::State& state) const
+		int64_t FIFOPolicy::GetAction(const MDP::State& state) const
 		{
 			//Implement custom policy, and remove below line.
-			throw DynaPlex::NotImplementedError();
+			//throw DynaPlex::NotImplementedError();
+			return 1; // always assign job
 		}
 	}
 }

@@ -69,11 +69,13 @@ namespace DynaPlex::Models {
 						if (FIL_waiting[n] >= 0) { // job n is waiting
 							for (size_t k = 0; k < busy_on.size(); ++k) {
 								int idx = canServeIndex(*static_info, static_cast<int64_t>(k), static_cast<int64_t>(n));
-								
+								int64_t busy_servers = n_servers_busy_server_k(k);
 								if (idx >= 0) { // server k can serve job n
-									if (busy_on[k][(size_t)idx] < (*static_info)[k].servers) {
+									if (busy_servers < (*static_info)[k].servers) {
 										// there is idle server for job n
+										// add option as many times as there is capacity
 										action_queue.push_back(Action{ static_cast<int64_t>(k), static_cast<int64_t>(n) });
+										
 									}
 								}
 
@@ -83,23 +85,108 @@ namespace DynaPlex::Models {
 				}
 
 
+				
+				int64_t n_servers_busy_server_k(int64_t k) const {
+					int64_t total_busy = 0;
+
+					for (size_t j = 0; j < busy_on[k].size(); ++j) {
+						total_busy += busy_on[k][j];
+					}
+					return total_busy;
+				}
+
+				// can_assign job if action can be taken based on current busy_on
+				bool can_assign_job(int64_t k, int64_t job) const {
+					int idx = canServeIndex(*static_info, k, job);
+					if (idx < 0) return false;
+
+					// Check if the number of busy servers for this server type is less than the total servers
+					if (n_servers_busy_server_k(k) >= (*static_info)[(size_t)k].servers)
+						return false;
+
+					// Check if this specific job slot is available for this server type
+					return true;
+				}
+
+
+
+				
 				// function takes action and modifies the server dynamic state accordingly
 				// increases busy_on for the corresponding server and job type
 				// removes actions from the queue that can no longer be taken
-				// Reduces the action counter by number of jobs taken out of queue
-				void take_action(Action taken_action) {
+				
+				void take_action(const int64_t& action) {
+					// --- Skip action: just move to next action in the queue ---
+					if (action == 0) {
+						if (action_counter < (int64_t)action_queue.size()) {
+							++action_counter;
+						}
+						return;
+					}
+
+					// --- Execute current action at action_counter ---
+					if (action_counter < 0 || action_counter >= (int64_t)action_queue.size()) {
+						throw std::runtime_error("action_counter out of bounds in take_action");
+					}
+
+					// Snapshot old state
+					std::deque<Action> old_queue = action_queue;
+					int64_t old_counter = action_counter;
+
+					Action taken_action = action_queue[(size_t)action_counter];
+
+					// --- Perform the action (updates job queue, busy_on, etc.) ---
 					assign_job(taken_action.server_index, taken_action.job_type);
-					int64_t current_queue_length = action_queue.size();
-					// remove actions that can no longer be taken
-					action_queue.erase(std::remove_if(action_queue.begin(), action_queue.end(),
-						[this](const Action& action) {
-							int idx = canServeIndex(*static_info, action.server_index, action.job_type);
-							if (idx < 0) return true;
-							return busy_on[(size_t)action.server_index][(size_t)idx] >= (*static_info)[(size_t)action.server_index].servers;
-						}), action_queue.end());
-					int64_t new_queue_length = action_queue.size();
-					action_counter = action_counter - (current_queue_length - new_queue_length);
+
+					// --- Update action_queue: remove ONLY impossible actions ---
+					//
+					// You said: "I’m only deleting actions if they are not possible anymore."
+					// So we DO NOT delete all actions with taken_action.job_type anymore.
+					action_queue.erase(
+						std::remove_if(
+							action_queue.begin(),
+							action_queue.end(),
+							[this](const Action& a) {
+								return !can_assign_job(a.server_index, a.job_type);
+							}
+						),
+						action_queue.end()
+					);
+
+					// --- Recompute action_counter ---
+					//
+					// processed = old_queue[0 .. old_counter]  (INCLUSIVE!)
+					// new_counter = number of actions at the front of action_queue
+					//               that belong to processed.
+
+					int64_t new_counter = 0;
+
+					for (const auto& new_act : action_queue) {
+						bool was_processed = false;
+
+						// Note the <= : we include the executed action as "processed"
+						for (int64_t i = 0; i <= old_counter; ++i) {
+							const auto& old_act = old_queue[(size_t)i];
+							if (old_act.server_index == new_act.server_index &&
+								old_act.job_type == new_act.job_type) {
+								was_processed = true;
+								break;
+							}
+						}
+
+						if (was_processed) {
+							++new_counter;
+						}
+						else {
+							// First unprocessed action in the new queue  stop
+							break;
+						}
+					}
+
+					action_counter = new_counter;
 				}
+
+				
 
 
 				void set_action_counter(int64_t count) {
@@ -107,7 +194,7 @@ namespace DynaPlex::Models {
 				}
 
 				int64_t get_action_counter() const {
-					return static_cast<int64_t>(action_queue.size());
+					return static_cast<int64_t>(action_counter);
 				}
 
 				void assign_job(int64_t k, int64_t job) {
@@ -240,6 +327,8 @@ namespace DynaPlex::Models {
 			int64_t k_servers; // number of servers
 			std::vector<double> arrival_rates; // arrival rates for each job type n
 			double tick_rate; // tick rate
+			std::vector<double> cost_rates; // service rates for each server type k
+			std::vector<double> due_times; // rewards for completing each job type n
 			double uniformization_rate;
 
 			struct multi_queue {
@@ -335,49 +424,33 @@ namespace DynaPlex::Models {
 				}
 
 				inline int sample_next_fil_after_completion(
-					int i,              // current FIL (ticks)
-					double lambda,      // arrival rate
-					double gamma,       // tick rate
-					DynaPlex::RNG& rng  // your RNG with Uniform01()
+					int i,
+					double lambda, //arrival rate
+					double gamma, //tick rate
+					RNG& rng
 				) {
 					if (i <= 0) return 0;
 
 					const double denom = lambda + gamma;
-					if (denom <= 0.0) return 0;        // no events at all => stays empty
-					const double q = gamma / denom;    // in (0,1) unless lambda=0 or gamma=0
-					const double p = 1.0 - q;
+					if (denom <= 0.0) return 0;
 
-					// Edge cases
-					if (p <= 0.0) return 0;            // lambda=0 -> no arrivals -> empties
-					if (q <= 0.0) return i;            // gamma=0 -> arrival immediately -> J=i
+					// correct Koole probabilities
+					double alpha = lambda / denom;   // arrival probability
+					double beta = gamma / denom;   // tick probability
 
-					// Inverse-CDF geometric draw: H = floor( ln(U)/ln(q) )
+					if (alpha <= 0.0) return 0;      // no arrivals possible
+					if (beta <= 0.0) return i;      // no ticks => all arrivals at same time => new FIL = i
+
+					// Sample geometric H: #ticks before arrival
 					double U = rng.genUniform();
-					// Guard U from hitting 0
 					if (U <= 0.0) U = std::numeric_limits<double>::min();
 					if (U >= 1.0) U = std::nextafter(1.0, 0.0);
 
-					const double lnq = std::log(q); // negative
-					int H = static_cast<int>(std::floor(std::log(U) / lnq));
+					// geometric: P(H = h) = beta^h * alpha
+					int H = static_cast<int>(std::floor(std::log(U) / std::log(beta)));
 
-					// Cap behavior: if first arrival happens after >= i ticks, queue empties
-					if (H >= i) return 0;
+					if (H >= i) return 0;  // queue empty
 					return i - H;
-				}
-				
-
-				DynaPlex::VarGroup ToVarGroup() const {
-					DynaPlex::VarGroup vars;
-					vars.Add("FIL_waiting", FIL_waiting);
-					vars.Add("total_tick_rate", total_tick_rate);
-					vars.Add("total_arrival_rate", total_arrival_rate);
-
-					return vars;
-				}
-				explicit multi_queue(const DynaPlex::VarGroup& vg) {
-					vg.Get("FIL_waiting", FIL_waiting);
-					vg.Get("total_tick_rate", total_tick_rate);
-					vg.Get("total_arrival_rate", total_arrival_rate);
 				}
 
 			};

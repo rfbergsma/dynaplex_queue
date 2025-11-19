@@ -19,6 +19,8 @@ namespace DynaPlex::Models {
 			VarGroup vars;
 			//Needs to update later:
 			vars.Add("valid_actions", 1);
+			vars.Add("discount_factor", discount_factor);
+
 			return vars;
 		}
 
@@ -42,7 +44,18 @@ namespace DynaPlex::Models {
 			else if (event.type == Event::Type::Tick) {
 				state.queue_manager.tick();
 				state.cat = StateCategory::AwaitAction();
-				return 0.0; // cost for tick
+				// add cost rate for fils >  due time
+				double cost = 0.0;
+				for (size_t n = 0; n < state.queue_manager.FIL_waiting.size(); ++n) {
+					if (state.queue_manager.FIL_waiting[n] >= 0) {
+						if (state.queue_manager.FIL_waiting[n] > due_times[n]) {
+							// add cost
+							// (could be more sophisticated, e.g., linear in waiting time - due time)
+							cost += cost_rates[n];
+						}
+					}
+				}
+				return cost; // cost for tick
 			}
 			else {
 				// No event
@@ -56,19 +69,8 @@ namespace DynaPlex::Models {
 			Action current_action = state.server_manager.action_queue.at(state.server_manager.get_action_counter());
 
 
-			if (action == 1) {
-				// assign job
-				state.server_manager.assign_job(current_action.server_index, current_action.job_type);
-				// remove jobs from queue to decreased size
-				state.server_manager.take_action(current_action);
-			}
-			else {
-				// do not assign job
-				state.server_manager.set_action_counter(state.server_manager.get_action_counter() + 1);
-			}
+			state.server_manager.take_action(action);
 
-			
-			
 			if (state.server_manager.get_action_counter() >= static_cast<int64_t>(state.server_manager.action_queue.size())) {
 				// all actions processed
 				state.server_manager.set_action_counter(0);
@@ -123,7 +125,8 @@ namespace DynaPlex::Models {
 			config.Get("n_jobs", n_jobs);
 			config.Get("arrival_rates", arrival_rates);
 			config.Get("tick_rate", tick_rate);
-
+			config.Get("cost_rates", cost_rates);
+			config.Get("due_times", due_times);
 
 			//initialize server manager
 			server_static_info.clear();
@@ -201,6 +204,15 @@ namespace DynaPlex::Models {
 
 		void MDP::GetFeatures(const State& state, DynaPlex::Features& features)const {
 			
+			Action current_action = state.server_manager.action_queue.at(state.server_manager.get_action_counter());
+			//t64_t server_index = current_action.server_index;	
+			features.Add(current_action.server_index);
+			features.Add(current_action.job_type);
+			features.Add(state.queue_manager.FIL_waiting);
+
+			
+			//Features.Add(state.);
+			
 			throw DynaPlex::NotImplementedError();
 		}
 		
@@ -209,8 +221,8 @@ namespace DynaPlex::Models {
 		 //On the generic DynaPlex::MDP constructed from this, these heuristics can be obtained
 		 //in generic form using mdp->GetPolicy(VarGroup vars), with the id in var set
 		 //to the corresponding id given below.
-			registry.Register<EmptyPolicy>("empty_policy",
-				"This policy is a place-holder, and throws a NotImplementedError when asked for an action. ");
+			registry.Register<FIFOPolicy>("FIFO policy",
+				"First in first out policy, always assigns a job to a server.");
 		}
 
 		DynaPlex::StateCategory MDP::GetStateCategory(const State& state) const
@@ -221,6 +233,17 @@ namespace DynaPlex::Models {
 
 		bool MDP::IsAllowedAction(const State& state, int64_t action) const {
 			Action current_action = state.server_manager.action_queue.at(state.server_manager.get_action_counter());
+			if (action == 1) {
+				// assign job
+				return state.server_manager.can_assign_job(current_action.server_index, current_action.job_type);
+			}
+			else if (action == 0) {
+				// do not assign job
+				return true;
+			}
+			else {
+				return false; // invalid action
+			}
 		}
 
 
