@@ -25,12 +25,12 @@ namespace DynaPlex::Models {
 		}
 
 
-		double MDP::ModifyStateWithEvent(State& state, const Event& event) const
+		double MDP::ModifyStateWithEvent(State& state, const Event& event, DynaPlex::RNG& rng) const
 		{
 			if (event.type == Event::Type::JobCompletion) {
 				//complete job at server
 				state.server_manager.complete_job(event.server_index, event.job_type);
-				state.queue_manager.complete_job(event.job_type); // job completed, remove from queue
+				state.queue_manager.complete_job(event.job_type, rng); // job completed, remove from queue
 				state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
 				state.cat = StateCategory::AwaitAction();
 				return 0.0; // no cost for job completion
@@ -76,10 +76,7 @@ namespace DynaPlex::Models {
 				state.server_manager.set_action_counter(0);
 				state.cat = StateCategory::AwaitEvent();
 			}
-			
-			//implement change to state. 
-			// do not forget to update state.cat. 
-			//returns costs. 
+
 		}
 
 		DynaPlex::VarGroup MDP::State::ToVarGroup() const
@@ -213,7 +210,7 @@ namespace DynaPlex::Models {
 			
 			//Features.Add(state.);
 			
-			throw DynaPlex::NotImplementedError();
+			//throw DynaPlex::NotImplementedError();
 		}
 		
 		void MDP::RegisterPolicies(DynaPlex::Erasure::PolicyRegistry<MDP>& registry) const

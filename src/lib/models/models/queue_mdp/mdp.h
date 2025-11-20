@@ -370,10 +370,23 @@ namespace DynaPlex::Models {
 				}
 
 				//complete job n (set FIL to -1)
-				void complete_job(int64_t n) {
+				void complete_job(int64_t n, DynaPlex::RNG& rng) {
+					
 					if (n < 0 || n >= static_cast<int64_t>(FIL_waiting.size())) throw("job cannot complete, invalid job type");
-					if (FIL_waiting[(size_t)n] >= 0) {
+					
+
+					int64_t current_fil = FIL_waiting[(size_t)n];
+						
+					if (current_fil == 0) {
 						FIL_waiting[(size_t)n] = -1;
+						total_arrival_rate += arrival_rates[(size_t)n];
+
+					}
+					else if (current_fil > 0) {
+						FIL_waiting[(size_t)n] = sample_next_fil_after_completion(current_fil,
+							arrival_rates[(size_t)n],
+							total_tick_rate,
+							rng);
 						total_arrival_rate += arrival_rates[(size_t)n];
 					}
 				}
@@ -449,7 +462,7 @@ namespace DynaPlex::Models {
 					// geometric: P(H = h) = beta^h * alpha
 					int H = static_cast<int>(std::floor(std::log(U) / std::log(beta)));
 
-					if (H >= i) return 0;  // queue empty
+					if (H >= i) return -1;  // queue empty
 					return i - H;
 				}
 
@@ -483,7 +496,7 @@ namespace DynaPlex::Models {
 			};
 
 			double ModifyStateWithAction(State&, int64_t action) const;
-			double ModifyStateWithEvent(State&, const Event& ) const;
+			double ModifyStateWithEvent(State&, const Event&, DynaPlex::RNG& rng) const;
 			Event GetEvent(DynaPlex::RNG& rng, const State&) const;
 			std::vector<std::tuple<Event,double>> EventProbabilities() const;
 			DynaPlex::VarGroup GetStaticInfo() const;

@@ -19,6 +19,8 @@ namespace DynaPlex::Tests {
 
 		tester.ExecuteTest(model_name, config_name);
 	}
+	
+	
 	/*
 	TEST(lost_sales, Basics) {
 		auto& dp = DynaPlexProvider::Get();

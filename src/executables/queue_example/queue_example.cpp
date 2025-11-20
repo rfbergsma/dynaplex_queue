@@ -215,7 +215,7 @@ int main() {
 				std::cout << " Event " << i << ": type= Nothing \n";
 				break;
 			}
-			mdp.ModifyStateWithEvent(state, ev);
+			mdp.ModifyStateWithEvent(state, ev,rng);
 			
 			std::cout << " FIL waiting: ";
 			auto FIL_waiting = state.queue_manager.get_FIL_waiting();
@@ -376,11 +376,18 @@ int main() {
 	DynaPlex::RNG rng(true, 123456789, 0, 0, 1);
 	
 
-	for (int64_t fil = 0; fil < max_current_fil; fil++) {
+	for (int64_t fil = 1; fil < max_current_fil; fil++) {
 		
 		for (int64_t i = 0; i < number_of_samples; ++i) {
 			int64_t next_fil = state.queue_manager.sample_next_fil_after_completion(fil, arrival_rate, tick_rate, rng);
-			sampled_fils.at(i) = next_fil;
+			
+			if (next_fil == -1) {
+				sampled_fils.at(i) = 0;
+			}
+			else {
+				sampled_fils.at(i) = next_fil;
+			}
+			
 		}
 
 		std::cout << "Current FIL: " << fil << "\n";
