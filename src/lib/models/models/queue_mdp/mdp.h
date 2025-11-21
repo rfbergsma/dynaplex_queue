@@ -370,7 +370,7 @@ namespace DynaPlex::Models {
 				}
 
 				//complete job n (set FIL to -1)
-				void complete_job(int64_t n, DynaPlex::RNG& rng) {
+				void complete_job(int64_t n, double uniform_draw) {
 					
 					if (n < 0 || n >= static_cast<int64_t>(FIL_waiting.size())) throw("job cannot complete, invalid job type");
 					
@@ -386,7 +386,7 @@ namespace DynaPlex::Models {
 						FIL_waiting[(size_t)n] = sample_next_fil_after_completion(current_fil,
 							arrival_rates[(size_t)n],
 							total_tick_rate,
-							rng);
+							uniform_draw);
 						total_arrival_rate += arrival_rates[(size_t)n];
 					}
 				}
@@ -440,7 +440,7 @@ namespace DynaPlex::Models {
 					int i,
 					double lambda, //arrival rate
 					double gamma, //tick rate
-					RNG& rng
+					double uniform_draw
 				) {
 					if (i <= 0) return 0;
 
@@ -455,7 +455,7 @@ namespace DynaPlex::Models {
 					if (beta <= 0.0) return i;      // no ticks => all arrivals at same time => new FIL = i
 
 					// Sample geometric H: #ticks before arrival
-					double U = rng.genUniform();
+					double U = uniform_draw;
 					if (U <= 0.0) U = std::numeric_limits<double>::min();
 					if (U >= 1.0) U = std::nextafter(1.0, 0.0);
 
@@ -486,7 +486,7 @@ namespace DynaPlex::Models {
 
 			};
 			//Event may also be struct or class like.
-			struct Event {
+			struct Event_type {
 				enum class Type { Arrival, Tick, JobCompletion, Nothing };
 				Type type;
 				int64_t arrival_index;    // For arrivals
@@ -494,10 +494,24 @@ namespace DynaPlex::Models {
 				int64_t server_index; // For completions
 				int64_t job_type;        // For completions
 			};
+			
+			struct Event {
+				double event_sample;
+				double uniform_rate_next_fil;
+			};
+
+			
+
+
+
 
 			double ModifyStateWithAction(State&, int64_t action) const;
-			double ModifyStateWithEvent(State&, const Event&, DynaPlex::RNG& rng) const;
-			Event GetEvent(DynaPlex::RNG& rng, const State&) const;
+			double ModifyStateWithEvent(State&, const Event&) const;
+
+
+
+			Event_type GetEventType(const double event_sample, const State&) const;
+			Event GetEvent(DynaPlex::RNG& rng) const;
 			std::vector<std::tuple<Event,double>> EventProbabilities() const;
 			DynaPlex::VarGroup GetStaticInfo() const;
 			DynaPlex::StateCategory GetStateCategory(const State&) const;

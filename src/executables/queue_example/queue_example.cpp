@@ -115,26 +115,27 @@ int main() {
 		// construct an RNG object:
 		DynaPlex::RNG rng(true, 123456789, 0, 0, 1);
 		// get an event:
-		auto event = mdp.GetEvent(rng, state);
-		
+		auto event = mdp.GetEvent(rng);
+		auto event_type = mdp.GetEventType(event.event_sample, state);
 		
 		int n_samples = 10000;
 		std::vector<int> event_counts(4, 0); // Assuming 4 event types
 		std::vector<std::vector<double>> event_rates(4); // Store rates for each event type at each step
 
 		for (int i = 0; i < n_samples; ++i) {
-			auto ev = mdp.GetEvent(rng, state);
-			switch (ev.type) {
-			case DynaPlex::Models::queue_mdp::MDP::Event::Type::Arrival:
+			auto ev = mdp.GetEvent(rng);
+			auto ev_type = mdp.GetEventType(ev.event_sample, state);
+			switch (ev_type.type) {
+			case DynaPlex::Models::queue_mdp::MDP::Event_type::Type::Arrival:
 				event_counts[0]++;
 				break;
-			case DynaPlex::Models::queue_mdp::MDP::Event::Type::Tick:
+			case DynaPlex::Models::queue_mdp::MDP::Event_type::Type::Tick:
 				event_counts[1]++;
 				break;
-			case DynaPlex::Models::queue_mdp::MDP::Event::Type::JobCompletion:
+			case DynaPlex::Models::queue_mdp::MDP::Event_type::Type::JobCompletion:
 				event_counts[2]++;
 				break;
-			case DynaPlex::Models::queue_mdp::MDP::Event::Type::Nothing:
+			case DynaPlex::Models::queue_mdp::MDP::Event_type::Type::Nothing:
 				event_counts[3]++;
 				break;
 			default:
@@ -196,26 +197,27 @@ int main() {
 		std::cout << "\n";
 
 		for (int64_t i = 0; i < n_events; ++i) {
-			auto ev = mdp.GetEvent(rng, state);
+			auto ev = mdp.GetEvent(rng);
+			auto ev_type = mdp.GetEventType(ev.event_sample, state);
 			
-			switch (ev.type) {
-			case DynaPlex::Models::queue_mdp::MDP::Event::Type::Arrival:
+			switch (ev_type.type) {
+			case DynaPlex::Models::queue_mdp::MDP::Event_type::Type::Arrival:
 				std::cout << " Event " << i << ": type= Arrival \n";
-				std::cout << "  arrival index: " << ev.arrival_index << "\n";
+				std::cout << "  arrival index: " << ev_type.arrival_index << "\n";
 				break;
-			case DynaPlex::Models::queue_mdp::MDP::Event::Type::Tick:
+			case DynaPlex::Models::queue_mdp::MDP::Event_type::Type::Tick:
 				std::cout << " Event " << i << ": type= Tick \n";
 				break;
-			case DynaPlex::Models::queue_mdp::MDP::Event::Type::JobCompletion:
+			case DynaPlex::Models::queue_mdp::MDP::Event_type::Type::JobCompletion:
 				std::cout << " Event " << i << ": type= Job completion \n";
-				std::cout << "  server index: " << ev.server_index << "\n";
-				std::cout << "  job type: " << ev.job_type << "\n";
+				std::cout << "  server index: " << ev_type.server_index << "\n";
+				std::cout << "  job type: " << ev_type.job_type << "\n";
 				break;
-			case DynaPlex::Models::queue_mdp::MDP::Event::Type::Nothing:
+			case DynaPlex::Models::queue_mdp::MDP::Event_type::Type::Nothing:
 				std::cout << " Event " << i << ": type= Nothing \n";
 				break;
 			}
-			mdp.ModifyStateWithEvent(state, ev,rng);
+			mdp.ModifyStateWithEvent(state, ev);
 			
 			std::cout << " FIL waiting: ";
 			auto FIL_waiting = state.queue_manager.get_FIL_waiting();
@@ -379,7 +381,9 @@ int main() {
 	for (int64_t fil = 1; fil < max_current_fil; fil++) {
 		
 		for (int64_t i = 0; i < number_of_samples; ++i) {
-			int64_t next_fil = state.queue_manager.sample_next_fil_after_completion(fil, arrival_rate, tick_rate, rng);
+			double uniform_draw = rng.genUniform();
+			
+			int64_t next_fil = state.queue_manager.sample_next_fil_after_completion(fil, arrival_rate, tick_rate, uniform_draw);
 			
 			if (next_fil == -1) {
 				sampled_fils.at(i) = 0;

@@ -24,24 +24,31 @@ namespace DynaPlex::Models {
 			return vars;
 		}
 
-
-		double MDP::ModifyStateWithEvent(State& state, const Event& event, DynaPlex::RNG& rng) const
+		double MDP::ModifyStateWithEvent(State& state, const Event& event) const
 		{
-			if (event.type == Event::Type::JobCompletion) {
+			double event_sample = event.event_sample;
+			double uniform_rate_next_fil = event.uniform_rate_next_fil;
+			
+			Event_type event_type = GetEventType(event_sample, state);
+			
+			
+			if (event_type.type == Event_type::Type::JobCompletion) {
 				//complete job at server
-				state.server_manager.complete_job(event.server_index, event.job_type);
-				state.queue_manager.complete_job(event.job_type, rng); // job completed, remove from queue
+				state.server_manager.complete_job(event_type.server_index, event_type.job_type);
+				
+				
+				state.queue_manager.complete_job(event_type.job_type, uniform_rate_next_fil); // job completed, remove from queue
 				state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
 				state.cat = StateCategory::AwaitAction();
 				return 0.0; // no cost for job completion
 			}
-			else if (event.type == Event::Type::Arrival) {
-				state.queue_manager.arrival(event.arrival_index);
+			else if (event_type.type == Event_type::Type::Arrival) {
+				state.queue_manager.arrival(event_type.arrival_index);
 				state.cat = StateCategory::AwaitAction();
 				state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
 				return 0.0; // cost for arrival
 			}
-			else if (event.type == Event::Type::Tick) {
+			else if (event_type.type == Event_type::Type::Tick) {
 				state.queue_manager.tick();
 				state.cat = StateCategory::AwaitAction();
 				// add cost rate for fils >  due time
@@ -148,16 +155,23 @@ namespace DynaPlex::Models {
 
 		}
 
+		
+		MDP::Event  MDP::GetEvent(RNG& rng) const {
+			// Sample event based on rates
+			double U = rng.genUniform();
+			double event_sample = U * uniformization_rate;
+			double uniform_rate_next_fil = rng.genUniform();
+			MDP::Event event;
+			event.event_sample = event_sample;
+			event.uniform_rate_next_fil = uniform_rate_next_fil;
+			return event;
+		
+		}
 
-		MDP::Event MDP::GetEvent(RNG& rng, const State& state) const {
-			double event_sample = rng.genUniform() * uniformization_rate;
-			//consume random number to avoid unused parameter warning
+
+		MDP::Event_type MDP::GetEventType(const double event_sample, const State& state) const {
 			
-			//std::cout << "uniformization rate " << uniformization_rate << "\n";
-			//std::cout << "tota1 arrival rate: " << state.queue_manager.total_arrival_rate << "\n";
-			//std::cout << "total service rate: " << state.server_manager.total_service_rate << "\n";
-			//std::cout << "total tick rate: " << state.queue_manager.total_tick_rate << "\n";
-
+			
 			if (event_sample < state.queue_manager.total_arrival_rate) {
 				// Arrival event
 				double cumulative_rate = 0.0;
@@ -166,15 +180,17 @@ namespace DynaPlex::Models {
 						cumulative_rate += arrival_rates[(size_t)n];
 
 						if (event_sample < cumulative_rate) {
-							return Event{ Event::Type::Arrival, n };
+							return Event_type{ Event_type::Type::Arrival, n };
 						}
 					}
 				}
 			}
+			
 			else if (event_sample < state.queue_manager.total_arrival_rate + state.queue_manager.total_tick_rate) {
 				// Tick event
-				return Event{ Event::Type::Tick, -1 };
+				return Event_type{ Event_type::Type::Tick, -1 };
 			}
+			
 			else {
 				// Job completion event
 				double cumulative_rate = state.queue_manager.total_arrival_rate + state.queue_manager.total_tick_rate;
@@ -182,12 +198,13 @@ namespace DynaPlex::Models {
 					for (size_t j = 0; j < server_static_info[(size_t)k].can_serve.size(); ++j) {
 						cumulative_rate += state.server_manager.busy_on[(size_t)k][j] * server_static_info[(size_t)k].mu_k;
 						if (event_sample < cumulative_rate) {
-							return Event{ Event::Type::JobCompletion, static_cast<int64_t>(server_static_info[k].can_serve[j])};
+							return Event_type{ Event_type::Type::JobCompletion, static_cast<int64_t>(server_static_info[k].can_serve[j])};
 						}
 					}
 				}
 			}
-			return Event{ Event::Type::Nothing, -1 }; // Should not reach here
+			
+			return Event_type{ Event_type::Type::Nothing, -1 }; // Should not reach here
 		}
 
 		std::vector<std::tuple<MDP::Event, double>> MDP::EventProbabilities() const
