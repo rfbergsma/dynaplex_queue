@@ -2,11 +2,63 @@
 #include "dynaplex/erasure/mdpregistrar.h"
 #include "policies.h"
 #include <deque>
+#include <iostream>
 
 
 namespace DynaPlex::Models {
 	namespace queue_mdp /*keep this in line with id below and with namespace name in header*/
 	{
+		// ===== DEBUG UTILITIES FOR queue_mdp  =====
+		#define QUEUE_MDP_DEBUG 1
+
+		#if QUEUE_MDP_DEBUG
+
+		static void DebugPrintFIL(const MDP::State& state, const char* prefix)
+		{
+			std::cout << prefix << " FIL_waiting = [";
+			const auto& FIL = state.queue_manager.FIL_waiting;
+			for (size_t i = 0; i < FIL.size(); ++i) {
+				std::cout << FIL[i];
+				if (i + 1 < FIL.size()) std::cout << ",";
+			}
+			std::cout << "]\n";
+		}
+
+		static void DebugPrintBusyOn(const MDP::State& state, const char* prefix)
+		{
+			std::cout << prefix << " busy_on = ";
+			const auto& busy_on = state.server_manager.busy_on;
+			for (size_t k = 0; k < busy_on.size(); ++k) {
+				std::cout << "[";
+				for (size_t j = 0; j < busy_on[k].size(); ++j) {
+					std::cout << busy_on[k][j];
+					if (j + 1 < busy_on[k].size()) std::cout << ",";
+				}
+				std::cout << "]";
+				if (k + 1 < busy_on.size()) std::cout << " ";
+			}
+			std::cout << "\n";
+		}
+
+		static void DebugPrintActionQueue(const MDP::State& state, const char* prefix)
+		{
+			const auto& SM = state.server_manager;
+			const auto& AQ = SM.action_queue;
+			const auto& cnt = SM.action_counter;
+
+			std::cout << prefix << " action_queue size = " << AQ.size()
+				<< ", action_counter = " << cnt << "\n";
+
+			std::cout << prefix << " actions = [ ";
+			for (size_t i = 0; i < AQ.size(); ++i) {
+				std::cout << "(" << AQ[i].server_index << "," << AQ[i].job_type << ")";
+				if (i + 1 < AQ.size()) std::cout << ", ";
+			}
+			std::cout << " ]\n";
+		}
+
+		#endif // QUEUE_MDP_DEBUG
+		// ===== END DEBUG UTILITIES =====
 		// helper for using config file
 		VarGroup GetSubGroup(const VarGroup& group, const std::string& key) {
 			VarGroup subgroup;
@@ -21,68 +73,183 @@ namespace DynaPlex::Models {
 			vars.Add("valid_actions", 1);
 			vars.Add("discount_factor", discount_factor);
 
+
 			return vars;
 		}
 
 		double MDP::ModifyStateWithEvent(State& state, const Event& event) const
-		{
-			double event_sample = event.event_sample;
-			double uniform_rate_next_fil = event.uniform_rate_next_fil;
+			{
+				#if QUEUE_MDP_DEBUG
+				std::cout << "\n[QMDP] ModifyStateWithEvent called\n";
+				DebugPrintFIL(state, "[QMDP]   BEFORE event");
+				DebugPrintBusyOn(state, "[QMDP]   BEFORE event");
+				DebugPrintActionQueue(state, "[QMDP]   BEFORE event");
+				#endif
+
 			
-			Event_type event_type = GetEventType(event_sample, state);
+				double event_sample = event.event_sample;
+				double uniform_rate_next_fil = event.uniform_rate_next_fil;
+			
+				Event_type event_type = GetEventType(event_sample, state);
 			
 			
-			if (event_type.type == Event_type::Type::JobCompletion) {
-				//complete job at server
-				state.server_manager.complete_job(event_type.server_index, event_type.job_type);
+				if (event_type.type == Event_type::Type::JobCompletion)
+				{
+				
+				#if QUEUE_MDP_DEBUG
+					std::cout << "[QMDP]   COMPLETION for server=" << event_type.server_index
+						<< " job_type=" << event_type.job_type << "\n";
+					DebugPrintBusyOn(state, "[QMDP]   BEFORE complete_job");
+				#endif
+					
+					state.last_event_category = "completion";
 				
 				
-				state.queue_manager.complete_job(event_type.job_type, uniform_rate_next_fil); // job completed, remove from queue
-				state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
-				state.cat = StateCategory::AwaitAction();
-				return 0.0; // no cost for job completion
-			}
-			else if (event_type.type == Event_type::Type::Arrival) {
-				state.queue_manager.arrival(event_type.arrival_index);
-				state.cat = StateCategory::AwaitAction();
-				state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
-				return 0.0; // cost for arrival
-			}
-			else if (event_type.type == Event_type::Type::Tick) {
-				state.queue_manager.tick();
-				state.cat = StateCategory::AwaitAction();
-				// add cost rate for fils >  due time
-				double cost = 0.0;
-				for (size_t n = 0; n < state.queue_manager.FIL_waiting.size(); ++n) {
-					if (state.queue_manager.FIL_waiting[n] >= 0) {
-						if (state.queue_manager.FIL_waiting[n] > due_times[n]) {
-							// add cost
-							// (could be more sophisticated, e.g., linear in waiting time - due time)
-							cost += cost_rates[n];
+				
+					//complete job at server
+					state.server_manager.complete_job(event_type.server_index, event_type.job_type);
+				#if QUEUE_MDP_DEBUG
+					DebugPrintBusyOn(state, "[QMDP]   AFTER complete_job");
+				#endif
+				
+					state.queue_manager.complete_job(event_type.job_type, uniform_rate_next_fil); // job completed, remove from queue
+					
+					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+					if (!state.server_manager.action_queue.empty()) {
+						state.cat = StateCategory::AwaitAction();
+					}
+					else {
+						state.cat = StateCategory::AwaitEvent();
+					}
+				
+					#if QUEUE_MDP_DEBUG
+					std::cout << "[QMDP]   AFTER event handling\n";
+					DebugPrintFIL(state, "[QMDP]   AFTER event");
+					DebugPrintBusyOn(state, "[QMDP]   AFTER event");
+					DebugPrintActionQueue(state, "[QMDP]   AFTER event");
+					#endif
+
+					return 0.0; // no cost for job completion
+				}
+				else if (event_type.type == Event_type::Type::Arrival) {
+					state.last_event_category = "arrival";
+
+				
+					state.queue_manager.arrival(event_type.arrival_index);
+				
+				
+					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+
+					// if there are pending actions, go to await action
+					if (!state.server_manager.action_queue.empty()) {
+						state.cat = StateCategory::AwaitAction();
+					}
+					else {
+						state.cat = StateCategory::AwaitEvent();
+					}
+
+					#if QUEUE_MDP_DEBUG
+					std::cout << "[QMDP]   AFTER event handling\n";
+					DebugPrintFIL(state, "[QMDP]   AFTER event");
+					DebugPrintBusyOn(state, "[QMDP]   AFTER event");
+					DebugPrintActionQueue(state, "[QMDP]   AFTER event");
+					#endif
+
+					return 0.0; // cost for arrival
+				}
+				else if (event_type.type == Event_type::Type::Tick) {
+					state.last_event_category = "tick";
+
+				
+					state.queue_manager.tick();
+				
+					// add cost rate for fils >  due time
+					double cost = 0.0;
+					for (size_t n = 0; n < state.queue_manager.FIL_waiting.size(); ++n) {
+						if (state.queue_manager.FIL_waiting[n] >= 0) {
+							if (state.queue_manager.FIL_waiting[n] > due_times[n]) {
+								// add cost
+								// (could be more sophisticated, e.g., linear in waiting time - due time)
+								cost += cost_rates[n];
+							}
 						}
 					}
+				
+					if (!state.server_manager.action_queue.empty()) {
+						state.cat = StateCategory::AwaitAction();
+					}
+					else {
+						state.cat = StateCategory::AwaitEvent();
+					}
+				
+					#if QUEUE_MDP_DEBUG
+					std::cout << "[QMDP]   AFTER event handling\n";
+					DebugPrintFIL(state, "[QMDP]   AFTER event");
+					DebugPrintBusyOn(state, "[QMDP]   AFTER event");
+					DebugPrintActionQueue(state, "[QMDP]   AFTER event");
+					#endif
+
+					return cost; // cost for tick
 				}
-				return cost; // cost for tick
+				else {
+					state.last_event_category = "nothing";
+
+					#if QUEUE_MDP_DEBUG
+					std::cout << "[QMDP]   AFTER event handling\n";
+					DebugPrintFIL(state, "[QMDP]   AFTER event");
+					DebugPrintBusyOn(state, "[QMDP]   AFTER event");
+					DebugPrintActionQueue(state, "[QMDP]   AFTER event");
+					#endif
+
+					if (!state.server_manager.action_queue.empty()) {
+						state.cat = StateCategory::AwaitAction();
+					}
+					else {
+						state.cat = StateCategory::AwaitEvent();
+					}
+
+					// No event
+					return 0.0;
+				}
 			}
-			else {
-				// No event
-				return 0.0;
-			}
-		}
 
 		double MDP::ModifyStateWithAction(MDP::State& state, int64_t action) const
 		{
-			
+		#if QUEUE_MDP_DEBUG
+			std::cout << "\n[QMDP] ModifyStateWithAction called\n";
+			std::cout << "[QMDP]   incoming action = " << action << "\n";
+			DebugPrintFIL(state, "[QMDP]   BEFORE action");
+			DebugPrintBusyOn(state, "[QMDP]   BEFORE action");
+			DebugPrintActionQueue(state, "[QMDP]   BEFORE action");
+		#endif
+
 			Action current_action = state.server_manager.action_queue.at(state.server_manager.get_action_counter());
+		
+		#if QUEUE_MDP_DEBUG
+			std::cout << "[QMDP]   current_action = ("
+				<< current_action.server_index << ","
+				<< current_action.job_type << ")\n";
+		#endif
 
 
 			state.server_manager.take_action(action);
 
+		#if QUEUE_MDP_DEBUG
+			std::cout << "[QMDP]   AFTER take_action\n";
+			DebugPrintFIL(state, "[QMDP]   AFTER action");
+			DebugPrintBusyOn(state, "[QMDP]   AFTER action");
+			DebugPrintActionQueue(state, "[QMDP]   AFTER action");
+		#endif
+
+		
 			if (state.server_manager.get_action_counter() >= static_cast<int64_t>(state.server_manager.action_queue.size())) {
 				// all actions processed
 				state.server_manager.set_action_counter(0);
 				state.cat = StateCategory::AwaitEvent();
 			}
+		#if QUEUE_MDP_DEBUG
+			std::cout << "[QMDP]   All actions processed -> set cat=AwaitEvent, reset counter to 0\n";
+		#endif
 
 		}
 
@@ -90,7 +257,18 @@ namespace DynaPlex::Models {
 		{
 			DynaPlex::VarGroup vars;
 			vars.Add("cat", cat);
+
 			//add any other state variables. 
+			vars.Add("FIL_waiting", queue_manager.FIL_waiting);
+			vars.Add("action_counter", server_manager.action_counter);
+			vars.Add("action_queue", server_manager.action_queue);
+			
+			// row-by-row storage instead of vector<vector<int64_t>>
+			for (size_t k = 0; k < server_manager.busy_on.size(); ++k) {
+				vars.Add("busy_on_" + std::to_string(k), server_manager.busy_on[k]);
+			}
+			vars.Add("last_event_category", last_event_category);
+
 			return vars;
 		}
 
@@ -99,6 +277,14 @@ namespace DynaPlex::Models {
 			State state{};		
 			vars.Get("cat", state.cat);
 			//initiate any other state variables. 
+			vars.Get("FIL_waiting",state.queue_manager.FIL_waiting);
+			vars.Get("action_counter", state.server_manager.action_counter);
+			vars.Get("action_queue", state.server_manager.action_queue);
+			for (size_t k = 0; k < state.server_manager.busy_on.size(); ++k) {
+				vars.Get("busy_on_" + std::to_string(k), state.server_manager.busy_on[k]);
+			}
+			
+			vars.Get("last_event_category", state.last_event_category);
 			return state;
 		}
 
@@ -150,12 +336,11 @@ namespace DynaPlex::Models {
 			}
 			// sum of all service rates
 			for (int64_t i = 0; i < k_servers; ++i) {
-				uniformization_rate += server_static_info[i].mu_k;
+				uniformization_rate += server_static_info[i].mu_k * server_static_info[i].servers;
 			}
 
 		}
 
-		
 		MDP::Event  MDP::GetEvent(RNG& rng) const {
 			// Sample event based on rates
 			double U = rng.genUniform();
@@ -168,10 +353,46 @@ namespace DynaPlex::Models {
 		
 		}
 
-
 		MDP::Event_type MDP::GetEventType(const double event_sample, const State& state) const {
 			
-			
+			#if QUEUE_MDP_DEBUG
+				// --- Compute arrival & tick rates ---
+			double arrival_rate = state.queue_manager.total_arrival_rate;
+			double tick_rate = state.queue_manager.total_tick_rate;
+
+			// --- Compute completion rate from busy_on and mu_k ---
+			double completion_rate = 0.0;
+			for (int64_t k = 0; k < k_servers; ++k) {
+				double mu_k = server_static_info[(size_t)k].mu_k;
+				for (size_t j = 0; j < server_static_info[(size_t)k].can_serve.size(); ++j) {
+					int64_t n_busy = state.server_manager.busy_on[(size_t)k][j];
+					completion_rate += n_busy * mu_k;
+				}
+			}
+
+			double total_rate = arrival_rate + tick_rate + completion_rate;
+
+			// "Nothing" rate only makes sense if you sample in [0,1)
+			// and total_rate <= 1.0. Otherwise this will be <= 0.
+			double nothing_rate = uniformization_rate - total_rate;
+
+			std::cout << "\n[QMDP] GetEventType called\n";
+			std::cout << "[QMDP]   event_sample      = " << event_sample << "\n";
+			std::cout << "[QMDP]   arrival_rate      = " << arrival_rate << "\n";
+			std::cout << "[QMDP]   tick_rate         = " << tick_rate << "\n";
+			std::cout << "[QMDP]   completion_rate   = " << completion_rate << "\n";
+			std::cout << "[QMDP]   total_rate        = " << total_rate << "\n";
+			std::cout << "[QMDP]   nothing_rate      = " << nothing_rate << " (1 - total_rate)\n";
+
+			// Optional: print boundaries in the same units as your comparisons
+			std::cout << "[QMDP]   arrival boundary  = [0, "
+				<< arrival_rate << ")\n";
+			std::cout << "[QMDP]   tick boundary     = ["
+				<< arrival_rate << ", "
+				<< arrival_rate + tick_rate << ")\n";
+			std::cout << "[QMDP]   completion start  = "
+				<< (arrival_rate + tick_rate) << "\n";
+		#endif
 			if (event_sample < state.queue_manager.total_arrival_rate) {
 				// Arrival event
 				double cumulative_rate = 0.0;
@@ -180,7 +401,7 @@ namespace DynaPlex::Models {
 						cumulative_rate += arrival_rates[(size_t)n];
 
 						if (event_sample < cumulative_rate) {
-							return Event_type{ Event_type::Type::Arrival, n };
+							return Event_type::MakeArrival(n);
 						}
 					}
 				}
@@ -188,7 +409,7 @@ namespace DynaPlex::Models {
 			
 			else if (event_sample < state.queue_manager.total_arrival_rate + state.queue_manager.total_tick_rate) {
 				// Tick event
-				return Event_type{ Event_type::Type::Tick, -1 };
+				return Event_type::MakeTick();
 			}
 			
 			else {
@@ -197,14 +418,15 @@ namespace DynaPlex::Models {
 				for (int64_t k = 0; k < k_servers; ++k) {
 					for (size_t j = 0; j < server_static_info[(size_t)k].can_serve.size(); ++j) {
 						cumulative_rate += state.server_manager.busy_on[(size_t)k][j] * server_static_info[(size_t)k].mu_k;
-						if (event_sample < cumulative_rate) {
-							return Event_type{ Event_type::Type::JobCompletion, static_cast<int64_t>(server_static_info[k].can_serve[j])};
+						if (event_sample < cumulative_rate) {							
+							int64_t job_type = server_static_info[k].can_serve[j];
+							return Event_type::MakeCompletion(k, job_type);
 						}
 					}
 				}
 			}
 			
-			return Event_type{ Event_type::Type::Nothing, -1 }; // Should not reach here
+			return Event_type::MakeNothing(); // Should not reach here
 		}
 
 		std::vector<std::tuple<MDP::Event, double>> MDP::EventProbabilities() const
@@ -215,9 +437,12 @@ namespace DynaPlex::Models {
 			throw DynaPlex::NotImplementedError();
 		}
 
-
 		void MDP::GetFeatures(const State& state, DynaPlex::Features& features)const {
 			
+		#if QUEUE_MDP_DEBUG
+			std::cout << "\n[QMDP] GetFeatures called\n";
+			DebugPrintActionQueue(state, "[QMDP]   ");
+		#endif
 			Action current_action = state.server_manager.action_queue.at(state.server_manager.get_action_counter());
 			//t64_t server_index = current_action.server_index;	
 			features.Add(current_action.server_index);
@@ -246,16 +471,36 @@ namespace DynaPlex::Models {
 		}	
 
 		bool MDP::IsAllowedAction(const State& state, int64_t action) const {
+		#if QUEUE_MDP_DEBUG
+			std::cout << "\n[QMDP] IsAllowedAction called\n";
+			std::cout << "[QMDP]   requested action = " << action << "\n";
+			DebugPrintActionQueue(state, "[QMDP]   ");
+		#endif
+			
 			Action current_action = state.server_manager.action_queue.at(state.server_manager.get_action_counter());
 			if (action == 1) {
+				bool ok = state.server_manager.can_assign_job(current_action.server_index, current_action.job_type);
+		#if QUEUE_MDP_DEBUG
+				std::cout << "[QMDP]   current pair = ("
+					<< current_action.server_index << ","
+					<< current_action.job_type << ")\n";
+				std::cout << "[QMDP]   IsAllowedAction -> " << (ok ? "true" : "false") << " for action=1\n";
+		#endif
+				
 				// assign job
-				return state.server_manager.can_assign_job(current_action.server_index, current_action.job_type);
+				return ok;
 			}
 			else if (action == 0) {
+		#if QUEUE_MDP_DEBUG
+				std::cout << "[QMDP]   IsAllowedAction -> true for action=0 (skip)\n";
+		#endif		
 				// do not assign job
 				return true;
 			}
 			else {
+		#if QUEUE_MDP_DEBUG
+				std::cout << "[QMDP]   IsAllowedAction -> false for invalid action\n";
+		#endif
 				return false; // invalid action
 			}
 		}

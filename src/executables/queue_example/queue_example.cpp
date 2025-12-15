@@ -298,7 +298,7 @@ int main() {
 			std::cout << "Expected: new queue ~ [1,1], [1,2], action_counter = 0\n";
 		}
 
-		std::cout << "\nCase 3: server 0 (capacity 1) already full, server 1 free, jobs 1 and 2 in queue:\n";
+		std::cout << "\nCase 3: server 1  and 2 free free, jobs 1 and 2 in queue:\n";
 
 		{
 			auto state = mdp.GetInitialState();
@@ -307,6 +307,9 @@ int main() {
 			// (job type here doesn't matter much, just something server 0 can serve)
 			state.queue_manager.arrival(0);
 			//state.server_manager.assign_job(state.server_manager, mdp.server_static_info, 0, 0);
+
+
+
 
 			// Now put jobs 1 and 2 in the queue
 			state.queue_manager.arrival(1);
@@ -331,7 +334,7 @@ int main() {
 			std::cout << "After taking current action:\n";
 			state.server_manager.print_actions();
 			std::cout << "action counter = " << state.server_manager.get_action_counter() << "\n";
-			std::cout << "Expected: new queue ~ [1,1],[1,2], action_counter = 0\n";
+			std::cout << "Expected: new queue ~ [1,1],[1,2], action_counter = 1 as we have to take action 1 still\n";
 		}
 	}
 

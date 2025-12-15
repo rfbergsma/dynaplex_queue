@@ -22,6 +22,26 @@ namespace DynaPlex::Models {
 			struct Action {
 				int64_t server_index;
 				int64_t job_type;
+
+				// --- Default constructor (required by VarGroup and STL containers) ---
+				Action() : server_index(0), job_type(0) {}
+
+				// --- Full constructor ---
+				Action(int64_t s, int64_t j) : server_index(s), job_type(j) {}
+
+				// --- Serialization: convert Action  VarGroup ---
+				DynaPlex::VarGroup ToVarGroup() const {
+					DynaPlex::VarGroup vg;
+					vg.Add("server_index", server_index);
+					vg.Add("job_type", job_type);
+					return vg;
+				}
+
+				// --- Deserialization: convert VarGroup Action ---
+				explicit Action(const DynaPlex::VarGroup& vg) {
+					vg.Get("server_index", server_index);
+					vg.Get("job_type", job_type);
+				}
 			};
 
 			struct ServerDynamicState{
@@ -61,6 +81,12 @@ namespace DynaPlex::Models {
 				}
 				
 				void generate_actions(std::vector<int64_t> FIL_waiting) {
+					#if QUEUE_MDP_DEBUG
+					std::cout << "\n[QMDP] generate_actions called\n";
+					std::cout << "[QMDP]   old queue size = " << action_queue.size()
+						<< ", old action_counter = " << action_counter << "\n";
+					#endif
+							
 					// generate possible actions based on current busy_on and FIL_waiting
 					// if FIL_waiting[n] >=0 and there is idle server for job n, add action
 					action_queue.clear();
@@ -82,10 +108,13 @@ namespace DynaPlex::Models {
 							}
 						}
 					}
+
+					#if QUEUE_MDP_DEBUG
+					std::cout << "[QMDP]   new queue size = " << action_queue.size()
+						<< ", action_counter (unchanged) = " << action_counter << "\n";
+					#endif
 				}
-
-
-				
+	
 				int64_t n_servers_busy_server_k(int64_t k) const {
 					int64_t total_busy = 0;
 
@@ -186,8 +215,6 @@ namespace DynaPlex::Models {
 					action_counter = new_counter;
 				}
 
-				
-
 
 				void set_action_counter(int64_t count) {
 					action_counter = count;
@@ -206,7 +233,7 @@ namespace DynaPlex::Models {
 				}
 
 
-
+				/*
 				//complete job n at server k remove job from busy_on
 				void complete_job(int64_t k, int64_t job) {
 					int idx = canServeIndex(*static_info, k, job);
@@ -215,6 +242,40 @@ namespace DynaPlex::Models {
 					busy_on[(size_t)k][(size_t)idx] -= 1;
 				}
 				
+				*/
+				void complete_job(int64_t k, int64_t job) {
+					int idx = canServeIndex(*static_info, k, job);
+
+					#if QUEUE_MDP_DEBUG
+						std::cout << "[QMDP]   complete_job called with server=" << k
+							<< ", job=" << job << "\n";
+						if (idx < 0) {
+							std::cout << "[QMDP]   complete_job: canServeIndex < 0 for (k=" << k
+								<< ", job=" << job << "), no-op\n";
+						}
+						else {
+							std::cout << "[QMDP]   complete_job: idx=" << idx
+								<< ", busy_on[k][idx]=" << busy_on[(size_t)k][(size_t)idx]
+								<< "\n";
+						}
+					#endif
+
+						if (idx < 0) return;
+						if (busy_on[(size_t)k][(size_t)idx] <= 0) {
+					#if QUEUE_MDP_DEBUG
+							std::cout << "[QMDP]   complete_job: busy_on already <= 0, no-op\n";
+					#endif
+						return;
+					}
+
+					#if QUEUE_MDP_DEBUG
+					std::cout << "[QMDP]   complete_job: decrementing busy_on[" << k << "]["
+						<< idx << "] from " << busy_on[(size_t)k][(size_t)idx] << " to "
+						<< (busy_on[(size_t)k][(size_t)idx] - 1) << "\n";
+					#endif
+
+					busy_on[(size_t)k][(size_t)idx] -= 1;
+				}
 
 				//returns the index of job in can_serve vector of server k, -1 if cannot serve
 				static int canServeIndex(const std::vector<ServerStaticInfo>& S, int64_t k, int64_t job) {
@@ -322,7 +383,6 @@ namespace DynaPlex::Models {
 
 			std::vector<ServerStaticInfo> server_static_info;
 
-			
 			int64_t n_jobs; // number of different types of jobs
 			int64_t k_servers; // number of servers
 			std::vector<double> arrival_rates; // arrival rates for each job type n
@@ -334,7 +394,7 @@ namespace DynaPlex::Models {
 			struct multi_queue {
 				// vector of first in line waiting times jobs length n jobs, -1 if empty
 				std::vector<int64_t> FIL_waiting;
-				std::vector < double> arrival_rates;
+				std::vector <double> arrival_rates;
 				double total_tick_rate;
 				double total_arrival_rate;
 				
@@ -374,12 +434,12 @@ namespace DynaPlex::Models {
 					
 					if (n < 0 || n >= static_cast<int64_t>(FIL_waiting.size())) throw("job cannot complete, invalid job type");
 					
-
 					int64_t current_fil = FIL_waiting[(size_t)n];
 						
 					if (current_fil == 0) {
 						FIL_waiting[(size_t)n] = -1;
-						total_arrival_rate += arrival_rates[(size_t)n];
+						
+						
 
 					}
 					else if (current_fil > 0) {
@@ -387,8 +447,15 @@ namespace DynaPlex::Models {
 							arrival_rates[(size_t)n],
 							total_tick_rate,
 							uniform_draw);
+						
+						
+					}
+
+					int64_t next_fil = FIL_waiting[(size_t)n];
+					if (next_fil == -1) {
 						total_arrival_rate += arrival_rates[(size_t)n];
 					}
+					
 				}
 
 				std::vector<int64_t> get_FIL_waiting() const {
@@ -479,6 +546,8 @@ namespace DynaPlex::Models {
 				//initialize ServerDynamicState
 				ServerDynamicState server_manager;
 				multi_queue queue_manager;
+				
+				std::string last_event_category;
 
 				DynaPlex::StateCategory cat;
 				DynaPlex::VarGroup ToVarGroup() const;
@@ -489,10 +558,50 @@ namespace DynaPlex::Models {
 			struct Event_type {
 				enum class Type { Arrival, Tick, JobCompletion, Nothing };
 				Type type;
-				int64_t arrival_index;    // For arrivals
-				int64_t tick_index;       // For ticks
-				int64_t server_index; // For completions
-				int64_t job_type;        // For completions
+
+				int64_t arrival_index;   // Used only for arrival
+				int64_t tick_index;      // Used only for tick
+				int64_t server_index;    // Used only for job completion
+				int64_t job_type;        // Used only for job completion
+
+				// ----- Factory Methods -----
+
+				static Event_type MakeArrival(int64_t job) {
+					return Event_type{
+						Type::Arrival,
+						job,      // arrival_index
+						-1,       // tick_index
+						-1,       // server_index
+						-1        // job_type
+					};
+				}
+
+				static Event_type MakeTick() {
+					return Event_type{
+						Type::Tick,
+						-1,       // arrival_index
+						0,        // tick_index (if needed)
+						-1,       // server_index
+						-1
+					};
+				}
+
+				static Event_type MakeCompletion(int64_t k, int64_t job) {
+					return Event_type{
+						Type::JobCompletion,
+						-1,    // arrival_index
+						-1,    // tick_index
+						k,     // server_index
+						job    // job_type
+					};
+				}
+
+				static Event_type MakeNothing() {
+					return Event_type{
+						Type::Nothing,
+						-1, -1, -1, -1
+					};
+				}
 			};
 			
 			struct Event {
