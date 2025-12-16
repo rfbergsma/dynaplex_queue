@@ -10,6 +10,7 @@
 #include <random>
 #include <cmath>
 #include "../../../lib/models/models/queue_mdp/mdp.h"
+#include <cassert>
 
 
 using namespace DynaPlex;
@@ -407,6 +408,77 @@ int main() {
 	
 	}
 
+
+	
+	{
+		auto check = [](bool cond, const char* name) {
+			if (!cond) {
+				std::cerr << "[Roundtrip test] MISMATCH in " << name << "\n";
+				std::exit(1); // or std::terminate();
+			}
+			};
+
+		auto state = mdp.GetInitialState();
+
+		// Make the state non-trivial
+		state.queue_manager.arrival(0);
+		state.queue_manager.arrival(1);
+		state.queue_manager.arrival(2);
+
+		//state.last_event_category = EventCategory::Arrival;
+		state.cat = StateCategory::AwaitAction();
+
+		state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+		state.server_manager.set_action_counter(
+			std::min<int64_t>(2, (int64_t)state.server_manager.action_queue.size() - 1)
+		);
+
+		
+		// You can also force some busy_on activity if you want:
+		// state.server_manager.take_action(1); // or use ModifyStateWithAction(state, 1);
+
+		// 2) Serialize → VarGroup
+		auto vg = state.ToVarGroup();
+
+		// 3) Deserialize → State
+		auto state2 = mdp.GetState(vg);
+
+		// 4) Compare fields (these checks ALWAYS run, even in Release)
+
+		
+		if (state2.cat == state.cat) {
+			std::cout << "cat equal" << std::endl;
+		}
+		else {
+			std::cout << "cat not equal" << std::endl; 
+		}
+
+		/*
+		check(state2.cat == state.cat, "cat");
+		check(state2.last_event_category == state.last_event_category, "last_event_category");
+		
+		check(state2.queue_manager.FIL_waiting == state.queue_manager.FIL_waiting, "FIL_waiting");
+		
+		check(state2.server_manager.action_counter == state.server_manager.action_counter,
+			"action_counter");
+		*/
+		/*
+		check(state2.server_manager.action_queue == state.server_manager.action_queue,
+			"action_queue");
+		
+		check(state2.server_manager.busy_on == state.server_manager.busy_on,
+			"busy_on");
+
+		check(state2.server_manager.static_info != nullptr, "static_info");
+
+		std::cout << "[Roundtrip test] Reconstructed actions:\n";
+		state2.server_manager.print_actions();
+
+		std::cout << "[Roundtrip test] PASSED\n";
+
+		*/
+	}
+	
 	// initialize 
 	//initialize server manager
 	

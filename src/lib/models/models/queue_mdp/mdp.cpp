@@ -9,7 +9,7 @@ namespace DynaPlex::Models {
 	namespace queue_mdp /*keep this in line with id below and with namespace name in header*/
 	{
 		// ===== DEBUG UTILITIES FOR queue_mdp  =====
-		#define QUEUE_MDP_DEBUG 1
+		#define QUEUE_MDP_DEBUG 0
 
 		#if QUEUE_MDP_DEBUG
 
@@ -70,7 +70,7 @@ namespace DynaPlex::Models {
 		{
 			VarGroup vars;
 			//Needs to update later:
-			vars.Add("valid_actions", 1);
+			vars.Add("valid_actions", 2);
 			vars.Add("discount_factor", discount_factor);
 
 
@@ -104,8 +104,6 @@ namespace DynaPlex::Models {
 					
 					state.last_event_category = "completion";
 				
-				
-				
 					//complete job at server
 					state.server_manager.complete_job(event_type.server_index, event_type.job_type);
 				#if QUEUE_MDP_DEBUG
@@ -134,6 +132,7 @@ namespace DynaPlex::Models {
 				else if (event_type.type == Event_type::Type::Arrival) {
 					state.last_event_category = "arrival";
 
+
 				
 					state.queue_manager.arrival(event_type.arrival_index);
 				
@@ -149,6 +148,7 @@ namespace DynaPlex::Models {
 					}
 
 					#if QUEUE_MDP_DEBUG
+					std::cout << "[QMDP]   ARRIVAL EVENT\n";
 					std::cout << "[QMDP]   AFTER event handling\n";
 					DebugPrintFIL(state, "[QMDP]   AFTER event");
 					DebugPrintBusyOn(state, "[QMDP]   AFTER event");
@@ -183,6 +183,7 @@ namespace DynaPlex::Models {
 					}
 				
 					#if QUEUE_MDP_DEBUG
+					std::cout << "[QMDP]   TICK EVENT\n";
 					std::cout << "[QMDP]   AFTER event handling\n";
 					DebugPrintFIL(state, "[QMDP]   AFTER event");
 					DebugPrintBusyOn(state, "[QMDP]   AFTER event");
@@ -250,6 +251,7 @@ namespace DynaPlex::Models {
 		#if QUEUE_MDP_DEBUG
 			std::cout << "[QMDP]   All actions processed -> set cat=AwaitEvent, reset counter to 0\n";
 		#endif
+			return 0.0; 
 
 		}
 
@@ -274,6 +276,52 @@ namespace DynaPlex::Models {
 
 		MDP::State MDP::GetState(const VarGroup& vars) const
 		{
+			// Start from a valid, fully initialized state
+			State state = GetInitialState();
+
+			// Basic fields
+			vars.Get("cat", state.cat);
+			vars.Get("last_event_category", state.last_event_category);
+
+			// Queue manager
+			vars.Get("FIL_waiting", state.queue_manager.FIL_waiting);
+
+			// Recompute rates (or call your helper methods)
+			state.queue_manager.total_arrival_rate = 0.0;
+			for (double r : arrival_rates) {
+				state.queue_manager.total_arrival_rate += r;
+			}
+			state.queue_manager.total_tick_rate = tick_rate;
+
+			// Server manager: action info
+			vars.Get("action_counter", state.server_manager.action_counter);
+			vars.Get("action_queue", state.server_manager.action_queue);
+
+			// Server manager: busy_on rows
+			state.server_manager.busy_on.clear();
+			for (int64_t k = 0; k < k_servers; ++k) {
+				std::vector<int64_t> row;
+				std::string key = "busy_on_" + std::to_string(k);
+				if (vars.HasKey(key)) {
+					vars.Get(key, row);
+				}
+				else {
+					// fallback: zero row with correct length
+					row.assign(server_static_info[(size_t)k].can_serve.size(), 0);
+				}
+				state.server_manager.busy_on.push_back(std::move(row));
+			}
+
+			// Restore pointer & derived data
+			state.server_manager.static_info = &server_static_info;
+			state.server_manager.update_idle_capacity();
+			state.server_manager.update_total_service_rate();
+
+			return state;
+		}
+		/*
+		MDP::State MDP::GetState(const VarGroup& vars) const
+		{
 			State state{};		
 			vars.Get("cat", state.cat);
 			//initiate any other state variables. 
@@ -287,7 +335,7 @@ namespace DynaPlex::Models {
 			vars.Get("last_event_category", state.last_event_category);
 			return state;
 		}
-
+		*/
 		MDP::State MDP::GetInitialState() const
 		{			
 			State state{};
@@ -338,6 +386,12 @@ namespace DynaPlex::Models {
 			for (int64_t i = 0; i < k_servers; ++i) {
 				uniformization_rate += server_static_info[i].mu_k * server_static_info[i].servers;
 			}
+
+		#if QUEUE_MDP_DEBUG
+			std::cout << "[QMDP]   INITIALIZATION \n";
+			std::cout << "[QMDP]   Uniformization rate:  " << uniformization_rate <<std::endl;
+		#endif
+
 
 		}
 
@@ -438,21 +492,19 @@ namespace DynaPlex::Models {
 		}
 
 		void MDP::GetFeatures(const State& state, DynaPlex::Features& features)const {
-			
-		#if QUEUE_MDP_DEBUG
-			std::cout << "\n[QMDP] GetFeatures called\n";
-			DebugPrintActionQueue(state, "[QMDP]   ");
-		#endif
+			if (state.server_manager.action_queue.empty() ||
+				state.server_manager.get_action_counter() >= (int64_t)state.server_manager.action_queue.size())
+			{
+				features.Add(-1); // no server
+				features.Add(-1); // no job
+				features.Add(state.queue_manager.FIL_waiting);
+				return;
+			}
+
 			Action current_action = state.server_manager.action_queue.at(state.server_manager.get_action_counter());
-			//t64_t server_index = current_action.server_index;	
 			features.Add(current_action.server_index);
 			features.Add(current_action.job_type);
 			features.Add(state.queue_manager.FIL_waiting);
-
-			
-			//Features.Add(state.);
-			
-			//throw DynaPlex::NotImplementedError();
 		}
 		
 		void MDP::RegisterPolicies(DynaPlex::Erasure::PolicyRegistry<MDP>& registry) const

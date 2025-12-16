@@ -19,10 +19,10 @@
 		
 		DynaPlex::MDP mdp = dp.GetMDP(config);
 
-		DynaPlex::Policy fifo_policy = mdp->GetPolicy("FIFO policy");
+		DynaPlex::Policy fifo_policy = mdp->GetPolicy("random");
 
 		DynaPlex::VarGroup demonstrator_config;
-		demonstrator_config.Add("max_period_count", 1000); //increase default number of periods
+		demonstrator_config.Add("max_period_count", 10); //increase default number of periods
 
 
 	
@@ -49,20 +49,23 @@
 
 		DynaPlex::VarGroup dcl_config{
 			//just for illustration, so we collect only little data, so DCL will run fast but will not perform well.
-			{"N",10},
+			{"N",1000},
 			{"num_gens",num_gens},
-			{"M",10},
+			{"M",100},
 			{"nn_architecture",nn_architecture},
 			{"nn_training",nn_training},
 			{"retrain_lastgen_only",false},
-			{"H",10 }
+			{"H",100}
 
 		};
 
 
 
 		auto dcl = dp.GetDCL(mdp, fifo_policy,dcl_config);
-		//dcl.TrainPolicy();
+		dcl.TrainPolicy();
+
+		auto policies = dcl.GetPolicies();
+
 
 		return 0;
 	}

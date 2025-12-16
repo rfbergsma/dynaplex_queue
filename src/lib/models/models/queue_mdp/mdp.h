@@ -2,8 +2,8 @@
 #include "dynaplex/dynaplex_model_includes.h"
 #include "dynaplex/modelling/discretedist.h"
 #include <deque>
-
-
+#include <stdexcept>
+#include <sstream>
 
 namespace DynaPlex::Models {
 	namespace queue_mdp /*must be consistent everywhere for complete mdp definition and associated policies and states (if not defined inline).*/
@@ -164,7 +164,7 @@ namespace DynaPlex::Models {
 
 					Action taken_action = action_queue[(size_t)action_counter];
 
-					// --- Perform the action (updates job queue, busy_on, etc.) ---
+					// --- Perform the action (busy_on, etc.) ---
 					assign_job(taken_action.server_index, taken_action.job_type);
 
 					// --- Update action_queue: remove ONLY impossible actions ---
@@ -246,6 +246,11 @@ namespace DynaPlex::Models {
 				void complete_job(int64_t k, int64_t job) {
 					int idx = canServeIndex(*static_info, k, job);
 
+
+
+
+
+
 					#if QUEUE_MDP_DEBUG
 						std::cout << "[QMDP]   complete_job called with server=" << k
 							<< ", job=" << job << "\n";
@@ -260,11 +265,16 @@ namespace DynaPlex::Models {
 						}
 					#endif
 
-						if (idx < 0) return;
+						if (idx < 0) {
+							std::cout << "Cannot complete job in server manager" << std::endl;
+						}
+							
+						
 						if (busy_on[(size_t)k][(size_t)idx] <= 0) {
 					#if QUEUE_MDP_DEBUG
 							std::cout << "[QMDP]   complete_job: busy_on already <= 0, no-op\n";
 					#endif
+							std::cout << "Cannot complete job in server manager" << std::endl;
 						return;
 					}
 
@@ -274,7 +284,22 @@ namespace DynaPlex::Models {
 						<< (busy_on[(size_t)k][(size_t)idx] - 1) << "\n";
 					#endif
 
-					busy_on[(size_t)k][(size_t)idx] -= 1;
+					// --- JOB-LEVEL COMPLETION: free all servers on this job type ---
+					for (int64_t k_server = 0; k_server < (int64_t)busy_on.size(); ++k_server) {
+						int idx2 = canServeIndex(*static_info, k_server, job);
+						if (idx2 >= 0) {
+					#if QUEUE_MDP_DEBUG
+							if (busy_on[(size_t)k_server][(size_t)idx2] > 0) {
+								std::cout << "[QMDP]   complete_job: setting busy_on[" << k_server
+									<< "][" << idx2 << "] from "
+									<< busy_on[(size_t)k_server][(size_t)idx2]
+									<< " to 0\n";
+							}
+					#endif
+							busy_on[(size_t)k_server][(size_t)idx2] = 0;
+						}
+					}
+					
 				}
 
 				//returns the index of job in can_serve vector of server k, -1 if cannot serve
@@ -435,8 +460,13 @@ namespace DynaPlex::Models {
 					if (n < 0 || n >= static_cast<int64_t>(FIL_waiting.size())) throw("job cannot complete, invalid job type");
 					
 					int64_t current_fil = FIL_waiting[(size_t)n];
-						
-					if (current_fil == 0) {
+					
+
+					if (current_fil == -1) {
+						std::cout << "trying to complete job that has fil -1 " << std::endl;
+					}
+
+					else if (current_fil == 0) {
 						FIL_waiting[(size_t)n] = -1;
 						
 						

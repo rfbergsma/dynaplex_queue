@@ -18,5 +18,20 @@ namespace DynaPlex::Models {
 			//throw DynaPlex::NotImplementedError();
 			return 1; // always assign job
 		}
+
+
+		//MDP and State refer to the specific ones defined in current namespace
+		FIFOPolicySorted::FIFOPolicySorted(std::shared_ptr<const MDP> mdp, const VarGroup& config)
+			:mdp{ mdp }
+		{
+			//Here, you may initiate any policy parameters.
+		}
+
+		int64_t FIFOPolicySorted::GetAction(const MDP::State& state) const
+		{
+			//Implement custom policy, and remove below line.
+			//throw DynaPlex::NotImplementedError();
+			return 1; // always assign job
+		}
 	}
 }
