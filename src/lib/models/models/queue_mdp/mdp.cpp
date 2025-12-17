@@ -255,67 +255,39 @@ namespace DynaPlex::Models {
 
 		}
 
-		DynaPlex::VarGroup MDP::State::ToVarGroup() const
-		{
+		DynaPlex::VarGroup MDP::State::ToVarGroup() const {
 			DynaPlex::VarGroup vars;
 			vars.Add("cat", cat);
-
-			//add any other state variables. 
-			vars.Add("FIL_waiting", queue_manager.FIL_waiting);
-			vars.Add("action_counter", server_manager.action_counter);
-			vars.Add("action_queue", server_manager.action_queue);
-			
-			// row-by-row storage instead of vector<vector<int64_t>>
-			for (size_t k = 0; k < server_manager.busy_on.size(); ++k) {
-				vars.Add("busy_on_" + std::to_string(k), server_manager.busy_on[k]);
-			}
 			vars.Add("last_event_category", last_event_category);
 
+			vars.Add("server", server_manager.ToVarGroup());
+			vars.Add("queue", queue_manager.ToVarGroup());
 			return vars;
 		}
 
+
+
 		MDP::State MDP::GetState(const VarGroup& vars) const
 		{
-			// Start from a valid, fully initialized state
-			State state = GetInitialState();
+			State state = GetInitialState(); // ensures static_info + busy_on shape exist
 
-			// Basic fields
 			vars.Get("cat", state.cat);
 			vars.Get("last_event_category", state.last_event_category);
 
-			// Queue manager
-			vars.Get("FIL_waiting", state.queue_manager.FIL_waiting);
+			VarGroup qvg, svg;
+			vars.Get("queue", qvg);
+			vars.Get("server", svg);
 
-			// Recompute rates (or call your helper methods)
-			state.queue_manager.total_arrival_rate = 0.0;
-			for (double r : arrival_rates) {
-				state.queue_manager.total_arrival_rate += r;
-			}
-			state.queue_manager.total_tick_rate = tick_rate;
+			state.queue_manager = multi_queue(qvg);
+			state.server_manager = ServerDynamicState(svg);
 
-			// Server manager: action info
-			vars.Get("action_counter", state.server_manager.action_counter);
-			vars.Get("action_queue", state.server_manager.action_queue);
-
-			// Server manager: busy_on rows
-			state.server_manager.busy_on.clear();
-			for (int64_t k = 0; k < k_servers; ++k) {
-				std::vector<int64_t> row;
-				std::string key = "busy_on_" + std::to_string(k);
-				if (vars.HasKey(key)) {
-					vars.Get(key, row);
-				}
-				else {
-					// fallback: zero row with correct length
-					row.assign(server_static_info[(size_t)k].can_serve.size(), 0);
-				}
-				state.server_manager.busy_on.push_back(std::move(row));
-			}
-
-			// Restore pointer & derived data
+			// Re-attach pointer + recompute derived fields (ServerDynamicState ctor can’t know this pointer)
 			state.server_manager.static_info = &server_static_info;
-			state.server_manager.update_idle_capacity();
 			state.server_manager.update_total_service_rate();
+
+			// Recompute queue rates too (or do it inside multi_queue ctor)
+			state.queue_manager.update_total_arrival_rate(arrival_rates);
+			state.queue_manager.update_total_tick_rate(tick_rate);
 
 			return state;
 		}

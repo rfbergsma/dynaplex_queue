@@ -45,10 +45,6 @@ namespace DynaPlex::Models {
 			};
 
 			struct ServerDynamicState{
-				// For each job type, number of idle servers that can serve it
-				std::vector<int64_t> has_idle_capacity_per_job;
-				// True if any job type has idle servers
-				bool has_idle_capacity = false;
 				// Reference to static info (not owned)
 				const std::vector<ServerStaticInfo>* static_info = nullptr;
 				std::vector<std::vector<int64_t>> busy_on;
@@ -68,16 +64,13 @@ namespace DynaPlex::Models {
 					for (size_t k = 0; k < static_info->size(); ++k) {
 						busy_on[k].resize((*static_info)[k].can_serve.size(), 0);
 					}
-					has_idle_capacity_per_job.assign(n_jobs, 0);
-					has_idle_capacity = false;
-					total_service_rate = 0.0;
 
+					total_service_rate = 0.0;
 					//initialize empty queue
 					action_queue.clear();
 					action_counter = 0;
 
-					// Optionally, call update_idle_capacity() and update_total_service_rate() here
-					update_idle_capacity();
+					
 				}
 				
 				void generate_actions(std::vector<int64_t> FIL_waiting) {
@@ -232,7 +225,6 @@ namespace DynaPlex::Models {
 
 				}
 
-
 				/*
 				//complete job n at server k remove job from busy_on
 				void complete_job(int64_t k, int64_t job) {
@@ -245,11 +237,6 @@ namespace DynaPlex::Models {
 				*/
 				void complete_job(int64_t k, int64_t job) {
 					int idx = canServeIndex(*static_info, k, job);
-
-
-
-
-
 
 					#if QUEUE_MDP_DEBUG
 						std::cout << "[QMDP]   complete_job called with server=" << k
@@ -309,30 +296,7 @@ namespace DynaPlex::Models {
 					return (it == v.end()) ? -1 : (int)std::distance(v.begin(), it);
 				}
 
-				// Update idle capacity info based on busy_on (passed in)
-				void update_idle_capacity() {
-					if (!static_info || static_info->empty() || busy_on.empty()) {
-						has_idle_capacity_per_job.clear();
-						has_idle_capacity = false;
-						return;
-					}
-					size_t n_jobs = busy_on[0].size();
-					has_idle_capacity_per_job.assign(n_jobs, 0);
-					has_idle_capacity = false;
-					for (size_t n = 0; n < n_jobs; ++n) {
-						for (size_t k = 0; k < static_info->size(); ++k) {
-							const auto& st = (*static_info)[k];
-							if (std::find(st.can_serve.begin(), st.can_serve.end(), n) != st.can_serve.end()) {
-								int64_t idle = st.servers - busy_on[k][n];
-								if (idle > 0) {
-									has_idle_capacity_per_job[n] += idle;
-									has_idle_capacity = true;
-								}
-							}
-						}
-					}
-				}
-
+				
 				//update total service rate
 				void update_total_service_rate() {
 					if (!static_info) {
@@ -376,8 +340,6 @@ namespace DynaPlex::Models {
 				
 				DynaPlex::VarGroup ToVarGroup() const {
 					DynaPlex::VarGroup vars;
-					vars.Add("has_idle_capacity_per_job", has_idle_capacity_per_job);
-					vars.Add("has_idle_capacity", has_idle_capacity);
 					//vars.Add("busy_on", busy_on);
 					for (size_t k = 0; k < busy_on.size(); ++k) {
 						vars.Add("busy_on_" + std::to_string(k), busy_on[k]);
@@ -388,8 +350,6 @@ namespace DynaPlex::Models {
 					return vars;
 				}
 				explicit ServerDynamicState(const DynaPlex::VarGroup& vg) {
-					vg.Get("has_idle_capacity_per_job", has_idle_capacity_per_job);
-					vg.Get("has_idle_capacity", has_idle_capacity);
 					//vg.Get("busy_on", busy_on);
 					busy_on.clear();
 					size_t k = 0;
@@ -561,6 +521,21 @@ namespace DynaPlex::Models {
 
 					if (H >= i) return -1;  // queue empty
 					return i - H;
+				}
+
+				DynaPlex::VarGroup ToVarGroup() const {
+					DynaPlex::VarGroup vg;
+					vg.Add("FIL_waiting", FIL_waiting);
+					vg.Add("total_tick_rate", total_tick_rate);
+					vg.Add("total_arrival_rate", total_arrival_rate);
+					// optional: store arrival_rates if you treat it as part of state (usually not needed)
+					return vg;
+				}
+
+				explicit multi_queue(const DynaPlex::VarGroup& vg) {
+					vg.Get("FIL_waiting", FIL_waiting);
+					vg.Get("total_tick_rate", total_tick_rate);
+					vg.Get("total_arrival_rate", total_arrival_rate);
 				}
 
 			};
