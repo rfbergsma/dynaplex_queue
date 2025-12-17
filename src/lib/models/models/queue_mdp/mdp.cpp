@@ -255,6 +255,8 @@ namespace DynaPlex::Models {
 
 		}
 
+
+
 		DynaPlex::VarGroup MDP::State::ToVarGroup() const {
 			DynaPlex::VarGroup vars;
 			vars.Add("cat", cat);
@@ -266,10 +268,18 @@ namespace DynaPlex::Models {
 		}
 
 
-
+		
 		MDP::State MDP::GetState(const VarGroup& vars) const
 		{
+			
 			State state = GetInitialState(); // ensures static_info + busy_on shape exist
+			state.server_manager.static_info = &server_static_info;
+
+			std::cout << "[QMDP] GetState called\n";
+			std::cout << "[QMDP] expected servers = " << k_servers
+				<< " server_static_info.size()=" << server_static_info.size()
+				<< " busy_on.size() currently=" << state.server_manager.busy_on.size()
+				<< "\n";
 
 			vars.Get("cat", state.cat);
 			vars.Get("last_event_category", state.last_event_category);
@@ -282,7 +292,6 @@ namespace DynaPlex::Models {
 			state.server_manager = ServerDynamicState(svg);
 
 			// Re-attach pointer + recompute derived fields (ServerDynamicState ctor can’t know this pointer)
-			state.server_manager.static_info = &server_static_info;
 			state.server_manager.update_total_service_rate();
 
 			// Recompute queue rates too (or do it inside multi_queue ctor)
@@ -291,6 +300,8 @@ namespace DynaPlex::Models {
 
 			return state;
 		}
+
+		
 		/*
 		MDP::State MDP::GetState(const VarGroup& vars) const
 		{

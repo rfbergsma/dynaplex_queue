@@ -78,10 +78,6 @@ int main() {
 
 	auto state = mdp.GetInitialState();
 	
-	state.server_manager.update_idle_capacity();
-
-	std::cout << "Has idle? " << (state.server_manager.has_idle_capacity ? "yes" : "no") << "\n";
-
 
 	if (!mdp.server_static_info.empty() && !mdp.server_static_info[0].can_serve.empty()) {
 		
@@ -101,15 +97,6 @@ int main() {
 		}
 		std::cout << "]\n";
 
-		std::cout << "Has idle? " << (state.server_manager.has_idle_capacity ? "yes" : "no") << "\n";
-
-		// idle capacity per server
-		std::cout << "Idle capacity per job: [";
-		for (size_t n = 0; n < state.server_manager.has_idle_capacity_per_job.size(); ++n) {
-			std::cout << state.server_manager.has_idle_capacity_per_job[n]
-				<< (n + 1 < state.server_manager.has_idle_capacity_per_job.size() ? "," : "");
-		}
-		std::cout << "]\n";
 		
 
 
@@ -453,30 +440,143 @@ int main() {
 			std::cout << "cat not equal" << std::endl; 
 		}
 
-		/*
-		check(state2.cat == state.cat, "cat");
-		check(state2.last_event_category == state.last_event_category, "last_event_category");
+		if (state2.queue_manager.FIL_waiting == state.queue_manager.FIL_waiting) {
+			std::cout << "FIL waiting equal" << std::endl;
+		}
+		else {
+			std::cout << "FIL waiting equal" << std::endl;
+		}
+
 		
-		check(state2.queue_manager.FIL_waiting == state.queue_manager.FIL_waiting, "FIL_waiting");
-		
-		check(state2.server_manager.action_counter == state.server_manager.action_counter,
-			"action_counter");
-		*/
-		/*
-		check(state2.server_manager.action_queue == state.server_manager.action_queue,
-			"action_queue");
-		
-		check(state2.server_manager.busy_on == state.server_manager.busy_on,
-			"busy_on");
 
-		check(state2.server_manager.static_info != nullptr, "static_info");
 
-		std::cout << "[Roundtrip test] Reconstructed actions:\n";
-		state2.server_manager.print_actions();
+		// 4) Compare fields (Release-safe)
 
-		std::cout << "[Roundtrip test] PASSED\n";
+		std::cout << "===== ROUNDTRIP CHECK =====\n";
 
-		*/
+		// cat
+		if (state2.cat == state.cat) {
+			std::cout << "cat equal\n";
+		}
+		else {
+			std::cout << "cat NOT equal\n";
+		}
+
+		// last_event_category
+		if (state2.last_event_category == state.last_event_category) {
+			std::cout << "last_event_category equal\n";
+		}
+		else {
+			std::cout << "last_event_category NOT equal\n";
+		}
+
+		// FIL_waiting
+		if (state2.queue_manager.FIL_waiting == state.queue_manager.FIL_waiting) {
+			std::cout << "FIL_waiting equal\n";
+		}
+		else {
+			std::cout << "FIL_waiting NOT equal\n";
+			std::cout << "  state : ";
+			for (auto x : state.queue_manager.FIL_waiting) std::cout << x << " ";
+			std::cout << "\n  state2: ";
+			for (auto x : state2.queue_manager.FIL_waiting) std::cout << x << " ";
+			std::cout << "\n";
+		}
+
+		// action_counter
+		if (state2.server_manager.action_counter == state.server_manager.action_counter) {
+			std::cout << "action_counter equal\n";
+		}
+		else {
+			std::cout << "action_counter NOT equal: "
+				<< state.server_manager.action_counter << " vs "
+				<< state2.server_manager.action_counter << "\n";
+		}
+
+		// action_queue size
+		if (state2.server_manager.action_queue.size() == state.server_manager.action_queue.size()) {
+			std::cout << "action_queue size equal (" << state.server_manager.action_queue.size() << ")\n";
+		}
+		else {
+			std::cout << "action_queue size NOT equal: "
+				<< state.server_manager.action_queue.size() << " vs "
+				<< state2.server_manager.action_queue.size() << "\n";
+		}
+
+		// action_queue contents
+		bool aq_equal = true;
+		size_t aq_min = std::min(state.server_manager.action_queue.size(),
+			state2.server_manager.action_queue.size());
+		for (size_t i = 0; i < aq_min; ++i) {
+			const auto& a1 = state.server_manager.action_queue[i];
+			const auto& a2 = state2.server_manager.action_queue[i];
+			if (!(a1.job_type == a2.job_type && a1.server_index == a2.server_index)) { // assumes Action has operator==
+				aq_equal = false;
+				std::cout << "action_queue differs at i=" << i << "\n";
+				// If Action doesn't have operator<<, print its fields:
+				std::cout << "  state : (server_index=" << a1.server_index << ", job_type=" << a1.job_type << ")\n";
+				std::cout << "  state2: (server_index=" << a2.server_index << ", job_type=" << a2.job_type << ")\n";
+				break;
+			}
+		}
+		if (aq_equal && state.server_manager.action_queue.size() == state2.server_manager.action_queue.size()) {
+			std::cout << "action_queue equal\n";
+		}
+		else if (aq_equal) {
+			std::cout << "action_queue prefix equal but sizes differ\n";
+		}
+
+		// busy_on rows size
+		if (state2.server_manager.busy_on.size() == state.server_manager.busy_on.size()) {
+			std::cout << "busy_on row count equal (" << state.server_manager.busy_on.size() << ")\n";
+		}
+		else {
+			std::cout << "busy_on row count NOT equal: "
+				<< state.server_manager.busy_on.size() << " vs "
+				<< state2.server_manager.busy_on.size() << "\n";
+		}
+
+		// busy_on contents row-by-row
+		size_t rows_min = std::min(state.server_manager.busy_on.size(),
+			state2.server_manager.busy_on.size());
+		bool busy_equal = true;
+
+		for (size_t k = 0; k < rows_min; ++k) {
+			const auto& r1 = state.server_manager.busy_on[k];
+			const auto& r2 = state2.server_manager.busy_on[k];
+
+			if (r1.size() != r2.size()) {
+				busy_equal = false;
+				std::cout << "busy_on row " << k << " size NOT equal: " << r1.size() << " vs " << r2.size() << "\n";
+				continue;
+			}
+
+			for (size_t j = 0; j < r1.size(); ++j) {
+				if (r1[j] != r2[j]) {
+					busy_equal = false;
+					std::cout << "busy_on differs at row " << k << ", col " << j
+						<< ": " << r1[j] << " vs " << r2[j] << "\n";
+					break;
+				}
+			}
+		}
+
+		if (busy_equal && state.server_manager.busy_on.size() == state2.server_manager.busy_on.size()) {
+			std::cout << "busy_on equal\n";
+		}
+		else if (busy_equal) {
+			std::cout << "busy_on prefix equal but row counts differ\n";
+		}
+
+		// static_info pointer sanity
+		if (state2.server_manager.static_info != nullptr) {
+			std::cout << "static_info not null\n";
+		}
+		else {
+			std::cout << "static_info IS NULL\n";
+		}
+
+		std::cout << "===== END ROUNDTRIP CHECK =====\n";
 	}
 	
 	// initialize 

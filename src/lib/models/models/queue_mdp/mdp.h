@@ -44,6 +44,7 @@ namespace DynaPlex::Models {
 				}
 			};
 
+
 			struct ServerDynamicState{
 				// Reference to static info (not owned)
 				const std::vector<ServerStaticInfo>* static_info = nullptr;
@@ -340,29 +341,40 @@ namespace DynaPlex::Models {
 				
 				DynaPlex::VarGroup ToVarGroup() const {
 					DynaPlex::VarGroup vars;
-					//vars.Add("busy_on", busy_on);
+
+					vars.Add("busy_on_rows", (int64_t)busy_on.size());
 					for (size_t k = 0; k < busy_on.size(); ++k) {
 						vars.Add("busy_on_" + std::to_string(k), busy_on[k]);
 					}
-					//vars.Add("busy_on_size", static_cast<int64_t>(busy_on.size()));
+
 					vars.Add("total_service_rate", total_service_rate);
-					
+					vars.Add("action_counter", action_counter);
+					vars.Add("action_queue", action_queue);
+
 					return vars;
 				}
+
 				explicit ServerDynamicState(const DynaPlex::VarGroup& vg) {
-					//vg.Get("busy_on", busy_on);
+					int64_t rows = 0;
+					vg.Get("busy_on_rows", rows);
+
 					busy_on.clear();
-					size_t k = 0;
-					while (true) {
+					busy_on.reserve((size_t)rows);
+
+					for (int64_t k = 0; k < rows; ++k) {
 						std::vector<int64_t> row;
-						std::string key = "busy_on_" + std::to_string(k);
-						if (!vg.HasKey(key)) break; // Stop if the key doesn't exist
-						vg.Get(key, row);
+						vg.Get("busy_on_" + std::to_string(k), row);
 						busy_on.push_back(std::move(row));
-						++k;
 					}
-					
-					vg.Get("total_service_rate", total_service_rate);
+
+					// service rate might be derived; only load if you truly store it
+					if (vg.HasKey("total_service_rate"))
+						vg.Get("total_service_rate", total_service_rate);
+					else
+						total_service_rate = 0.0;
+
+					vg.Get("action_counter", action_counter);
+					vg.Get("action_queue", action_queue);
 				}
 			};
 
