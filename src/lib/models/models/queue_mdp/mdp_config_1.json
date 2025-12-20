@@ -1,0 +1,36 @@
+/**
+ * MDP configuration file demonstrating a specific MDP configuration.  
+ * - Files under models/_subdir_/_filename_.json are copied to DYNAPLEX_IO_ROOT_DIR/IO_DynaPlex/mdp_config_examples/_subdir_/_filename_.json
+ *  where executable and mdp_unit_tests look for them. 
+ * - Providing MDP configuration files is not required, but serves as documentation. 
+ * - It also simplifies unit_tests, see tests/mdp_unit_tests/*.cpp. 
+ */
+{
+    "id": "queue_mdp",
+    "discount_factor": 1.0,
+    //other variables that are read by the constructor go here
+    "k_servers": 3,
+    "n_jobs": 3,
+    "tick_rate": 1,
+    "arrival_rates": [ 0.25, 0.25, 0.25 ],
+    "cost_rates": [ 1.0, 1.0, 1.0 ],
+    "due_times": [ 6.0, 6.0, 6.0 ],
+
+    "server_type_0": {
+        "servers": 1,
+        "can_serve": [ 0, 1 ],
+        "service_rate": 0.35
+    },
+    "server_type_1": {
+        "servers": 1,
+        "can_serve": [ 1, 2 ],
+        "service_rate": 0.35
+    },
+    "server_type_2": {
+        "servers": 1,
+        "can_serve": [ 2, 0 ],
+        "service_rate": 0.35
+    }
+
+
+}

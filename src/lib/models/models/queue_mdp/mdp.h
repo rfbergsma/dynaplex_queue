@@ -4,6 +4,9 @@
 #include <deque>
 #include <stdexcept>
 #include <sstream>
+#include <algorithm>
+#include <cstdint>
+#include <vector>
 
 namespace DynaPlex::Models {
 	namespace queue_mdp /*must be consistent everywhere for complete mdp definition and associated policies and states (if not defined inline).*/
@@ -57,6 +60,31 @@ namespace DynaPlex::Models {
 
 				ServerDynamicState() = default;
 				
+
+				void SortActionsFIFO(std::deque<Action>& actions,
+					const std::vector<int64_t>& FIL_waiting)
+				{
+					// Stable sort so that ties keep previous relative order (useful for reproducibility)
+					std::stable_sort(actions.begin(), actions.end(),
+						[&](const Action& a, const Action& b) {
+							const int64_t wa = (a.job_type >= 0 && (size_t)a.job_type < FIL_waiting.size())
+								? FIL_waiting[(size_t)a.job_type]
+								: INT64_MIN;
+							const int64_t wb = (b.job_type >= 0 && (size_t)b.job_type < FIL_waiting.size())
+								? FIL_waiting[(size_t)b.job_type]
+								: INT64_MIN;
+
+							// Primary: "oldest first" (larger FIL first)
+							if (wa != wb) return wa > wb;
+
+							// Secondary: smaller server pool index first
+							if (a.server_index != b.server_index) return a.server_index < b.server_index;
+
+							// Tertiary: smaller job index first
+							return a.job_type < b.job_type;
+						});
+				}
+
 				void initialize(const std::vector<ServerStaticInfo>* static_info_ptr, int64_t n_jobs) {
 					static_info = static_info_ptr;
 					busy_on.clear();
@@ -107,6 +135,9 @@ namespace DynaPlex::Models {
 					std::cout << "[QMDP]   new queue size = " << action_queue.size()
 						<< ", action_counter (unchanged) = " << action_counter << "\n";
 					#endif
+
+					SortActionsFIFO(action_queue, FIL_waiting);
+
 				}
 	
 				int64_t n_servers_busy_server_k(int64_t k) const {

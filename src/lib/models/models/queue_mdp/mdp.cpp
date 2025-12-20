@@ -79,6 +79,8 @@ namespace DynaPlex::Models {
 
 		double MDP::ModifyStateWithEvent(State& state, const Event& event) const
 			{
+				//std::cout << "ModifyStateWithEvent callced" << std::endl;
+
 				#if QUEUE_MDP_DEBUG
 				std::cout << "\n[QMDP] ModifyStateWithEvent called\n";
 				DebugPrintFIL(state, "[QMDP]   BEFORE event");
@@ -216,6 +218,8 @@ namespace DynaPlex::Models {
 
 		double MDP::ModifyStateWithAction(MDP::State& state, int64_t action) const
 		{
+		//std::cout << "[QMDP] ModifyStateWithAction called action=" << action << "\n";
+
 		#if QUEUE_MDP_DEBUG
 			std::cout << "\n[QMDP] ModifyStateWithAction called\n";
 			std::cout << "[QMDP]   incoming action = " << action << "\n";
@@ -273,14 +277,14 @@ namespace DynaPlex::Models {
 		{
 			
 			State state = GetInitialState(); // ensures static_info + busy_on shape exist
-			state.server_manager.static_info = &server_static_info;
 
+			/*
 			std::cout << "[QMDP] GetState called\n";
 			std::cout << "[QMDP] expected servers = " << k_servers
 				<< " server_static_info.size()=" << server_static_info.size()
 				<< " busy_on.size() currently=" << state.server_manager.busy_on.size()
 				<< "\n";
-
+			*/
 			vars.Get("cat", state.cat);
 			vars.Get("last_event_category", state.last_event_category);
 
@@ -291,7 +295,10 @@ namespace DynaPlex::Models {
 			state.queue_manager = multi_queue(qvg);
 			state.server_manager = ServerDynamicState(svg);
 
+
 			// Re-attach pointer + recompute derived fields (ServerDynamicState ctor can’t know this pointer)
+			state.server_manager.static_info = &server_static_info;
+
 			state.server_manager.update_total_service_rate();
 
 			// Recompute queue rates too (or do it inside multi_queue ctor)
@@ -474,7 +481,11 @@ namespace DynaPlex::Models {
 			throw DynaPlex::NotImplementedError();
 		}
 
+		/*
 		void MDP::GetFeatures(const State& state, DynaPlex::Features& features)const {
+			//std::cout << "[QMDP] GetFeatures called\n";
+
+			
 			if (state.server_manager.action_queue.empty() ||
 				state.server_manager.get_action_counter() >= (int64_t)state.server_manager.action_queue.size())
 			{
@@ -488,8 +499,72 @@ namespace DynaPlex::Models {
 			features.Add(current_action.server_index);
 			features.Add(current_action.job_type);
 			features.Add(state.queue_manager.FIL_waiting);
+
 		}
-		
+		*/
+
+		void MDP::GetFeatures(const State& state, DynaPlex::Features& features) const
+		{
+			// ----- (1) Event category as an integer -----
+			// arrival=0, tick=1, completion=2, nothing=3, unknown=-1
+			int64_t last_evt = -1;
+			if (state.last_event_category == "arrival")     last_evt = 0;
+			else if (state.last_event_category == "tick")        last_evt = 1;
+			else if (state.last_event_category == "completion")  last_evt = 2;
+			else if (state.last_event_category == "nothing")     last_evt = 3;
+			features.Add(last_evt);
+
+			// ----- (2) Queue state -----
+			// FIL vector (length = n_jobs)
+			features.Add(state.queue_manager.FIL_waiting);
+
+			// Include derived rates (these DO change with state in your implementation)
+			features.Add(state.queue_manager.total_arrival_rate);
+			features.Add(state.queue_manager.total_tick_rate);
+
+			// ----- (3) Server state (busy_on flattened) -----
+			// busy_on[k][j] where j indexes can_serve slots for server type k
+			const auto& busy_on = state.server_manager.busy_on;
+
+			int64_t total_busy_all = 0;
+			for (size_t k = 0; k < busy_on.size(); ++k) {
+				int64_t total_busy_k = 0;
+				for (size_t j = 0; j < busy_on[k].size(); ++j) {
+					features.Add(busy_on[k][j]);
+					total_busy_k += busy_on[k][j];
+				}
+				// Helpful aggregates per server type
+				features.Add(total_busy_k);
+				total_busy_all += total_busy_k;
+			}
+			// Global aggregate
+			features.Add(total_busy_all);
+
+			// Also include the server-side derived rate (you maintain this)
+			features.Add(state.server_manager.total_service_rate);
+
+			// ----- (4) Action-list state (this is CRUCIAL for learning "defer") -----
+			const int64_t qsize = static_cast<int64_t>(state.server_manager.action_queue.size());
+			const int64_t acnt = state.server_manager.get_action_counter();
+
+			features.Add(qsize);
+			features.Add(acnt);
+			// normalized progress through the list (avoid div-by-0)
+			features.Add(qsize > 0 ? static_cast<double>(acnt) / static_cast<double>(qsize) : 0.0);
+
+			// ----- (5) Current candidate (server, job) -----
+			if (qsize <= 0 || acnt < 0 || acnt >= qsize) {
+				features.Add(-1); // no server
+				features.Add(-1); // no job
+			}
+			else {
+				const Action& current_action = state.server_manager.action_queue.at(static_cast<size_t>(acnt));
+				features.Add(current_action.server_index);
+				features.Add(current_action.job_type);
+			}
+		}
+
+
 		void MDP::RegisterPolicies(DynaPlex::Erasure::PolicyRegistry<MDP>& registry) const
 		{//Here, we register any custom heuristics we want to provide for this MDP.	
 		 //On the generic DynaPlex::MDP constructed from this, these heuristics can be obtained
@@ -506,6 +581,8 @@ namespace DynaPlex::Models {
 		}	
 
 		bool MDP::IsAllowedAction(const State& state, int64_t action) const {
+		//std::cout << "[QMDP] IsAllowedAction called action=" << action << "\n";
+
 		#if QUEUE_MDP_DEBUG
 			std::cout << "\n[QMDP] IsAllowedAction called\n";
 			std::cout << "[QMDP]   requested action = " << action << "\n";

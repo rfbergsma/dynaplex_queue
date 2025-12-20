@@ -575,6 +575,52 @@ int main() {
 		else {
 			std::cout << "static_info IS NULL\n";
 		}
+		// Check that static_info points to the right object
+		if (state2.server_manager.static_info == &mdp.server_static_info) {
+			std::cout << "static_info points to mdp.server_static_info\n";
+		}
+		else {
+			std::cout << "static_info DOES NOT point to mdp.server_static_info\n";
+			std::cout << "  state2.static_info ptr = " << (const void*)state2.server_manager.static_info << "\n";
+			std::cout << "  &mdp.server_static_info = " << (const void*)&mdp.server_static_info << "\n";
+		}
+
+		// Check server_static_info sizes
+		if (state2.server_manager.static_info->size() == mdp.server_static_info.size()) {
+			std::cout << "server_static_info.size equal: " << mdp.server_static_info.size() << "\n";
+		}
+		else {
+			std::cout << "server_static_info.size NOT equal: "
+				<< state2.server_manager.static_info->size() << " vs " << mdp.server_static_info.size() << "\n";
+		}
+
+		// Check can_serve vectors match for each server
+		size_t K = std::min(state2.server_manager.static_info->size(), mdp.server_static_info.size());
+		for (size_t k = 0; k < K; ++k) {
+			const auto& a = (*state2.server_manager.static_info)[k].can_serve;
+			const auto& b = mdp.server_static_info[k].can_serve;
+
+			if (a.size() == b.size()) {
+				std::cout << "server " << k << " can_serve size equal (" << a.size() << ")\n";
+			}
+			else {
+				std::cout << "server " << k << " can_serve size NOT equal: " << a.size() << " vs " << b.size() << "\n";
+			}
+
+			size_t J = std::min(a.size(), b.size());
+			bool same = true;
+			for (size_t j = 0; j < J; ++j) {
+				if (a[j] != b[j]) {
+					same = false;
+					std::cout << "server " << k << " can_serve differs at j=" << j
+						<< ": " << a[j] << " vs " << b[j] << "\n";
+					break;
+				}
+			}
+			if (same && a.size() == b.size()) {
+				std::cout << "server " << k << " can_serve contents equal\n";
+			}
+		}
 
 		std::cout << "===== END ROUNDTRIP CHECK =====\n";
 	}
