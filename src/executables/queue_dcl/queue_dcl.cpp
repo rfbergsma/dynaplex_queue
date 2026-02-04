@@ -49,9 +49,9 @@
 
 		DynaPlex::VarGroup dcl_config{
 			//just for illustration, so we collect only little data, so DCL will run fast but will not perform well.
-			{"N",20000},
+			{"N",5000},
 			{"num_gens",num_gens},
-			{"M",600},
+			{"M",800},
 			{"nn_architecture",nn_architecture},
 			{"nn_training",nn_training},
 			{"retrain_lastgen_only",false},

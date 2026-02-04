@@ -91,7 +91,30 @@ namespace DynaPlex::Models {
 			
 				double event_sample = event.event_sample;
 				double uniform_rate_next_fil = event.uniform_rate_next_fil;
-			
+				
+				if (state.next_fil_job_type != -1) {
+					const int64_t n = state.next_fil_job_type;
+
+					// Pop head / reveal next head using your existing sampler
+					state.queue_manager.complete_job(n, uniform_rate_next_fil);
+
+					// clear pending refresh
+					state.next_fil_job_type = -1;
+
+					// regenerate actions because FIL changed
+					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+					state.server_manager.set_action_counter(0);
+
+					// go back to decision-making
+					state.cat = state.server_manager.action_queue.empty()
+						? StateCategory::AwaitEvent()
+						: StateCategory::AwaitAction();
+
+					state.last_event_category = "fil_refresh";
+					return 0.0;
+				}
+
+
 				Event_type event_type = GetEventType(event_sample, state);
 			
 			
@@ -112,7 +135,7 @@ namespace DynaPlex::Models {
 					DebugPrintBusyOn(state, "[QMDP]   AFTER complete_job");
 				#endif
 				
-					state.queue_manager.complete_job(event_type.job_type, uniform_rate_next_fil); // job completed, remove from queue
+					//state.queue_manager.complete_job(event_type.job_type, uniform_rate_next_fil); // job completed, remove from queue
 					
 					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
 					if (!state.server_manager.action_queue.empty()) {
@@ -216,48 +239,50 @@ namespace DynaPlex::Models {
 				}
 			}
 
-		double MDP::ModifyStateWithAction(MDP::State& state, int64_t action) const
-		{
-		//std::cout << "[QMDP] ModifyStateWithAction called action=" << action << "\n";
+			double MDP::ModifyStateWithAction(MDP::State& state, int64_t action) const
+			{
+				// Safety: if action_queue is empty, nothing to do
+				if (state.server_manager.action_queue.empty()) {
+					state.server_manager.set_action_counter(0);
+					state.cat = StateCategory::AwaitEvent();
+					return 0.0;
+				}
 
-		#if QUEUE_MDP_DEBUG
-			std::cout << "\n[QMDP] ModifyStateWithAction called\n";
-			std::cout << "[QMDP]   incoming action = " << action << "\n";
-			DebugPrintFIL(state, "[QMDP]   BEFORE action");
-			DebugPrintBusyOn(state, "[QMDP]   BEFORE action");
-			DebugPrintActionQueue(state, "[QMDP]   BEFORE action");
-		#endif
+				const int64_t acnt = state.server_manager.get_action_counter();
+				if (acnt < 0 || acnt >= (int64_t)state.server_manager.action_queue.size()) {
+					// Counter out of range: reset and go to event
+					state.server_manager.set_action_counter(0);
+					state.cat = StateCategory::AwaitEvent();
+					return 0.0;
+				}
 
-			Action current_action = state.server_manager.action_queue.at(state.server_manager.get_action_counter());
-		
-		#if QUEUE_MDP_DEBUG
-			std::cout << "[QMDP]   current_action = ("
-				<< current_action.server_index << ","
-				<< current_action.job_type << ")\n";
-		#endif
+				Action current_action = state.server_manager.action_queue.at((size_t)acnt);
 
+				// This will either assign (action==1) or advance the counter (action==0)
+				state.server_manager.take_action(action);
 
-			state.server_manager.take_action(action);
+				if (action == 1) {
+					// Trigger FIL refresh for this job type; refresh happens in ModifyStateWithEvent
+					state.next_fil_job_type = current_action.job_type;
 
-		#if QUEUE_MDP_DEBUG
-			std::cout << "[QMDP]   AFTER take_action\n";
-			DebugPrintFIL(state, "[QMDP]   AFTER action");
-			DebugPrintBusyOn(state, "[QMDP]   AFTER action");
-			DebugPrintActionQueue(state, "[QMDP]   AFTER action");
-		#endif
+					// Force immediate refresh step next
+					state.cat = StateCategory::AwaitEvent();
+					return 0.0;
+				}
 
-		
-			if (state.server_manager.get_action_counter() >= static_cast<int64_t>(state.server_manager.action_queue.size())) {
-				// all actions processed
-				state.server_manager.set_action_counter(0);
-				state.cat = StateCategory::AwaitEvent();
+				// action == 0: continue scanning the action queue
+				if (state.server_manager.get_action_counter() >= (int64_t)state.server_manager.action_queue.size()) {
+					// finished scanning all candidates
+					state.server_manager.set_action_counter(0);
+					state.cat = StateCategory::AwaitEvent();
+				}
+				else {
+					// still candidates remaining
+					state.cat = StateCategory::AwaitAction();
+				}
+
+				return 0.0;
 			}
-		#if QUEUE_MDP_DEBUG
-			std::cout << "[QMDP]   All actions processed -> set cat=AwaitEvent, reset counter to 0\n";
-		#endif
-			return 0.0; 
-
-		}
 
 
 
@@ -268,6 +293,7 @@ namespace DynaPlex::Models {
 
 			vars.Add("server", server_manager.ToVarGroup());
 			vars.Add("queue", queue_manager.ToVarGroup());
+			vars.Add("next_fil_job_type", next_fil_job_type);
 			return vars;
 		}
 
@@ -287,11 +313,12 @@ namespace DynaPlex::Models {
 			*/
 			vars.Get("cat", state.cat);
 			vars.Get("last_event_category", state.last_event_category);
+			vars.Get("next_fil_job_type", state.next_fil_job_type);
 
 			VarGroup qvg, svg;
 			vars.Get("queue", qvg);
 			vars.Get("server", svg);
-
+			
 			state.queue_manager = multi_queue(qvg);
 			state.server_manager = ServerDynamicState(svg);
 
@@ -334,6 +361,7 @@ namespace DynaPlex::Models {
 			state.server_manager.initialize(&server_static_info,n_jobs);			
 			state.queue_manager.initialize(n_jobs,tick_rate, arrival_rates);
 
+			state.next_fil_job_type = -1;
 			return state;
 		}
 

@@ -464,6 +464,7 @@ namespace DynaPlex::Models {
 					
 					int64_t current_fil = FIL_waiting[(size_t)n];
 					
+					if (current_fil == -1) throw("complete_job/pop called but queue is empty");
 
 					if (current_fil == -1) {
 						std::cout << "trying to complete job that has fil -1 " << std::endl;
@@ -594,6 +595,9 @@ namespace DynaPlex::Models {
 				//initialize ServerDynamicState
 				ServerDynamicState server_manager;
 				multi_queue queue_manager;
+
+				int64_t next_fil_job_type = -1;  // which queue needs refresh
+
 				
 				std::string last_event_category;
 
