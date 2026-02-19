@@ -239,6 +239,11 @@ namespace DynaPlex::Models {
 				}
 			}
 
+
+
+
+
+
 			double MDP::ModifyStateWithAction(MDP::State& state, int64_t action) const
 			{
 				// Safety: if action_queue is empty, nothing to do
@@ -284,7 +289,101 @@ namespace DynaPlex::Models {
 				return 0.0;
 			}
 
+			static std::vector<std::pair<int64_t, double>>
+				NextFILDistribution(int64_t i, double lambda, double gamma)
+			{
+				std::vector<std::pair<int64_t, double>> dist;
 
+				if (i < 0) { // already empty; shouldn't happen on completion
+					dist.push_back({ -1, 1.0 });
+					return dist;
+				}
+				if (i == 0) { // completion makes it empty deterministically in your code
+					dist.push_back({ -1, 1.0 });
+					return dist;
+				}
+
+				const double denom = lambda + gamma;
+				if (denom <= 0.0) { // no arrivals/ticks; safest deterministic
+					dist.push_back({ -1, 1.0 });
+					return dist;
+				}
+
+				const double alpha = lambda / denom;
+				const double beta = gamma / denom;
+
+				// j = 1..i
+				for (int64_t j = 1; j <= i; ++j) {
+					const int64_t h = i - j;                // h >= 0
+					const double p = std::pow(beta, (double)h) * alpha;
+					if (p > 0.0) dist.push_back({ j, p });
+				}
+
+				// empty outcome
+				const double p_empty = std::pow(beta, (double)i);
+				if (p_empty > 0.0) dist.push_back({ -1, p_empty });
+
+				// (Optional) normalize for numeric safety
+				double sum = 0.0;
+				for (auto& kv : dist) sum += kv.second;
+				if (sum > 0.0) for (auto& kv : dist) kv.second /= sum;
+
+				return dist;
+		}
+	
+		std::vector<MDP::nextStateProbability> MDP::getNextStateProbability(const MDP::State& state, int64_t action) const{
+
+			if (state.cat == StateCategory::AwaitAction()) {
+				MDP::State modified_state = state;
+
+				int64_t action_counter = state.server_manager.get_action_counter();
+				Action current_action = state.server_manager.action_queue.at(action_counter);
+				int64_t current_job_type = current_action.job_type;
+				modified_state.server_manager.take_action(action);
+				//modified the action queue and counter
+
+				
+				if (action == 1) {
+					// Generate vector of states, each equal to modified state, but with the FIL of the current action
+				
+					const int64_t i = state.queue_manager.FIL_waiting[current_job_type];
+					const double lambda = arrival_rates[(size_t)n];
+					const double gamma = state.queue_manager.total_tick_rate; // careful: your gamma here is total tick hazard for that queue, see note below
+
+					auto fil_dist = NextFILDistribution(i, lambda, gamma);
+
+					for (auto [next_fil, p_fil] : fil_dist) {
+						MDP::State s2 = state;
+
+						// apply server completion deterministically
+						s2.server_manager.complete_job(k, n);
+
+						// set FIL outcome
+						s2.queue_manager.FIL_waiting[(size_t)n] = next_fil;
+
+						// update total_arrival_rate consistently:
+						// if next_fil == -1: queue becomes empty => arrival enabled => add lambda
+						// else: queue not empty => arrival disabled => ensure lambda not counted
+						s2.queue_manager.total_arrival_rate = s2.queue_manager.get_total_arrival_rate(arrival_rates);
+
+						// (Recommended) update tick rate too if it depends on how many are waiting
+						s2.queue_manager.total_tick_rate = s2.queue_manager.compute_total_tick_rate(tick_rate);
+
+						const double prob = p_event * p_fil;
+						out.push_back({ std::move(s2), prob });
+					}
+				}
+
+				if (state.server_manager.get_action_counter() >= (int64_t)state.server_manager.action_queue.size()) {
+					// set to await event
+					
+				}
+			}
+
+			else {
+
+			}
+		}
 
 		DynaPlex::VarGroup MDP::State::ToVarGroup() const {
 			DynaPlex::VarGroup vars;

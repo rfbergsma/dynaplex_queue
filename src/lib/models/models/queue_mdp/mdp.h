@@ -193,9 +193,7 @@ namespace DynaPlex::Models {
 					assign_job(taken_action.server_index, taken_action.job_type);
 
 					// --- Update action_queue: remove ONLY impossible actions ---
-					//
-					// You said: "I’m only deleting actions if they are not possible anymore."
-					// So we DO NOT delete all actions with taken_action.job_type anymore.
+					
 					action_queue.erase(
 						std::remove_if(
 							action_queue.begin(),
@@ -661,7 +659,11 @@ namespace DynaPlex::Models {
 				double uniform_rate_next_fil;
 			};
 
-			
+			struct nextStateProbability {
+				MDP::State next_state;
+				double probability;
+			};
+
 
 
 
@@ -682,6 +684,10 @@ namespace DynaPlex::Models {
 			void RegisterPolicies(DynaPlex::Erasure::PolicyRegistry<MDP>&) const;
 			void GetFeatures(const State&, DynaPlex::Features&) const;
 			explicit MDP(const DynaPlex::VarGroup&);
+			
+			
+			static std::vector<std::pair<int64_t, double>> NextFILDistribution(int64_t i, double lambda, double gamma);
+			std::vector<nextStateProbability> getNextStateProbability(const MDP::State& state, int64_t action) const;
 		};
 	}
 }
