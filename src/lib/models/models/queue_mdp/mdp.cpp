@@ -289,8 +289,8 @@ namespace DynaPlex::Models {
 				return 0.0;
 			}
 
-			static std::vector<std::pair<int64_t, double>>
-				NextFILDistribution(int64_t i, double lambda, double gamma)
+			std::vector<std::pair<int64_t, double>>
+				MDP::NextFILDistribution(int64_t i, double lambda, double gamma)
 			{
 				std::vector<std::pair<int64_t, double>> dist;
 
@@ -332,6 +332,8 @@ namespace DynaPlex::Models {
 		}
 	
 		std::vector<MDP::nextStateProbability> MDP::getNextStateProbability(const MDP::State& state, int64_t action) const{
+			
+			std::vector<MDP::nextStateProbability> out;   // <-- define it
 
 			if (state.cat == StateCategory::AwaitAction()) {
 				MDP::State modified_state = state;
@@ -339,50 +341,137 @@ namespace DynaPlex::Models {
 				int64_t action_counter = state.server_manager.get_action_counter();
 				Action current_action = state.server_manager.action_queue.at(action_counter);
 				int64_t current_job_type = current_action.job_type;
-				modified_state.server_manager.take_action(action);
+				int64_t current_server_type = current_action.server_index;
+
 				//modified the action queue and counter
 
 				
 				if (action == 1) {
 					// Generate vector of states, each equal to modified state, but with the FIL of the current action
-				
+					modified_state.server_manager.take_action(action);
+
 					const int64_t i = state.queue_manager.FIL_waiting[current_job_type];
-					const double lambda = arrival_rates[(size_t)n];
+					const double lambda = arrival_rates[current_job_type];
 					const double gamma = state.queue_manager.total_tick_rate; // careful: your gamma here is total tick hazard for that queue, see note below
 
 					auto fil_dist = NextFILDistribution(i, lambda, gamma);
 
+
 					for (auto [next_fil, p_fil] : fil_dist) {
-						MDP::State s2 = state;
-
+						MDP::State s2 = modified_state;
 						// apply server completion deterministically
-						s2.server_manager.complete_job(k, n);
-
 						// set FIL outcome
-						s2.queue_manager.FIL_waiting[(size_t)n] = next_fil;
+						s2.queue_manager.FIL_waiting[current_job_type] = next_fil;
 
 						// update total_arrival_rate consistently:
-						// if next_fil == -1: queue becomes empty => arrival enabled => add lambda
-						// else: queue not empty => arrival disabled => ensure lambda not counted
-						s2.queue_manager.total_arrival_rate = s2.queue_manager.get_total_arrival_rate(arrival_rates);
+						s2.queue_manager.update_total_arrival_rate(arrival_rates);
 
-						// (Recommended) update tick rate too if it depends on how many are waiting
-						s2.queue_manager.total_tick_rate = s2.queue_manager.compute_total_tick_rate(tick_rate);
+						if (modified_state.server_manager.get_action_counter() >= (int64_t)modified_state.server_manager.action_queue.size()) {
+							// set to await event
+							s2.cat = StateCategory::AwaitEvent();
+						}
+						
+						out.push_back({ std::move(s2), p_fil });
+					}
+					
+				
+				}
+				else {
+					// if action= 0, the transition is deterministic, simply move action counter up
+					modified_state.server_manager.take_action(0);
 
-						const double prob = p_event * p_fil;
-						out.push_back({ std::move(s2), prob });
+					if (modified_state.server_manager.get_action_counter() >= (int64_t)modified_state.server_manager.action_queue.size()) {
+						// set to await event
+						modified_state.cat = StateCategory::AwaitEvent();
+					}
+					out.push_back({ std::move(modified_state), 1 });
+				}
+				return out;
+				
+			}
+			// if awaitevent
+			else {
+				const double Lambda = uniformization_rate;
+
+				// 1) ARRIVALS (only if FIL == -1)
+				double A = 0.0;
+				for (int64_t n = 0; n < n_jobs; ++n) {
+					if (state.queue_manager.FIL_waiting[(size_t)n] == -1) {
+						const double r = arrival_rates[(size_t)n];
+
+						MDP::State s2 = state;
+						// apply arrival deterministically:
+						s2.queue_manager.arrival(n);
+						// after arrival, tick-rate depends on #waiting:
+						s2.queue_manager.update_total_tick_rate(tick_rate);
+						s2.queue_manager.update_total_arrival_rate(arrival_rates);
+					
+						s2.server_manager.generate_actions(s2.queue_manager.FIL_waiting);
+						s2.server_manager.set_action_counter(0);
+						
+						s2.cat = s2.server_manager.action_queue.empty()
+							? StateCategory::AwaitEvent()
+							: StateCategory::AwaitAction();
+
+						out.push_back({ std::move(s2), r / Lambda });
+						A += r;
 					}
 				}
 
-				if (state.server_manager.get_action_counter() >= (int64_t)state.server_manager.action_queue.size()) {
-					// set to await event
-					
+				// 2) TICK
+				const double T = state.queue_manager.total_tick_rate;
+				if (T > 0.0) {
+					MDP::State s2 = state;
+					s2.queue_manager.tick();
+					// after tick, nothing changes about who is empty/full,
+					// but if you treat total_tick_rate as depending on #waiting, it stays the same here.
+					out.push_back({ std::move(s2), T / Lambda });
 				}
-			}
 
-			else {
+				// 3) COMPLETIONS / DEPARTURES
+				// Scan the same buckets as GetEventType: (k, j in can_serve)
+				double C = 0.0;
+				for (int64_t k = 0; k < k_servers; ++k) {
+					const double mu = server_static_info[(size_t)k].mu_k;
+
+					for (size_t j = 0; j < server_static_info[(size_t)k].can_serve.size(); ++j) {
+						MDP::State s2 = state;
+
+						const int64_t busy = state.server_manager.busy_on[(size_t)k][j];
+						if (busy <= 0) continue;
+
+						const int64_t job = server_static_info[(size_t)k].can_serve[j];
+						const double r = mu * (double)busy;
+						const double p_event = r / Lambda;
+
+						// completion changes FIL(job) stochastically
+						s2.server_manager.complete_job(k, job);
+						
+						s2.server_manager.generate_actions(s2.queue_manager.FIL_waiting);
+						s2.server_manager.set_action_counter(0);
+						s2.cat = s2.server_manager.action_queue.empty()
+							? StateCategory::AwaitEvent()
+							: StateCategory::AwaitAction();
+
+
+						out.push_back({ std::move(s2), p_event});
+
+						C += r;
+						
+
+					}
+				}
+
+				// 4) NOTHING / SELF-LOOP (uniformization leftover)
+				const double R = A + T + C;
+				const double r_nothing = std::max(0.0, Lambda - R);
+				if (r_nothing > 0.0) {
+					out.push_back({ state, r_nothing / Lambda }); // self-loop
+				}
+
 
 			}
+			return out;
 		}
 
 		DynaPlex::VarGroup MDP::State::ToVarGroup() const {
