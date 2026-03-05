@@ -474,6 +474,15 @@ namespace DynaPlex::Models {
 			return out;
 		}
 
+		double MDP::GetImmediateCost(const State& state) const {
+			if (state.cat != StateCategory::AwaitEvent()) return 0.0;
+			double cost_tick = 0.0;
+			for (size_t n = 0; n < (size_t)n_jobs; ++n)
+				if (state.queue_manager.FIL_waiting[n] > due_times[n])
+					cost_tick += cost_rates[n];
+			return (tick_rate / uniformization_rate) * cost_tick;
+		}
+
 		DynaPlex::VarGroup MDP::State::ToVarGroup() const {
 			DynaPlex::VarGroup vars;
 			vars.Add("cat", cat);

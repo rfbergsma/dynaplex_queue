@@ -506,9 +506,8 @@ namespace DynaPlex::Models {
 				
 				// function that calculates total tick rate
 				double compute_total_tick_rate(double tick_rate) const {
-					double total = 0.0;
-					for (auto w : FIL_waiting) if (w >= 0) total += tick_rate;
-					return total;
+					
+					return tick_rate;
 				}
 
 				double get_total_arrival_rate(const std::vector<double>& arrival_rates) const {
@@ -688,6 +687,7 @@ namespace DynaPlex::Models {
 			
 			static std::vector<std::pair<int64_t, double>> NextFILDistribution(int64_t i, double lambda, double gamma);
 			std::vector<nextStateProbability> getNextStateProbability(const MDP::State& state, int64_t action) const;
+			double GetImmediateCost(const State& state) const;
 		};
 	}
 }
