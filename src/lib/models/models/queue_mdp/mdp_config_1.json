@@ -11,7 +11,7 @@
     //other variables that are read by the constructor go here
     "k_servers": 3,
     "n_jobs": 3,
-    "tick_rate": 1,
+    "tick_rate": 0.1,
     "arrival_rates": [ 0.25, 0.25, 0.25 ],
     "cost_rates": [ 1.0, 1.0, 1.0 ],
     "due_times": [ 6.0, 6.0, 6.0 ],

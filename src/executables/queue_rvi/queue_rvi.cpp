@@ -238,16 +238,19 @@ int main() {
 		}
 
 		// ---- Phase 1: BFS transition table ----
+		std::vector<int> M_values = { 10, 12, 15, 18, 20 };
+
+		for (int M : M_values)
 		{
-			const int M = 10;
+			//const int M = 12;
 			StateEncoder encoder(mdp, M);
 
 			std::unordered_map<uint64_t, size_t> state_index;
 			std::vector<DynaPlex::Models::queue_mdp::MDP::State> states;
 			std::vector<std::array<std::vector<Transition>, 2>> transitions;
+			std::vector<double> immediate_cost;
 			std::queue<size_t> bfs;
 
-			// helper: clamp FIL, look up or insert state, return index
 			auto add_state = [&](DynaPlex::Models::queue_mdp::MDP::State s) -> size_t {
 				for (auto& fil : s.queue_manager.FIL_waiting)
 					fil = std::min(fil, (int64_t)M);
@@ -258,6 +261,16 @@ int main() {
 				state_index[key] = idx;
 				states.push_back(s);
 				transitions.push_back({});
+
+				double cost = 0.0;
+				if (s.cat == DynaPlex::StateCategory::AwaitEvent()) {
+					for (size_t n = 0; n < (size_t)mdp.n_jobs; ++n)
+						if (s.queue_manager.FIL_waiting[n] > mdp.due_times[n])
+							cost += mdp.cost_rates[n];
+					cost *= mdp.tick_rate / mdp.uniformization_rate;
+				}
+				immediate_cost.push_back(cost);
+
 				bfs.push(idx);
 				return idx;
 				};
@@ -266,7 +279,7 @@ int main() {
 
 			while (!bfs.empty()) {
 				size_t i = bfs.front(); bfs.pop();
-				const DynaPlex::Models::queue_mdp::MDP::State s = states[i];
+				DynaPlex::Models::queue_mdp::MDP::State s = states[i];
 
 				int n_actions = (s.cat == DynaPlex::StateCategory::AwaitAction()) ? 2 : 1;
 				for (int a = 0; a < n_actions; ++a) {
@@ -283,18 +296,14 @@ int main() {
 				}
 			}
 
-			// ---- Verify & print stats ----
+			// stats
 			size_t n_await_event = 0, n_await_action = 0;
 			size_t total_transitions = 0;
 			bool prob_error = false;
-
 			for (size_t i = 0; i < states.size(); ++i) {
-				const DynaPlex::Models::queue_mdp::MDP::State s = states[i];
-				bool is_action = (s.cat == DynaPlex::StateCategory::AwaitAction());
+				bool is_action = (states[i].cat == DynaPlex::StateCategory::AwaitAction());
 				is_action ? ++n_await_action : ++n_await_event;
-
-				int n_actions = is_action ? 2 : 1;
-				for (int a = 0; a < n_actions; ++a) {
+				for (int a = 0; a < 2; ++a) {
 					if (transitions[i][a].empty()) continue;
 					double sum = 0.0;
 					for (const auto& t : transitions[i][a]) sum += t.probability;
@@ -306,72 +315,69 @@ int main() {
 					}
 				}
 			}
-
 			std::cout << "\n--- Transition table (M=" << M << ") ---\n";
-			std::cout << "Total states    : " << states.size() << "\n";
-			std::cout << "  AwaitEvent    : " << n_await_event << "\n";
-			std::cout << "  AwaitAction   : " << n_await_action << "\n";
+			std::cout << "Total states     : " << states.size() << "\n";
+			std::cout << "  AwaitEvent     : " << n_await_event << "\n";
+			std::cout << "  AwaitAction    : " << n_await_action << "\n";
 			std::cout << "Total transitions: " << total_transitions << "\n";
 			std::cout << "Prob errors      : " << (prob_error ? "YES" : "none") << "\n";
-		}
 
+			// ---- Phase 2: RVI ----
+			const size_t ref = 0;
+			const double eps = 1e-8;
+			const int max_iter = 4000;
+			std::vector<double> h(states.size(), 0.0);
+			double g_star = 0.0;
 
+			for (int iter = 0; iter < max_iter; ++iter) {
+				std::vector<double> h_new(states.size());
 
-		// ---- Phase 2: Relative Value Iteration ----
-		const size_t ref = 0;       // initial state as reference
-		const double eps = 1e-8;
-		const int max_iter = 100000;
-
-		std::vector<double> h(states.size(), 0.0);
-		double g_star = 0.0;
-
-		for (int iter = 0; iter < max_iter; ++iter) {
-			std::vector<double> h_new(states.size());
-
-			for (size_t i = 0; i < states.size(); ++i) {
-				if (states[i].cat == DynaPlex::StateCategory::AwaitEvent()) {
-					// no action choice — single transition set
-					double val = immediate_cost[i];
-					for (const auto& t : transitions[i][0])
-						val += t.probability * h[t.next_state_idx];
-					h_new[i] = val;
-				}
-				else {
-					// minimize over allowed actions
-					double best = std::numeric_limits<double>::infinity();
-					for (int a = 0; a < 2; ++a) {
-						if (transitions[i][a].empty()) continue;
-						double val = 0.0;
-						for (const auto& t : transitions[i][a])
+				for (size_t i = 0; i < states.size(); ++i) {
+					if (states[i].cat == DynaPlex::StateCategory::AwaitEvent()) {
+						double val = immediate_cost[i];
+						for (const auto& t : transitions[i][0])
 							val += t.probability * h[t.next_state_idx];
-						best = std::min(best, val);
+						h_new[i] = val;
 					}
-					h_new[i] = best;
+					else {
+						double best = std::numeric_limits<double>::infinity();
+						for (int a = 0; a < 2; ++a) {
+							if (transitions[i][a].empty()) continue;
+							double val = 0.0;
+							for (const auto& t : transitions[i][a])
+								val += t.probability * h[t.next_state_idx];
+							best = std::min(best, val);
+						}
+						h_new[i] = best;
+					}
+				}
+
+				g_star = h_new[ref];
+				for (auto& v : h_new) v -= g_star;
+
+				double delta = 0.0;
+				for (size_t i = 0; i < states.size(); ++i)
+					delta = std::max(delta, std::abs(h_new[i] - h[i]));
+
+				h = std::move(h_new);
+
+				if (iter % 500 == 0)
+					std::cout << "iter " << std::setw(6) << iter
+					<< "  g*=" << std::setprecision(10) << g_star
+					<< "  delta=" << std::setprecision(6) << delta << "\n";
+
+				if (delta < eps) {
+					std::cout << "\nConverged at iter " << iter
+						<< "  g* = " << std::setprecision(12) << g_star << "\n";
+					break;
 				}
 			}
+		
+			std::cout << "  --> M=" << M
+				<< "  g* = " << std::setprecision(12) << g_star << "\n";
+	}
 
-			// RVI: subtract reference state value → keeps h bounded
-			g_star = h_new[ref];
-			for (auto& v : h_new) v -= g_star;
 
-			// convergence: max norm between successive iterates
-			double delta = 0.0;
-			for (size_t i = 0; i < states.size(); ++i)
-				delta = std::max(delta, std::abs(h_new[i] - h[i]));
-
-			h = std::move(h_new);
-
-			if (iter % 500 == 0)
-				std::cout << "iter " << std::setw(6) << iter
-				<< "  g*=" << std::setprecision(10) << g_star
-				<< "  delta=" << std::setprecision(6) << delta << "\n";
-
-			if (delta < eps) {
-				std::cout << "\nConverged at iter " << iter
-					<< "  g* = " << std::setprecision(12) << g_star << "\n";
-				break;
-			}
-		}
 	}
 	catch (const std::exception& e)
 	{
