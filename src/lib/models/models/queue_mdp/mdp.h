@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "dynaplex/dynaplex_model_includes.h"
 #include "dynaplex/modelling/discretedist.h"
 #include <deque>
@@ -688,6 +688,13 @@ namespace DynaPlex::Models {
 			static std::vector<std::pair<int64_t, double>> NextFILDistribution(int64_t i, double lambda, double gamma);
 			std::vector<nextStateProbability> getNextStateProbability(const MDP::State& state, int64_t action) const;
 			double GetImmediateCost(const State& state) const;
+
+			struct RVISolution {
+				double g_star;  // optimal average cost per time unit
+				int M;          // truncation level used
+			};
+			RVISolution runRVI(int M) const;  // solve at fixed M, verbose output
+			RVISolution runRVI() const;       // auto-select M via heuristic + convergence check
 		};
 	}
 }
