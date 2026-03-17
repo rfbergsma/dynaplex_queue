@@ -22,7 +22,14 @@
       "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\fix_m_loop.ps1\")",
       "Bash(powershell -Command \"[System.IO.File]::ReadAllBytes\\(''C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\src\\\\lib\\\\models\\\\models\\\\queue_mdp\\\\mdp.h''\\) | Select-Object -Last 200 | ForEach-Object { ''{0:X2}'' -f $_} | Join-String -Separator '' ''\")",
       "Bash(powershell -File:*)",
-      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\fix_mdph.ps1\")"
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\fix_mdph.ps1\")",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\check_endings.ps1\")",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\fix1_mdph.ps1\")",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\fix2_policyh.ps1\")",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\fix3_mdpcpp.ps1\")",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\inspect_mdph.ps1\")",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\diag_bom.ps1\")",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\fix_bom.ps1\")"
     ]
   }
 }

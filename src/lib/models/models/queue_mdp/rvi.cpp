@@ -166,7 +166,7 @@ MDP::RVISolution MDP::runRVI(int M) const {
 		for (size_t i = 0; i < states.size(); ++i)
 			delta = std::max(delta, std::abs(h_new[i] - h[i]));
 
-		h = std::move(h_new);
+		std::swap(h, h_new);
 
 		if (iter % 500 == 0)
 			std::cout << "iter " << std::setw(6) << iter
@@ -186,11 +186,30 @@ MDP::RVISolution MDP::runRVI(int M) const {
 		}
 	}
 
-	return { g_star, M };
+	// ---- Build action map from converged h ----
+	RVISolution sol;
+	sol.g_star = g_star;
+	sol.M = M;
+
+	for (size_t i = 0; i < states.size(); ++i) {
+		if (states[i].cat != DynaPlex::StateCategory::AwaitAction()) continue;
+		double best_val = std::numeric_limits<double>::infinity();
+		int64_t best_a = 0;
+		for (int a = 0; a < 2; ++a) {
+			if (transitions[i][a].empty()) continue;
+			double val = 0.0;
+			for (const auto& t : transitions[i][a])
+				val += t.probability * h[t.next_state_idx];
+			if (val < best_val) { best_val = val; best_a = a; }
+		}
+		sol.action_map[encoder.encode(states[i])] = best_a;
+	}
+
+	return sol;
 }
 
-// ---- runRVI(): auto-select M via heuristic + convergence check ----
-MDP::RVISolution MDP::runRVI() const {
+// ---- runRVI(double rel_tol): auto-select M via heuristic + convergence check ----
+MDP::RVISolution MDP::runRVI(double rel_tol) const {
 	// Traffic-intensity heuristic for initial M
 	double max_due_time = *std::max_element(due_times.begin(), due_times.end());
 	double total_lambda = 0.0;
@@ -204,9 +223,8 @@ MDP::RVISolution MDP::runRVI() const {
 
 	std::cout << "Initial M guess: " << M << "\n";
 
-	const double M_conv_tol = 1e-4;
 	double g_prev_M = -1.0;
-	RVISolution sol{ 0.0, M };
+	RVISolution sol;
 
 	while (true) {
 		sol = runRVI(M);
@@ -216,7 +234,7 @@ MDP::RVISolution MDP::runRVI() const {
 		if (g_prev_M >= 0.0) {
 			double rel = std::abs(sol.g_star - g_prev_M) / std::max(g_prev_M, 1e-12);
 			std::cout << "  rel change from prev M: " << std::setprecision(4) << rel << "\n";
-			if (rel < M_conv_tol) {
+			if (rel < rel_tol) {
 				std::cout << "\nM converged. Final g* = " << std::setprecision(12)
 					      << sol.g_star << "  (M=" << M << ")\n";
 				break;
@@ -228,6 +246,23 @@ MDP::RVISolution MDP::runRVI() const {
 	}
 
 	return sol;
+}
+
+// ---- EvaluateRVIPolicy: look up optimal action for a given live state ----
+int64_t MDP::EvaluateRVIPolicy(const RVISolution& sol, const State& state) const {
+	if (state.cat != DynaPlex::StateCategory::AwaitAction()) return 0;
+
+	StateEncoder enc(*this, sol.M);
+
+	// Clamp FIL to sol.M before encoding (same truncation as during BFS)
+	State clamped = state;
+	for (auto& fil : clamped.queue_manager.FIL_waiting)
+		fil = std::min(fil, (int64_t)sol.M);
+
+	uint64_t key = enc.encode(clamped);
+	auto it = sol.action_map.find(key);
+	if (it == sol.action_map.end()) return 0;  // fallback: don't assign
+	return it->second;
 }
 
 } // namespace queue_mdp

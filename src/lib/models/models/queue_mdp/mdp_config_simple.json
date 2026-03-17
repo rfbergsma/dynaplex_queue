@@ -1,0 +1,27 @@
+/**
+ * MDP configuration file: simple 2x2 system for RVI benchmarking.
+ * - 2 job types, 2 server types (1 physical server each), fully flexible.
+ * - tick_rate=1.0 so FIL accumulates at 1 unit per real time unit.
+ * - rho = 0.50/0.70 ~= 0.71; expected wait ~4.9 => deadlines (due_time=5) are often binding.
+ * - State space with M~25 is tractable for RVI (~50K states).
+ */
+{
+    "id": "queue_mdp",
+    "discount_factor": 1.0,
+    "k_servers": 2,
+    "n_jobs": 2,
+    "tick_rate": 1.0,
+    "arrival_rates": [ 0.25, 0.25 ],
+    "cost_rates": [ 1.0, 1.0 ],
+    "due_times": [ 5.0, 5.0 ],
+    "server_type_0": {
+        "servers": 1,
+        "can_serve": [ 0, 1 ],
+        "service_rate": 0.35
+    },
+    "server_type_1": {
+        "servers": 1,
+        "can_serve": [ 0, 1 ],
+        "service_rate": 0.35
+    }
+}

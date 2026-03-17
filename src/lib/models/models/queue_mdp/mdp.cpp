@@ -1,4 +1,4 @@
-#include "mdp.h"
+ï»¿#include "mdp.h"
 #include "dynaplex/erasure/mdpregistrar.h"
 #include "policies.h"
 #include <deque>
@@ -520,7 +520,7 @@ namespace DynaPlex::Models {
 			state.server_manager = ServerDynamicState(svg);
 
 
-			// Re-attach pointer + recompute derived fields (ServerDynamicState ctor can’t know this pointer)
+			// Re-attach pointer + recompute derived fields (ServerDynamicState ctor canï¿½t know this pointer)
 			state.server_manager.static_info = &server_static_info;
 
 			state.server_manager.update_total_service_rate();
@@ -797,6 +797,8 @@ namespace DynaPlex::Models {
 		 //to the corresponding id given below.
 			registry.Register<FIFOPolicy>("FIFO policy",
 				"First in first out policy, always assigns a job to a server.");
+			registry.Register<RVI_optimal>("RVI_optimal",
+				"Optimal average-cost policy via Relative Value Iteration.");
 		}
 
 		DynaPlex::StateCategory MDP::GetStateCategory(const State& state) const

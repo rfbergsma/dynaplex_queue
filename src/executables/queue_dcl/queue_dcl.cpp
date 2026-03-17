@@ -49,7 +49,7 @@
 
 		DynaPlex::VarGroup dcl_config{
 			//just for illustration, so we collect only little data, so DCL will run fast but will not perform well.
-			{"N",5000},
+			{"N",1000},
 			{"num_gens",num_gens},
 			{"M",800},
 			{"nn_architecture",nn_architecture},
@@ -65,6 +65,12 @@
 		dcl.TrainPolicy();
 
 		auto policies = dcl.GetPolicies();
+
+		// Add the RVI-optimal policy.
+		// Pass a fixed M to skip the auto-search and reuse the converged value from queue_rvi.
+		// Remove "M" (or lower rel_tol) to let it auto-select M from scratch.
+		DynaPlex::VarGroup rvi_config{ {"id", "RVI_optimal"}, {"M", 35} };
+		policies.push_back(mdp->GetPolicy(rvi_config));
 
 		DynaPlex::VarGroup test_config;
 		test_config.Add("number_of_trajectories", 100);

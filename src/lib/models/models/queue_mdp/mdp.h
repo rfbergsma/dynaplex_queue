@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <vector>
+#include <unordered_map>
 
 namespace DynaPlex::Models {
 	namespace queue_mdp /*must be consistent everywhere for complete mdp definition and associated policies and states (if not defined inline).*/
@@ -692,9 +693,11 @@ namespace DynaPlex::Models {
 			struct RVISolution {
 				double g_star;  // optimal average cost per time unit
 				int M;          // truncation level used
+				std::unordered_map<uint64_t, int64_t> action_map;  // encoded state key -> optimal action
 			};
-			RVISolution runRVI(int M) const;  // solve at fixed M, verbose output
-			RVISolution runRVI() const;       // auto-select M via heuristic + convergence check
+			RVISolution runRVI(int M) const;                        // solve at fixed M, verbose output
+			RVISolution runRVI(double rel_tol = 1e-4) const;       // auto-select M via heuristic + convergence check
+			int64_t EvaluateRVIPolicy(const RVISolution& sol, const State& state) const;
 		};
 	}
 }

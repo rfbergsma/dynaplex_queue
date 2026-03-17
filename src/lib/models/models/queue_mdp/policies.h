@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <cstdint>
 #include "mdp.h"
 #include "dynaplex/vargroup.h"
@@ -24,6 +24,17 @@ namespace DynaPlex::Models {
 			const VarGroup varGroup;
 		public:
 			FIFOPolicySorted(std::shared_ptr<const MDP> mdp, const VarGroup& config);
+			int64_t GetAction(const MDP::State& state) const;
+		};
+
+		class RVI_optimal
+		{
+			// holds the converged value-function action map from RVI
+			std::shared_ptr<const MDP> mdp;
+			const VarGroup varGroup;
+			MDP::RVISolution sol;
+		public:
+			RVI_optimal(std::shared_ptr<const MDP> mdp, const VarGroup& config);
 			int64_t GetAction(const MDP::State& state) const;
 		};
 

@@ -33,5 +33,27 @@ namespace DynaPlex::Models {
 			//throw DynaPlex::NotImplementedError();
 			return 1; // always assign job
 		}
+
+		// RVI_optimal: runs RVI once in the constructor, caches the action map.
+		RVI_optimal::RVI_optimal(std::shared_ptr<const MDP> mdp, const VarGroup& config)
+			: mdp{ mdp }, varGroup{ config }
+		{
+			if (config.HasKey("M")) {
+				int64_t M;
+				config.Get("M", M);
+				sol = mdp->runRVI((int)M);
+			}
+			else {
+				double rel_tol = 1e-4;
+				if (config.HasKey("rel_tol"))
+					config.Get("rel_tol", rel_tol);
+				sol = mdp->runRVI(rel_tol);
+			}
+		}
+
+		int64_t RVI_optimal::GetAction(const MDP::State& state) const
+		{
+			return mdp->EvaluateRVIPolicy(sol, state);
+		}
 	}
 }
