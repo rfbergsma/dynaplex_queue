@@ -21,7 +21,7 @@ int main() {
     };
 
     // Hyperparameter grid
-    std::vector<int64_t> Ns     = { 500, 2000 };
+    std::vector<int64_t> Ns     = { 5000, 20000 };
     std::vector<int64_t> Hs     = { 100, 500  };
     std::vector<int64_t> M_dcls = { 400, 1600 };
 
