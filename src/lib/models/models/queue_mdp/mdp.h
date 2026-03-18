@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <vector>
 #include <unordered_map>
+#include <cmath>
+#include <cstdlib>
 
 namespace DynaPlex::Models {
 	namespace queue_mdp /*must be consistent everywhere for complete mdp definition and associated policies and states (if not defined inline).*/
