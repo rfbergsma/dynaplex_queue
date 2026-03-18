@@ -9,11 +9,15 @@ using namespace DynaPlex;
 int main() {
     auto& dp = DynaPlexProvider::Get();
 
-    // Two MDP configs: simple (2x2, RVI-feasible) and medium (3x3)
-    struct ConfigEntry { std::string name; std::string json; };
+    // MDP configs to test
+    // rvi_M: truncation horizon passed to RVI_optimal
+    //   simple/asym: M=35 — 2x2 state space tractable
+    //   medium:      M=25 — smaller to keep 3x3 state space (~250K states) tractable
+    struct ConfigEntry { std::string name; std::string json; int64_t rvi_M; };
     std::vector<ConfigEntry> configs = {
-        {"simple", "mdp_config_simple.json"},
-        {"medium", "mdp_config_1.json"},
+        {"simple",      "mdp_config_simple.json",      35},
+        {"simple_asym", "mdp_config_simple_asym.json", 35},
+        {"medium",      "mdp_config_1.json",           25},
     };
 
     // Hyperparameter grid
@@ -42,9 +46,11 @@ int main() {
         << std::setw(9)  << "M_dcl"
         << std::setw(14) << "FIFO_mean"
         << std::setw(14) << "NN_mean"
+        << std::setw(14) << "RVI_mean"
         << std::setw(10) << "NN/FIFO"
+        << std::setw(10) << "NN/RVI"
         << "\n";
-    dp.System() << std::string(71, '-') << "\n";
+    dp.System() << std::string(91, '-') << "\n";
 
     for (auto& cfg : configs) {
         auto path = dp.FilePath({"mdp_config_examples", "queue_mdp"}, cfg.json);
@@ -53,14 +59,28 @@ int main() {
         auto fifo = mdp->GetPolicy("FIFO policy");
         auto comparer = dp.GetPolicyComparer(mdp, test_config);
 
-        // Evaluate FIFO baseline once per config
+        // --- Evaluate FIFO baseline once per config ---
         auto fifo_res = comparer.Compare({fifo});
         double fifo_mean = 0.0;
         fifo_res[0].Get("mean", fifo_mean);
 
-        dp.System() << "\n-- Config: " << cfg.name << "  (FIFO mean = "
-                    << std::fixed << std::setprecision(6) << fifo_mean << ") --\n";
+        // --- Evaluate RVI_optimal once per config (gold standard) ---
+        dp.System() << "\n-- Config: " << cfg.name
+                    << "  (FIFO mean = " << std::fixed << std::setprecision(6) << fifo_mean
+                    << ", running RVI with M=" << cfg.rvi_M << ") --\n";
 
+        VarGroup rvi_config{ {"id", std::string("RVI_optimal")}, {"M", cfg.rvi_M} };
+        auto rvi_policy = mdp->GetPolicy(rvi_config);
+        auto rvi_res = comparer.Compare({rvi_policy});
+        double rvi_mean = 0.0;
+        rvi_res[0].Get("mean", rvi_mean);
+
+        dp.System() << "   RVI_optimal mean = " << std::fixed << std::setprecision(6)
+                    << rvi_mean << "  (gap vs FIFO: "
+                    << std::setprecision(2) << (rvi_mean / fifo_mean - 1.0) * 100.0
+                    << "%)\n";
+
+        // --- Hyperparameter grid ---
         for (int64_t N : Ns)
         for (int64_t H : Hs)
         for (int64_t M_dcl : M_dcls) {
@@ -84,7 +104,8 @@ int main() {
             double nn_mean = 0.0;
             res[0].Get("mean", nn_mean);
 
-            double ratio = (fifo_mean > 1e-12) ? nn_mean / fifo_mean : 0.0;
+            double nn_over_fifo = (fifo_mean > 1e-12) ? nn_mean / fifo_mean : 0.0;
+            double nn_over_rvi  = (rvi_mean  > 1e-12) ? nn_mean / rvi_mean  : 0.0;
 
             dp.System() << std::left
                 << std::setw(10) << cfg.name
@@ -94,8 +115,10 @@ int main() {
                 << std::fixed << std::setprecision(6)
                 << std::setw(14) << fifo_mean
                 << std::setw(14) << nn_mean
+                << std::setw(14) << rvi_mean
                 << std::setprecision(4)
-                << std::setw(10) << ratio
+                << std::setw(10) << nn_over_fifo
+                << std::setw(10) << nn_over_rvi
                 << "\n";
         }
     }
