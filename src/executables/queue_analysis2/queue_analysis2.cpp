@@ -37,7 +37,7 @@ static VarGroup build_mdp_config(const Scenario& s) {
     cfg.Add("n_jobs",          int64_t(2));
     cfg.Add("tick_rate",       s.tick_rate);
     cfg.Add("arrival_rates",   s.arrival_rates);
-    cfg.Add("cost_rates",      VarGroup::DoubleVec{1.0, 1.0});
+    cfg.Add("cost_rates",      VarGroup::DoubleVec{100.0, 100.0});
     cfg.Add("due_times",       s.due_times);
     cfg.Add("server_type_0",   srv0);
     cfg.Add("server_type_1",   srv1);
@@ -85,8 +85,8 @@ int main() {
     test_config.Add("number_of_trajectories", 100);
     test_config.Add("periods_per_trajectory", 10000);
 
-    // RVI config (fixed M=35 — tractable for 2x2 at rho up to ~0.81)
-    VarGroup rvi_config{ {"id", std::string("RVI_optimal")}, {"M", int64_t(35)} };
+    // RVI config — rel_tol=0.01 (1% tolerance, auto M selection) for all 2x2 scenarios
+    VarGroup rvi_config{ {"id", std::string("RVI_optimal")}, {"rel_tol", 0.01} };
 
     // -----------------------------------------------------------------------
     // Header
