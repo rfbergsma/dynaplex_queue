@@ -869,27 +869,25 @@ namespace DynaPlex::Models {
 				auto single = std::span<DynaPlex::Trajectory>(&traj, 1);
 				mdp->InitiateState(single);
 
-				// Drain any pending actions using the policy
-				auto drain_actions = [&]()
-				{
-					while (traj.Category.IsAwaitAction())
-						mdp->IncorporateAction(single, policy);
-				};
 
-				// --- warm-up phase: advance warmup_steps uniformized steps ---
-				drain_actions();
+				// --- warm-up phase: count every MDP transition (action OR event) as one step ---
+				// This matches g_star's denominator: total transitions = n_actions + n_events.
 				for (int64_t s = 0; s < warmup_steps; ++s)
 				{
-					mdp->IncorporateEvent(single);
-					drain_actions();
+					if (traj.Category.IsAwaitAction())
+						mdp->IncorporateAction(single, policy);
+					else
+						mdp->IncorporateEvent(single);
 				}
 				double baseline = traj.CumulativeReturn;
 
-				// --- main evaluation phase: advance steps_per_traj uniformized steps ---
+				// --- main evaluation phase: same mixed action/event counting ---
 				for (int64_t s = 0; s < steps_per_traj; ++s)
 				{
-					mdp->IncorporateEvent(single);
-					drain_actions();
+					if (traj.Category.IsAwaitAction())
+						mdp->IncorporateAction(single, policy);
+					else
+						mdp->IncorporateEvent(single);
 				}
 
 				avg_costs[i] = (traj.CumulativeReturn - baseline)
