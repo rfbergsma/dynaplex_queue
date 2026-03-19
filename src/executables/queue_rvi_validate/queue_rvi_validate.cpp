@@ -10,7 +10,6 @@
 #include "../../../lib/models/models/queue_mdp/mdp.h"
 
 using namespace DynaPlex;
-using DynaPlex::Models::queue_mdp::MDP;
 
 // -----------------------------------------------------------------------
 // Helper: build a 2x2 fully-flexible MDP config programmatically
@@ -262,7 +261,7 @@ static EvalResult evaluate(
 // -----------------------------------------------------------------------
 static double get_gstar(const VarGroup& config, int M)
 {
-    MDP mdp_direct(config);
+    DynaPlex::Models::queue_mdp::MDP mdp_direct(config);
     auto sol = mdp_direct.runRVI(M);
     return sol.g_star;
 }
