@@ -845,6 +845,77 @@ namespace DynaPlex::Models {
 		}
 
 
+		// -----------------------------------------------------------------------
+		// EvaluatePolicyPerStep
+		// Counts every call to IncorporateEvent as one uniformized step so that
+		// the returned average cost per step matches g_star from runRVI().
+		// -----------------------------------------------------------------------
+		DynaPlex::VarGroup EvaluatePolicyPerStep(
+			const DynaPlex::MDP&    mdp,
+			const DynaPlex::Policy& policy,
+			int64_t n_trajectories,
+			int64_t steps_per_traj,
+			int64_t warmup_steps,
+			int64_t rng_seed)
+		{
+			std::vector<double> avg_costs(n_trajectories);
+
+			for (int64_t i = 0; i < n_trajectories; ++i)
+			{
+				DynaPlex::Trajectory traj;
+				// Give each trajectory its own independent RNG stream
+				traj.RNGProvider.SeedEventStreams(true, rng_seed, 0, i);
+
+				auto single = std::span<DynaPlex::Trajectory>(&traj, 1);
+				mdp->InitiateState(single);
+
+				// Drain any pending actions using the policy
+				auto drain_actions = [&]()
+				{
+					while (traj.Category.IsAwaitAction())
+						mdp->IncorporateAction(single, policy);
+				};
+
+				// --- warm-up phase: advance warmup_steps uniformized steps ---
+				drain_actions();
+				for (int64_t s = 0; s < warmup_steps; ++s)
+				{
+					mdp->IncorporateEvent(single);
+					drain_actions();
+				}
+				double baseline = traj.CumulativeReturn;
+
+				// --- main evaluation phase: advance steps_per_traj uniformized steps ---
+				for (int64_t s = 0; s < steps_per_traj; ++s)
+				{
+					mdp->IncorporateEvent(single);
+					drain_actions();
+				}
+
+				avg_costs[i] = (traj.CumulativeReturn - baseline)
+				               / static_cast<double>(steps_per_traj);
+			}
+
+			// Compute mean and standard error across trajectories
+			double mean = 0.0;
+			for (double c : avg_costs) mean += c;
+			mean /= static_cast<double>(n_trajectories);
+
+			double var = 0.0;
+			for (double c : avg_costs) var += (c - mean) * (c - mean);
+			if (n_trajectories > 1)
+				var /= static_cast<double>(n_trajectories - 1);
+			double std_error = std::sqrt(var / static_cast<double>(n_trajectories));
+
+			DynaPlex::VarGroup result;
+			result.Add("mean",                 mean);
+			result.Add("std_error",            std_error);
+			result.Add("n_trajectories",       n_trajectories);
+			result.Add("steps_per_trajectory", steps_per_traj);
+			result.Add("warmup_steps",         warmup_steps);
+			return result;
+		}
+
 		void Register(DynaPlex::Registry& registry)
 		{
 			DynaPlex::Erasure::MDPRegistrar<MDP>::RegisterModel("queue_mdp", "mdp for analyzing queueing models", registry);

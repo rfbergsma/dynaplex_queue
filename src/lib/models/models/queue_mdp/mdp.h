@@ -1,6 +1,8 @@
 ﻿#pragma once
 #include "dynaplex/dynaplex_model_includes.h"
 #include "dynaplex/modelling/discretedist.h"
+#include "dynaplex/mdp.h"       // DynaPlex::MDP, DynaPlex::Trajectory
+#include "dynaplex/policy.h"    // DynaPlex::Policy
 #include <deque>
 #include <stdexcept>
 #include <sstream>
@@ -701,6 +703,31 @@ namespace DynaPlex::Models {
 			RVISolution runRVI(double rel_tol = 1e-4) const;       // auto-select M via heuristic + convergence check
 			int64_t EvaluateRVIPolicy(const RVISolution& sol, const State& state) const;
 		};
-	}
-}
+
+		/**
+		 * Evaluates any DynaPlex::Policy by simulating the MDP for a fixed number of
+		 * *uniformized steps* (every call to IncorporateEvent counts as one step,
+		 * across all event streams).  The returned average cost per step is directly
+		 * comparable to g_star from runRVI(), which is also expressed per uniformized
+		 * step.  Works with FIFO, RVI_optimal, NN policies, or any other Policy object.
+		 *
+		 * @param mdp               DynaPlex::MDP adapter (from dp.GetMDP(config))
+		 * @param policy            Any DynaPlex::Policy
+		 * @param n_trajectories    Independent simulation runs          (default: 500)
+		 * @param steps_per_traj    Uniformized steps in main phase      (default: 200000)
+		 * @param warmup_steps      Uniformized steps discarded at start (default: 20000)
+		 * @param rng_seed          Base seed; trajectory i gets offset i (default: 42)
+		 * @return VarGroup with keys "mean", "std_error", "n_trajectories",
+		 *                           "steps_per_trajectory", "warmup_steps"
+		 */
+		DynaPlex::VarGroup EvaluatePolicyPerStep(
+			const DynaPlex::MDP&    mdp,
+			const DynaPlex::Policy& policy,
+			int64_t n_trajectories = 500,
+			int64_t steps_per_traj = 200000,
+			int64_t warmup_steps   = 20000,
+			int64_t rng_seed       = 42);
+
+	}  // namespace queue_mdp
+}  // namespace DynaPlex::Models
 

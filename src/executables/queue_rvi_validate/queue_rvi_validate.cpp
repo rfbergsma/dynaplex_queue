@@ -227,11 +227,16 @@ static VarGroup make_3x3_ring(
 
 // -----------------------------------------------------------------------
 // Helper: evaluate FIFO and RVI policies via comparer
+//   - Runs runRVI(rel_tol) directly to obtain g_star and the final M
+//     chosen by adaptive truncation, then reuses that M for GetPolicy
+//     so the simulation evaluates exactly the same solution.
 // -----------------------------------------------------------------------
 struct EvalResult {
     double fifo_mean;
     double rvi_mean;
     double rvi_err;
+    double g_star;    // internal RVI average cost (from runRVI)
+    int    final_M;   // truncation level selected by adaptive M logic
 };
 
 static EvalResult evaluate(
@@ -240,11 +245,16 @@ static EvalResult evaluate(
     const VarGroup& test_config,
     double rel_tol = 0.01)
 {
+    // Step 1: run adaptive RVI directly to get g_star and the chosen M
+    DynaPlex::Models::queue_mdp::MDP mdp_direct(mdp_config);
+    auto sol = mdp_direct.runRVI(rel_tol);
+
+    // Step 2: get framework MDP and policies; fix M to match the solution above
     auto mdp  = dp.GetMDP(mdp_config);
     auto fifo = mdp->GetPolicy("FIFO policy");
     auto rvi  = mdp->GetPolicy(VarGroup{
-        {"id",      std::string("RVI_optimal")},
-        {"rel_tol", rel_tol}
+        {"id", std::string("RVI_optimal")},
+        {"M",  int64_t(sol.M)}
     });
     auto comparer = dp.GetPolicyComparer(mdp, test_config);
     auto res = comparer.Compare({fifo, rvi});
@@ -253,6 +263,8 @@ static EvalResult evaluate(
     res[0].Get("mean",  out.fifo_mean);
     res[1].Get("mean",  out.rvi_mean);
     res[1].Get("error", out.rvi_err);
+    out.g_star  = sol.g_star;
+    out.final_M = sol.M;
     return out;
 }
 
@@ -276,7 +288,7 @@ int main()
     test_config.Add("periods_per_trajectory", 10000);
 
     int sections_passed = 0;
-    const int total_sections = 5;
+    const int total_sections = 6;
 
     dp.System() << "\n";
     dp.System() << std::string(80, '=') << "\n";
@@ -287,15 +299,19 @@ int main()
     // Section A: RVI ≤ FIFO invariant across 8 diverse configs
     // ===================================================================
     dp.System() << "--- Section A: RVI <= FIFO Invariant (11 diverse configs) ---\n";
-    dp.System() << "    Criterion: RVI_mean <= FIFO_mean * 1.02  (2% tolerance for noise)\n\n";
+    dp.System() << "    Adaptive M selected via rel_tol=1%.  g_star = internal RVI value;\n";
+    dp.System() << "    rvi_eval = simulated mean of RVI policy (same M).  ratio = rvi_eval/FIFO.\n";
+    dp.System() << "    Criterion: rvi_eval <= FIFO_mean * 1.02  (2% tolerance for noise)\n\n";
     dp.System() << std::left
         << std::setw(16) << "Config"
+        << std::setw(6)  << "M"
+        << std::setw(13) << "g_star"
+        << std::setw(13) << "rvi_eval"
         << std::setw(13) << "FIFO_mean"
-        << std::setw(13) << "RVI_mean"
-        << std::setw(11) << "RVI/FIFO"
+        << std::setw(11) << "ratio"
         << std::setw(7)  << "PASS?"
         << "\n";
-    dp.System() << std::string(60, '-') << "\n";
+    dp.System() << std::string(79, '-') << "\n";
 
     struct SectionAEntry { std::string name; VarGroup config; };
     std::vector<SectionAEntry> secA_configs = {
@@ -317,17 +333,22 @@ int main()
     };
 
     int secA_pass = 0;
+    std::vector<EvalResult> secA_results;
+    secA_results.reserve(secA_configs.size());
     for (auto& entry : secA_configs) {
         auto er = evaluate(dp, entry.config, test_config);
+        secA_results.push_back(er);
         double ratio = (er.fifo_mean > 1e-12) ? er.rvi_mean / er.fifo_mean : 0.0;
         bool pass = er.rvi_mean <= er.fifo_mean * 1.02;
         if (pass) secA_pass++;
 
         dp.System() << std::left
             << std::setw(16) << entry.name
+            << std::setw(6)  << er.final_M
             << std::fixed << std::setprecision(4)
-            << std::setw(13) << er.fifo_mean
+            << std::setw(13) << er.g_star
             << std::setw(13) << er.rvi_mean
+            << std::setw(13) << er.fifo_mean
             << std::setw(11) << ratio
             << (pass ? "PASS" : "FAIL")
             << "\n";
@@ -536,6 +557,69 @@ int main()
         << "\n";
 
     dp.System() << "\nSection E result: " << (secE_pass ? "[SECTION PASS]" : "[SECTION FAIL]") << "\n";
+
+    // ===================================================================
+    // Section F: g_star vs. EvaluatePolicyPerStep (direct unit comparison)
+    // ===================================================================
+    dp.System() << "\n--- Section F: g_star vs. EvaluatePolicyPerStep ---\n";
+    dp.System() << "    Both quantities are average cost per uniformized step.\n";
+    dp.System() << "    Criterion: |eval_per_step / g_star - 1| < 0.01  (within 1%)\n\n";
+    dp.System() << std::left
+        << std::setw(16) << "Config"
+        << std::setw(13) << "g_star"
+        << std::setw(16) << "eval_per_step"
+        << std::setw(12) << "std_error"
+        << std::setw(10) << "ratio"
+        << std::setw(7)  << "PASS?"
+        << "\n";
+    dp.System() << std::string(74, '-') << "\n";
+
+    // EvaluatePolicyPerStep params: 200 trajectories, 100k steps, 10k warmup
+    const int64_t eps_n_traj    = 200;
+    const int64_t eps_steps     = 100000;
+    const int64_t eps_warmup    = 10000;
+    const int64_t eps_seed      = 99;
+
+    int secF_pass = 0;
+    for (size_t idx = 0; idx < secA_configs.size(); ++idx)
+    {
+        const auto& entry = secA_configs[idx];
+        const auto& er    = secA_results[idx];
+
+        // Re-obtain the DynaPlex::MDP adapter and RVI policy at the same M
+        auto mdp_fw  = dp.GetMDP(entry.config);
+        auto rvi_pol = mdp_fw->GetPolicy(VarGroup{
+            {"id", std::string("RVI_optimal")},
+            {"M",  int64_t(er.final_M)}
+        });
+
+        auto eps_res = DynaPlex::Models::queue_mdp::EvaluatePolicyPerStep(
+            mdp_fw, rvi_pol, eps_n_traj, eps_steps, eps_warmup, eps_seed);
+
+        double eps_mean = 0.0, eps_err = 0.0;
+        eps_res.Get("mean",      eps_mean);
+        eps_res.Get("std_error", eps_err);
+
+        double ratio  = (er.g_star > 1e-12) ? eps_mean / er.g_star : 0.0;
+        bool   pass   = (std::abs(ratio - 1.0) < 0.01);
+        if (pass) secF_pass++;
+
+        dp.System() << std::left
+            << std::setw(16) << entry.name
+            << std::fixed << std::setprecision(6)
+            << std::setw(13) << er.g_star
+            << std::setw(16) << eps_mean
+            << std::setw(12) << eps_err
+            << std::setprecision(4)
+            << std::setw(10) << ratio
+            << (pass ? "PASS" : "FAIL")
+            << "\n";
+    }
+
+    bool secF_ok = (secF_pass == (int)secA_configs.size());
+    dp.System() << "\nSection F result: " << secF_pass << "/" << secA_configs.size() << " PASS";
+    dp.System() << (secF_ok ? "  [SECTION PASS]\n" : "  [SECTION FAIL]\n");
+    if (secF_ok) sections_passed++;
 
     // ===================================================================
     // Final summary
