@@ -728,6 +728,20 @@ namespace DynaPlex::Models {
 			int64_t warmup_steps   = 20000,
 			int64_t rng_seed       = 42);
 
+		/**
+		 * Prints a console heatmap of a policy's job-type assignment decisions.
+		 * X-axis: FIL_waiting[0], Y-axis: FIL_waiting[1].
+		 * Cell: 0=serve type 0, 1=serve type 1, .=skip/idle, -=not visited.
+		 * Samples canonical states: action_counter==0, both FIL>=0, exactly 1 server busy.
+		 * Works with any DynaPlex::Policy (RVI, FIFO, NN, etc.).
+		 */
+		void PrintPolicyHeatmap(
+			const DynaPlex::MDP&    fw_mdp,
+			const DynaPlex::Policy& policy,
+			int     max_fil   = 15,
+			int64_t n_warmup  = 100000,
+			int64_t n_samples = 2000000);
+
 	}  // namespace queue_mdp
 }  // namespace DynaPlex::Models
 

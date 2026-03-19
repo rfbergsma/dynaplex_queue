@@ -3,6 +3,8 @@
 #include "policies.h"
 #include <deque>
 #include <iostream>
+#include <iomanip>
+#include <span>
 
 
 namespace DynaPlex::Models {
@@ -912,6 +914,95 @@ namespace DynaPlex::Models {
 			result.Add("steps_per_trajectory", steps_per_traj);
 			result.Add("warmup_steps",         warmup_steps);
 			return result;
+		}
+
+		// -----------------------------------------------------------------------
+		// PrintPolicyHeatmap
+		// Simulation-based: samples canonical AwaitAction states (action_counter==0,
+		// both job types waiting, exactly 1 server busy) and records which job type
+		// the policy assigns.  Works for any DynaPlex::Policy (RVI, FIFO, NN, ...).
+		// -----------------------------------------------------------------------
+		void PrintPolicyHeatmap(
+			const DynaPlex::MDP&    fw_mdp,
+			const DynaPlex::Policy& policy,
+			int     max_fil,
+			int64_t n_warmup,
+			int64_t n_samples)
+		{
+			// -2 = not visited, -1 = skip/idle, 0 = type 0, 1 = type 1
+			std::vector<std::vector<int>> grid(
+				max_fil + 1, std::vector<int>(max_fil + 1, -2));
+
+			DynaPlex::Trajectory traj;
+			traj.RNGProvider.SeedEventStreams(true, 42, 0, 0);
+			auto single = std::span<DynaPlex::Trajectory>(&traj, 1);
+			fw_mdp->InitiateState(single);
+
+			// Warm-up
+			for (int64_t s = 0; s < n_warmup; ++s) {
+				if (traj.Category.IsAwaitAction())
+					fw_mdp->IncorporateAction(single, policy);
+				else
+					fw_mdp->IncorporateEvent(single);
+			}
+
+			// Sample collection
+			for (int64_t s = 0; s < n_samples; ++s) {
+				if (traj.Category.IsAwaitAction()) {
+					auto* sp = dynamic_cast<MDP::State*>(traj.GetState().get());
+
+					if (sp && sp->server_manager.action_counter == 0) {
+						int64_t f0 = sp->queue_manager.FIL_waiting[0];
+						int64_t f1 = sp->queue_manager.FIL_waiting[1];
+
+						if (f0 >= 0 && f1 >= 0 && f0 <= max_fil && f1 <= max_fil
+							&& grid[f0][f1] == -2)
+						{
+							// Canonical filter: exactly 1 server busy across all pools
+							int busy = 0;
+							for (const auto& row : sp->server_manager.busy_on)
+								for (int64_t b : row) busy += (int)b;
+
+							if (busy == 1) {
+								policy->SetAction(single);   // sets traj.NextAction
+								int64_t action = traj.NextAction;
+								if (action == 1) {
+									grid[f0][f1] = (int)sp->server_manager.action_queue[0].job_type;
+								} else {
+									grid[f0][f1] = -1;  // skipped highest-FIL job
+								}
+								fw_mdp->IncorporateAction(single);  // apply already-set action
+								continue;
+							}
+						}
+					}
+					fw_mdp->IncorporateAction(single, policy);
+				} else {
+					fw_mdp->IncorporateEvent(single);
+				}
+			}
+
+			// Print header
+			std::cout << "\n      FIL_1:";
+			for (int f1 = 0; f1 <= max_fil; ++f1)
+				std::cout << std::setw(3) << f1;
+			std::cout << "\nFIL_0\n";
+
+			for (int f0 = 0; f0 <= max_fil; ++f0) {
+				std::cout << std::setw(7) << f0 << " :";
+				for (int f1 = 0; f1 <= max_fil; ++f1) {
+					int v = grid[f0][f1];
+					if      (v == -2) std::cout << "  -";
+					else if (v == -1) std::cout << "  .";
+					else              std::cout << "  " << v;
+				}
+				std::cout << "\n";
+			}
+			std::cout << "\nLegend: 0=serve type 0, 1=serve type 1, .=skip/idle, -=not visited\n";
+			std::cout << "FIFO boundary: diagonal\n";
+			std::cout << "  Below diagonal (FIL_0>FIL_1): FIFO serves type 0  -> expect '0'\n";
+			std::cout << "  Above diagonal (FIL_1>FIL_0): FIFO serves type 1  -> expect '1'\n";
+			std::cout << "  Deviations from diagonal pattern = RVI != FIFO\n";
 		}
 
 		void Register(DynaPlex::Registry& registry)

@@ -622,6 +622,26 @@ int main()
     if (secF_ok) sections_passed++;
 
     // ===================================================================
+    // Section G: Policy Heatmap (informational)
+    // ===================================================================
+    dp.System() << "\n--- Section G: Policy Heatmap (informational, no PASS/FAIL) ---\n";
+    dp.System() << "    For each (FIL_0, FIL_1) canonical state (1 server busy, both job types waiting),\n";
+    dp.System() << "    shows which job type the policy assigns: 0=type 0, 1=type 1, .=skip/idle.\n";
+    {
+        auto cfg    = make_2x2(0.250, 0.250, 0.35, 0.35, 5.0, 5.0, 100.0, 100.0);  // sym_med_rho
+        auto fw_mdp = dp.GetMDP(cfg);
+
+        dp.System() << "\n[RVI policy, sym_med_rho]\n";
+        auto rvi_pol = fw_mdp->GetPolicy(VarGroup{{"id", std::string("RVI_optimal")}, {"rel_tol", 0.01}});
+        DynaPlex::Models::queue_mdp::PrintPolicyHeatmap(fw_mdp, rvi_pol, /*max_fil=*/15);
+
+        dp.System() << "\n[FIFO policy, sym_med_rho]\n";
+        auto fifo_pol = fw_mdp->GetPolicy(std::string("FIFO policy"));
+        DynaPlex::Models::queue_mdp::PrintPolicyHeatmap(fw_mdp, fifo_pol, /*max_fil=*/15);
+    }
+    dp.System() << "\nSection G: informational only\n";
+
+    // ===================================================================
     // Final summary
     // ===================================================================
     dp.System() << "\n";
