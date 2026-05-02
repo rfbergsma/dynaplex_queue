@@ -4,6 +4,7 @@
 #include <deque>
 #include <iostream>
 #include <iomanip>
+#include <functional>
 #include <span>
 
 
@@ -190,17 +191,8 @@ namespace DynaPlex::Models {
 				
 					state.queue_manager.tick();
 				
-					// add cost rate for fils >  due time
-					double cost = 0.0;
-					for (size_t n = 0; n < state.queue_manager.FIL_waiting.size(); ++n) {
-						if (state.queue_manager.FIL_waiting[n] >= 0) {
-							if (state.queue_manager.FIL_waiting[n] > due_times[n]) {
-								// add cost
-								// (could be more sophisticated, e.g., linear in waiting time - due time)
-								cost += cost_rates[n];
-							}
-						}
-					}
+					// Charge tick cost using the configurable reward function (post-tick FIL)
+					double cost = ComputeTickCost(state);
 				
 					if (!state.server_manager.action_queue.empty()) {
 						state.cat = StateCategory::AwaitAction();
@@ -361,18 +353,25 @@ namespace DynaPlex::Models {
 
 					for (auto [next_fil, p_fil] : fil_dist) {
 						MDP::State s2 = modified_state;
-						// apply server completion deterministically
-						// set FIL outcome
+
+						// Set the new FIL for this job type after assignment
 						s2.queue_manager.FIL_waiting[current_job_type] = next_fil;
 
-						// update total_arrival_rate consistently:
+						// Update derived rates to reflect new FIL
 						s2.queue_manager.update_total_arrival_rate(arrival_rates);
 
-						if (modified_state.server_manager.get_action_counter() >= (int64_t)modified_state.server_manager.action_queue.size()) {
-							// set to await event
-							s2.cat = StateCategory::AwaitEvent();
-						}
-						
+						// Regenerate action queue from scratch using new FIL values,
+						// exactly mirroring what DynaPlex does in ModifyStateWithEvent
+						// (FIL-refresh path). This ensures:
+						//   1. The queue reflects the actual new FIL (not stale pre-assign values)
+						//   2. The counter is reset to 0 so all remaining candidates are considered
+						//   3. Category is set correctly based on whether assignments remain
+						s2.server_manager.generate_actions(s2.queue_manager.FIL_waiting);
+						s2.server_manager.set_action_counter(0);
+						s2.cat = s2.server_manager.action_queue.empty()
+							? StateCategory::AwaitEvent()
+							: StateCategory::AwaitAction();
+
 						out.push_back({ std::move(s2), p_fil });
 					}
 					
@@ -434,8 +433,6 @@ namespace DynaPlex::Models {
 				// Scan the same buckets as GetEventType: (k, j in can_serve)
 				double C = 0.0;
 				for (int64_t k = 0; k < k_servers; ++k) {
-					const double mu = server_static_info[(size_t)k].mu_k;
-
 					for (size_t j = 0; j < server_static_info[(size_t)k].can_serve.size(); ++j) {
 						MDP::State s2 = state;
 
@@ -443,6 +440,7 @@ namespace DynaPlex::Models {
 						if (busy <= 0) continue;
 
 						const int64_t job = server_static_info[(size_t)k].can_serve[j];
+						const double mu = server_static_info[(size_t)k].mu_kj[j];
 						const double r = mu * (double)busy;
 						const double p_event = r / Lambda;
 
@@ -476,13 +474,40 @@ namespace DynaPlex::Models {
 			return out;
 		}
 
+		double MDP::ComputeTickCost(const State& state) const {
+			double cost = 0.0;
+			for (size_t n = 0; n < (size_t)n_jobs; ++n) {
+				const int64_t fil = state.queue_manager.FIL_waiting[n];
+				if (fil < 0) continue;
+				if (reward_type == 0) {
+					// Binary: charge flat cost_rates[n] if FIL exceeds deadline
+					if (fil > (int64_t)due_times[n])
+						cost += cost_rates[n];
+				}
+				else {
+					// Queue-lateness: expected total lateness for job type n at this tick.
+					// Front-of-line job contributes (u - D)+ directly.
+					// Other jobs of type n still waiting contribute via Poisson arrivals:
+					//   E[q_n - 1 | W_n^1 = u] = lambda_n / tick_rate * u  (by independent increments)
+					//   Each of those arrived uniformly in [0, u), so E[excess | arrived at s] = (u-s-D)+
+					//   Integrating gives the triangular term below.
+					const double u      = (double)fil;
+					const double D      = due_times[n];
+					const double excess = u - D;
+					if (excess > 0.0) {
+						const double front  = excess;
+						const double others = (arrival_rates[n] / tick_rate)
+						                    * std::max(0.0, excess - 1.0) * excess / 2.0;
+						cost += cost_rates[n] * (front + others);
+					}
+				}
+			}
+			return cost;
+		}
+
 		double MDP::GetImmediateCost(const State& state) const {
 			if (state.cat != StateCategory::AwaitEvent()) return 0.0;
-			double cost_tick = 0.0;
-			for (size_t n = 0; n < (size_t)n_jobs; ++n)
-				if (state.queue_manager.FIL_waiting[n] > due_times[n])
-					cost_tick += cost_rates[n];
-			return (tick_rate / uniformization_rate) * cost_tick;
+			return (tick_rate / uniformization_rate) * ComputeTickCost(state);
 		}
 
 		DynaPlex::VarGroup MDP::State::ToVarGroup() const {
@@ -582,6 +607,10 @@ namespace DynaPlex::Models {
 			config.Get("tick_rate", tick_rate);
 			config.Get("cost_rates", cost_rates);
 			config.Get("due_times", due_times);
+			if (config.HasKey("reward_type"))
+				config.Get("reward_type", reward_type);
+			else
+				reward_type = 1;  // default: queue-lateness formula
 
 			//initialize server manager
 			server_static_info.clear();
@@ -590,7 +619,7 @@ namespace DynaPlex::Models {
 			for (int64_t i = 0; i < k_servers; ++i) {
 				VarGroup serverConfig = GetSubGroup(config, "server_type_" + std::to_string(i));
 				serverConfig.Get("servers", server_static_info[i].servers);
-				serverConfig.Get("service_rate", server_static_info[i].mu_k);
+				serverConfig.Get("service_rates", server_static_info[i].mu_kj);
 				serverConfig.Get("can_serve", server_static_info[i].can_serve);
 			}
 
@@ -599,9 +628,11 @@ namespace DynaPlex::Models {
 			for (const auto& rate : arrival_rates) {
 				uniformization_rate += rate;
 			}
-			// sum of all service rates
+			// sum of all service rates (upper bound: max mu per pool × servers)
 			for (int64_t i = 0; i < k_servers; ++i) {
-				uniformization_rate += server_static_info[i].mu_k * server_static_info[i].servers;
+				double max_mu = *std::max_element(server_static_info[i].mu_kj.begin(),
+				                                  server_static_info[i].mu_kj.end());
+				uniformization_rate += max_mu * server_static_info[i].servers;
 			}
 
 		#if QUEUE_MDP_DEBUG
@@ -631,13 +662,12 @@ namespace DynaPlex::Models {
 			double arrival_rate = state.queue_manager.total_arrival_rate;
 			double tick_rate = state.queue_manager.total_tick_rate;
 
-			// --- Compute completion rate from busy_on and mu_k ---
+			// --- Compute completion rate from busy_on and mu_kj ---
 			double completion_rate = 0.0;
 			for (int64_t k = 0; k < k_servers; ++k) {
-				double mu_k = server_static_info[(size_t)k].mu_k;
 				for (size_t j = 0; j < server_static_info[(size_t)k].can_serve.size(); ++j) {
 					int64_t n_busy = state.server_manager.busy_on[(size_t)k][j];
-					completion_rate += n_busy * mu_k;
+					completion_rate += n_busy * server_static_info[(size_t)k].mu_kj[j];
 				}
 			}
 
@@ -688,7 +718,7 @@ namespace DynaPlex::Models {
 				double cumulative_rate = state.queue_manager.total_arrival_rate + state.queue_manager.total_tick_rate;
 				for (int64_t k = 0; k < k_servers; ++k) {
 					for (size_t j = 0; j < server_static_info[(size_t)k].can_serve.size(); ++j) {
-						cumulative_rate += state.server_manager.busy_on[(size_t)k][j] * server_static_info[(size_t)k].mu_k;
+						cumulative_rate += state.server_manager.busy_on[(size_t)k][j] * server_static_info[(size_t)k].mu_kj[j];
 						if (event_sample < cumulative_rate) {							
 							int64_t job_type = server_static_info[k].can_serve[j];
 							return Event_type::MakeCompletion(k, job_type);
@@ -913,6 +943,128 @@ namespace DynaPlex::Models {
 			result.Add("n_trajectories",       n_trajectories);
 			result.Add("steps_per_trajectory", steps_per_traj);
 			result.Add("warmup_steps",         warmup_steps);
+			return result;
+		}
+
+		// -----------------------------------------------------------------------
+		// EvaluatePolicyRaw
+		// Simulates the policy at the raw MDP level so we can classify every step
+		// as action / real_event / fil_refresh exactly as the RVI sees them.
+		// Accepts a std::function so the caller can inject any policy logic.
+		// -----------------------------------------------------------------------
+		RawEvalResult EvaluatePolicyRaw(
+			const MDP&                                    mdp,
+			std::function<int64_t(const MDP::State&)>     get_action,
+			int64_t n_trajectories,
+			int64_t steps_per_traj,
+			int64_t warmup_steps,
+			int64_t rng_seed)
+		{
+			std::vector<double> costs_per_rvi_step(n_trajectories, 0.0);
+			std::vector<double> costs_per_rvi_step_rvi(n_trajectories, 0.0);
+			int64_t grand_action_steps      = 0;
+			int64_t grand_real_event_steps  = 0;
+			int64_t grand_fil_refresh_steps = 0;
+
+			for (int64_t i = 0; i < n_trajectories; ++i)
+			{
+				DynaPlex::RNGProvider rng_provider;
+				rng_provider.SeedEventStreams(true, rng_seed, 0, i);
+
+				MDP::State state = mdp.GetInitialState();
+
+				int64_t action_steps      = 0;
+				int64_t real_event_steps  = 0;
+				int64_t fil_refresh_steps = 0;
+				double  cumcost           = 0.0;
+				double  cumcost_rvi       = 0.0;
+
+				// --- warm-up phase ---
+				for (int64_t s = 0; s < warmup_steps; ++s) {
+					if (state.cat == DynaPlex::StateCategory::AwaitAction()) {
+						int64_t a = get_action(state);
+						mdp.ModifyStateWithAction(state, a);
+					}
+					else {
+						MDP::Event evt = mdp.GetEvent(rng_provider.GetEventRNG(0));
+						mdp.ModifyStateWithEvent(state, evt);
+					}
+				}
+
+				// --- main phase ---
+				cumcost = 0.0;
+
+				for (int64_t s = 0; s < steps_per_traj; ++s) {
+					if (state.cat == DynaPlex::StateCategory::AwaitAction()) {
+						int64_t a = get_action(state);
+						mdp.ModifyStateWithAction(state, a);
+						++action_steps;
+					}
+					else {
+						bool is_fil_refresh = (state.next_fil_job_type != -1);
+						// RVI-style: charge per-step at AwaitEvent states with FIL > due_time
+						// (before applying the event, using the current state's FIL — same as RVI)
+						if (!is_fil_refresh) {
+							double rvi_step_cost = 0.0;
+							for (int64_t n = 0; n < mdp.n_jobs; ++n)
+								if (state.queue_manager.FIL_waiting[(size_t)n] > mdp.due_times[(size_t)n])
+									rvi_step_cost += mdp.cost_rates[(size_t)n];
+							cumcost_rvi += (mdp.tick_rate / mdp.uniformization_rate) * rvi_step_cost;
+						}
+						MDP::Event evt = mdp.GetEvent(rng_provider.GetEventRNG(0));
+						double cost = mdp.ModifyStateWithEvent(state, evt);
+						cumcost += cost;
+						if (is_fil_refresh)
+							++fil_refresh_steps;
+						else
+							++real_event_steps;
+					}
+				}
+
+				int64_t rvi_steps = action_steps + real_event_steps;
+				costs_per_rvi_step[i] = (rvi_steps > 0)
+					? cumcost / static_cast<double>(rvi_steps)
+					: 0.0;
+				costs_per_rvi_step_rvi[i] = (rvi_steps > 0)
+					? cumcost_rvi / static_cast<double>(rvi_steps)
+					: 0.0;
+
+				grand_action_steps      += action_steps;
+				grand_real_event_steps  += real_event_steps;
+				grand_fil_refresh_steps += fil_refresh_steps;
+			}
+
+			// mean and std error across trajectories
+			double mean = 0.0;
+			for (double c : costs_per_rvi_step) mean += c;
+			mean /= static_cast<double>(n_trajectories);
+
+			double mean_rvi = 0.0;
+			for (double c : costs_per_rvi_step_rvi) mean_rvi += c;
+			mean_rvi /= static_cast<double>(n_trajectories);
+
+			double var = 0.0;
+			for (double c : costs_per_rvi_step) var += (c - mean) * (c - mean);
+			if (n_trajectories > 1)
+				var /= static_cast<double>(n_trajectories - 1);
+			double std_error = std::sqrt(var / static_cast<double>(n_trajectories));
+
+			// mean cost per event (what the comparer measures)
+			double total_cost = 0.0;
+			for (double c : costs_per_rvi_step) total_cost += c;   // approximate
+			double mean_cost_per_event = (grand_real_event_steps > 0)
+				? (mean * static_cast<double>(grand_action_steps + grand_real_event_steps))
+				  / static_cast<double>(grand_real_event_steps)
+				: 0.0;
+
+			RawEvalResult result;
+			result.mean_cost_per_rvi_step     = mean;
+			result.mean_cost_per_rvi_step_rvi = mean_rvi;
+			result.mean_cost_per_event        = mean_cost_per_event;
+			result.std_error                  = std_error;
+			result.total_action_steps         = grand_action_steps;
+			result.total_real_event_steps     = grand_real_event_steps;
+			result.total_fil_refresh_steps    = grand_fil_refresh_steps;
 			return result;
 		}
 

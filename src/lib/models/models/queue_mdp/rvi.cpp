@@ -61,8 +61,8 @@ struct StateEncoder {
 
 } // anonymous namespace
 
-// ---- runRVI(int M): BFS + RVI at a fixed truncation level ----
-MDP::RVISolution MDP::runRVI(int M) const {
+// ---- runRVI(int M, int max_iter): BFS + RVI at a fixed truncation level ----
+MDP::RVISolution MDP::runRVI(int M, int max_iter) const {
 	StateEncoder encoder(*this, M);
 
 	std::unordered_map<uint64_t, size_t> state_index;
@@ -82,14 +82,9 @@ MDP::RVISolution MDP::runRVI(int M) const {
 		states.push_back(s);
 		transitions.push_back({});
 
-		double cost = 0.0;
-		if (s.cat == DynaPlex::StateCategory::AwaitEvent()) {
-			for (size_t n = 0; n < (size_t)n_jobs; ++n)
-				if (s.queue_manager.FIL_waiting[n] > due_times[n])
-					cost += cost_rates[n];
-			cost *= tick_rate / uniformization_rate;
-		}
-		immediate_cost.push_back(cost);
+		// Delegate to GetImmediateCost so reward_type is respected
+		// (reward_type=0 -> binary; reward_type=1 -> queue-lateness)
+		immediate_cost.push_back(GetImmediateCost(s));
 		bfs_queue.push(idx);
 		return idx;
 	};
@@ -131,9 +126,9 @@ MDP::RVISolution MDP::runRVI(int M) const {
 	// ---- RVI loop ----
 	const size_t ref = 0;
 	const double eps = 1e-10;
-	const int max_iter = 10000;
 	std::vector<double> h(states.size(), 0.0);
-	double g_prev = 0.0, g_star = 0.0;
+	double g_star = 0.0;
+	double g_prev = 0.0;
 	int g_stable_count = 0;
 
 	for (int iter = 0; iter < max_iter; ++iter) {
@@ -162,25 +157,43 @@ MDP::RVISolution MDP::runRVI(int M) const {
 		g_star = h_new[ref];
 		for (auto& v : h_new) v -= g_star;
 
-		double delta = 0.0;
-		for (size_t i = 0; i < states.size(); ++i)
-			delta = std::max(delta, std::abs(h_new[i] - h[i]));
+		// Span seminorm: max(h_new[i] - h[i]) - min(h_new[i] - h[i]).
+		// This is the theoretically correct RVI convergence criterion.
+		// Unlike max|h_new - h|, it is not fooled by truncation self-loops
+		// that add a near-constant offset to every Bellman residual -- those
+		// shift all residuals by the same amount, leaving the span unchanged.
+		// It is also scale-invariant: QL reward inflates h-values by ~100x
+		// vs. binary reward, but the span converges to zero at the same rate.
+		double max_diff = -std::numeric_limits<double>::infinity();
+		double min_diff =  std::numeric_limits<double>::infinity();
+		for (size_t i = 0; i < states.size(); ++i) {
+			const double d = h_new[i] - h[i];
+			if (d > max_diff) max_diff = d;
+			if (d < min_diff) min_diff = d;
+		}
+		const double span = max_diff - min_diff;
 
 		std::swap(h, h_new);
 
 		if (iter % 500 == 0)
 			std::cout << "iter " << std::setw(6) << iter
 				      << "  g*=" << std::setprecision(10) << g_star
-				      << "  delta=" << std::setprecision(6) << delta << "\n";
+				      << "  span=" << std::setprecision(6) << span << "\n";
 
+		// Primary criterion: span < eps (theoretically correct for ergodic MDPs).
+		// Fallback: g_stable_count -- span does NOT converge to zero for truncated
+		// MDPs (the self-loop at FIL=M permanently offsets some Bellman residuals),
+		// but g* converges reliably and quickly.  Five consecutive stable g*
+		// iterations is sufficient in practice.
 		if (iter > 0 && g_star > eps && std::abs(g_star - g_prev) < eps)
 			++g_stable_count;
 		else
 			g_stable_count = 0;
 		g_prev = g_star;
 
-		if (delta < eps || g_stable_count >= 5) {
+		if (span < eps || g_stable_count >= 5) {
 			std::cout << "\nConverged at iter " << iter
+				      << (span < eps ? "  [span]" : "  [g_stable]")
 				      << "  g* = " << std::setprecision(12) << g_star << "\n";
 			break;
 		}
@@ -215,8 +228,10 @@ MDP::RVISolution MDP::runRVI(double rel_tol) const {
 	double total_lambda = 0.0;
 	for (double r : arrival_rates) total_lambda += r;
 	double total_mu = 0.0;
-	for (const auto& si : server_static_info)
-		total_mu += si.servers * si.mu_k;
+	for (const auto& si : server_static_info) {
+		double max_mu = *std::max_element(si.mu_kj.begin(), si.mu_kj.end());
+		total_mu += si.servers * max_mu;
+	}
 	double rho = (total_mu > 0.0) ? std::min(total_lambda / total_mu, 0.99) : 0.99;
 	double mean_excess = tick_rate / (total_mu * (1.0 - rho));
 	int M = std::max((int)std::ceil(max_due_time + 3.0 * mean_excess) + 5, 10);

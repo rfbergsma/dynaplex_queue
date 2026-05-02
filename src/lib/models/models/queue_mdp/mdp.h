@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <vector>
+#include <functional>
 #include <unordered_map>
 #include <cmath>
 #include <cstdlib>
@@ -23,8 +24,8 @@ namespace DynaPlex::Models {
 			
 			struct ServerStaticInfo {
 				int64_t servers = 0;
-				double mu_k = 0.0;
-				std::vector<int64_t> can_serve; // types of jobs it can serve
+				std::vector<double> mu_kj;       // mu_kj[j] = service rate for can_serve[j]
+				std::vector<int64_t> can_serve;  // types of jobs it can serve
 			};
 
 			struct Action {
@@ -346,7 +347,7 @@ namespace DynaPlex::Models {
 					double r = 0.0;
 					for (size_t k = 0; k < S.size(); ++k)
 						for (size_t j = 0; j < S[k].can_serve.size(); ++j)
-							r += dyn.busy_on[k][j] * S[k].mu_k;
+							r += dyn.busy_on[k][j] * S[k].mu_kj[j];
 					return r;
 				}
 
@@ -357,7 +358,7 @@ namespace DynaPlex::Models {
 					if (idx < 0) return false;
 					if (dyn.busy_on[(size_t)k][(size_t)idx] >= S[(size_t)k].servers) return false;
 					dyn.busy_on[(size_t)k][(size_t)idx] += 1;
-					total_service_rate += S[(size_t)k].mu_k;
+					total_service_rate += S[(size_t)k].mu_kj[(size_t)idx];  // idx already computed above
 					return true;
 				}
 
@@ -421,6 +422,7 @@ namespace DynaPlex::Models {
 			std::vector<double> cost_rates; // service rates for each server type k
 			std::vector<double> due_times; // rewards for completing each job type n
 			double uniformization_rate;
+			int64_t reward_type;     // 0=binary (FIL>D), 1=queue-lateness (default)
 
 			struct multi_queue {
 				// vector of first in line waiting times jobs length n jobs, -1 if empty
@@ -693,13 +695,14 @@ namespace DynaPlex::Models {
 			static std::vector<std::pair<int64_t, double>> NextFILDistribution(int64_t i, double lambda, double gamma);
 			std::vector<nextStateProbability> getNextStateProbability(const MDP::State& state, int64_t action) const;
 			double GetImmediateCost(const State& state) const;
+			double ComputeTickCost(const State& state) const;
 
 			struct RVISolution {
 				double g_star;  // optimal average cost per time unit
 				int M;          // truncation level used
 				std::unordered_map<uint64_t, int64_t> action_map;  // encoded state key -> optimal action
 			};
-			RVISolution runRVI(int M) const;                        // solve at fixed M, verbose output
+			RVISolution runRVI(int M, int max_iter = 10000) const;  // solve at fixed M, verbose output
 			RVISolution runRVI(double rel_tol = 1e-4) const;       // auto-select M via heuristic + convergence check
 			int64_t EvaluateRVIPolicy(const RVISolution& sol, const State& state) const;
 		};
@@ -726,6 +729,40 @@ namespace DynaPlex::Models {
 			int64_t n_trajectories = 500,
 			int64_t steps_per_traj = 200000,
 			int64_t warmup_steps   = 20000,
+			int64_t rng_seed       = 42);
+
+		/**
+		 * Raw policy evaluator that works directly on the concrete queue_mdp types,
+		 * giving exact step-type counts that match the RVI's denominator.
+		 *
+		 * Counts three kinds of steps:
+		 *   action_steps       - every IncorporateAction call (action=0 or action=1)
+		 *   real_event_steps   - IncorporateEvent calls that are NOT a FIL refresh
+		 *                        (tick, arrival, completion, nothing self-loop)
+		 *   fil_refresh_steps  - IncorporateEvent calls that ARE a FIL refresh
+		 *                        (triggered by action=1, no cost, no real event)
+		 *
+		 * The RVI denominator = action_steps + real_event_steps  (fil_refresh excluded)
+		 * The comparer denominator = real_event_steps only (periods)
+		 *
+		 * Returns mean cost per RVI-equivalent step, plus breakdown for diagnosis.
+		 */
+		struct RawEvalResult {
+			double  mean_cost_per_rvi_step;     // cost / (action_steps + real_event_steps)  [tick-event cost]
+			double  mean_cost_per_rvi_step_rvi; // cost / (action_steps + real_event_steps)  [RVI-style: per-step at FIL>due_time]
+			double  mean_cost_per_event;        // cost / real_event_steps  (matches comparer)
+			double  std_error;                  // std error of mean_cost_per_rvi_step
+			int64_t total_action_steps;
+			int64_t total_real_event_steps;
+			int64_t total_fil_refresh_steps;
+		};
+
+		RawEvalResult EvaluatePolicyRaw(
+			const MDP&                                  mdp,
+			std::function<int64_t(const MDP::State&)>   get_action,
+			int64_t n_trajectories = 200,
+			int64_t steps_per_traj = 100000,
+			int64_t warmup_steps   = 10000,
 			int64_t rng_seed       = 42);
 
 		/**

@@ -29,7 +29,11 @@
       "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\fix3_mdpcpp.ps1\")",
       "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\inspect_mdph.ps1\")",
       "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\diag_bom.ps1\")",
-      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\fix_bom.ps1\")"
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\fix_bom.ps1\")",
+      "Bash(dir /s /b \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\")",
+      "Bash(findstr \"IO_DynaPlex\")",
+      "Bash(dir \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\IO_DynaPlex\\\\mdp_config_examples\\\\queue_mdp\" /b)",
+      "Bash(python -c ' *)"
     ]
   }
 }

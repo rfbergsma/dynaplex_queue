@@ -17,11 +17,11 @@
     "server_type_0": {
         "servers": 1,
         "can_serve": [ 0, 1 ],
-        "service_rate": 0.35
+        "service_rates": [ 0.35, 0.35 ]
     },
     "server_type_1": {
         "servers": 1,
         "can_serve": [ 0, 1 ],
-        "service_rate": 0.35
+        "service_rates": [ 0.35, 0.35 ]
     }
 }
