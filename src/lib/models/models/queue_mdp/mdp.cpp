@@ -638,7 +638,15 @@ namespace DynaPlex::Models {
 			for (int64_t i = 0; i < k_servers; ++i) {
 				VarGroup serverConfig = GetSubGroup(config, "server_type_" + std::to_string(i));
 				serverConfig.Get("servers", server_static_info[i].servers);
-				serverConfig.Get("service_rates", server_static_info[i].mu_kj);
+				// Accept both "service_rates" (vector, one rate per job type) and
+				// "service_rate" (scalar, same rate for all job types).
+				if (serverConfig.HasKey("service_rates")) {
+					serverConfig.Get("service_rates", server_static_info[i].mu_kj);
+				} else {
+					double scalar_rate;
+					serverConfig.Get("service_rate", scalar_rate);
+					server_static_info[i].mu_kj.assign((size_t)n_jobs, scalar_rate);
+				}
 				serverConfig.Get("can_serve", server_static_info[i].can_serve);
 			}
 
