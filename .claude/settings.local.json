@@ -33,7 +33,9 @@
       "Bash(dir /s /b \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\")",
       "Bash(findstr \"IO_DynaPlex\")",
       "Bash(dir \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\IO_DynaPlex\\\\mdp_config_examples\\\\queue_mdp\" /b)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(cmake --build build --target queue_rvi --config Release)",
+      "PowerShell(cmake --build \"C:\\\\Users\\\\yc0127198\\\\source\\\\repos\\\\dynaplex_queue\\\\DynaPlexPrivate\\\\out\\\\WinRel\" --target queue_rvi --config Release 2>&1)"
     ]
   }
 }

@@ -422,170 +422,201 @@ namespace DynaPlex::Models {
 			std::vector<double> cost_rates; // service rates for each server type k
 			std::vector<double> due_times; // rewards for completing each job type n
 			double uniformization_rate;
-			int64_t reward_type;     // 0=binary (FIL>D), 1=queue-lateness (default)
+			int64_t reward_type;      // 0=binary (FIL>D), 1=queue-lateness (default)
+			int64_t max_queue_depth;  // tracked positions per job type: 1=FIL only (default)
+			int64_t feature_queue_depth; // NN feature slots per job type (>= max_queue_depth; pads with 0)
 
 			struct multi_queue {
-				// vector of first in line waiting times jobs length n jobs, -1 if empty
-				std::vector<int64_t> FIL_waiting;
-				std::vector <double> arrival_rates;
+				// waiting[n] = deque of waiting times for job type n, front = FIL (oldest).
+				// Empty deque means no job of type n is currently waiting.
+				int64_t max_queue_depth;                     // max tracked positions (from MDP config)
+				std::vector<std::deque<int64_t>> waiting;    // waiting[n][0]=FIL, [1]=SIL, [2]=TIL, ...
+				std::vector<double> arrival_rates;
 				double total_tick_rate;
 				double total_arrival_rate;
-				
 
-				multi_queue() = default; 
+				multi_queue() = default;
 
-				void initialize(int64_t n_jobs, double tick_rate, std::vector<double> arrival_rates) {
-					FIL_waiting.resize((size_t)n_jobs, -1);
-					total_tick_rate = tick_rate;
+				void initialize(int64_t n_jobs, double tick_rate,
+				                std::vector<double> rates, int64_t depth = 1) {
+					max_queue_depth   = depth;
+					waiting.assign((size_t)n_jobs, std::deque<int64_t>{});
+					total_tick_rate   = tick_rate;
 					total_arrival_rate = 0.0;
-					for (const auto& rate : arrival_rates) {
-						total_arrival_rate += rate;
-					}
-					this->arrival_rates = std::move(arrival_rates);
+					for (const auto& r : rates) total_arrival_rate += r;
+					this->arrival_rates = std::move(rates);
 				}
 
-				//arrival of new job (set FIL to 0 first, only allow arrivals if FIL<0)
-				void arrival(int64_t n) {
-					if (n < 0 || n >= static_cast<int64_t>(FIL_waiting.size())) throw("job cannot arrive, queu is not empty");
-					if (FIL_waiting[(size_t)n] < 0) {
-						FIL_waiting[(size_t)n] = 0;
-						total_arrival_rate -= arrival_rates[(size_t)n];
-					}
-				}
-				
-				//tick event (increment FIL for all waiting jobs)
-				void tick() {
-					for (size_t n = 0; n < FIL_waiting.size(); ++n) {
-						if (FIL_waiting[n] >= 0) {
-							FIL_waiting[n] += 1;
-						}
-					}
-				}
-
-				//complete job n (set FIL to -1)
-				void complete_job(int64_t n, double uniform_draw) {
-					
-					if (n < 0 || n >= static_cast<int64_t>(FIL_waiting.size())) throw("job cannot complete, invalid job type");
-					
-					int64_t current_fil = FIL_waiting[(size_t)n];
-					
-					if (current_fil == -1) throw("complete_job/pop called but queue is empty");
-
-					if (current_fil == -1) {
-						std::cout << "trying to complete job that has fil -1 " << std::endl;
-					}
-
-					else if (current_fil == 0) {
-						FIL_waiting[(size_t)n] = -1;
-						
-						
-
-					}
-					else if (current_fil > 0) {
-						FIL_waiting[(size_t)n] = sample_next_fil_after_completion(current_fil,
-							arrival_rates[(size_t)n],
-							total_tick_rate,
-							uniform_draw);
-						
-						
-					}
-
-					int64_t next_fil = FIL_waiting[(size_t)n];
-					if (next_fil == -1) {
-						total_arrival_rate += arrival_rates[(size_t)n];
-					}
-					
-				}
-
+				// ---- Computed FIL shim (backward-compatible; used by generate_actions, RVI, etc.) ----
 				std::vector<int64_t> get_FIL_waiting() const {
-					return FIL_waiting;
+					std::vector<int64_t> out(waiting.size());
+					for (size_t n = 0; n < waiting.size(); ++n)
+						out[n] = waiting[n].empty() ? -1 : waiting[n].front();
+					return out;
 				}
 
-				// update total arrival rate
-				void update_total_arrival_rate(const std::vector<double>& arrival_rates) {
+				// ---- Direct FIL setter (tests and RVI state construction) ----
+				// Clears any deeper positions for this type so callers that only know FIL stay correct.
+				void set_fil(int64_t n, int64_t val) {
+					waiting[(size_t)n].clear();
+					if (val >= 0)
+						waiting[(size_t)n].push_back(val);
 					total_arrival_rate = get_total_arrival_rate(arrival_rates);
 				}
-				
-				// update total tick rate
+
+				// ---- Clamp FIL to M for each type (RVI truncation) ----
+				void clamp_fil(int64_t M) {
+					for (auto& q : waiting)
+						if (!q.empty())
+							q.front() = std::min(q.front(), M);
+				}
+
+				// ---- Arrival: job of type n joins the back of the queue at waiting time 0 ----
+				void arrival(int64_t n) {
+					if (n < 0 || n >= static_cast<int64_t>(waiting.size()))
+						throw std::runtime_error("arrival: invalid job type");
+					if ((int64_t)waiting[(size_t)n].size() < max_queue_depth) {
+						waiting[(size_t)n].push_back(0);
+						// If this filled the last slot, remove from arrival process
+						if ((int64_t)waiting[(size_t)n].size() == max_queue_depth)
+							total_arrival_rate -= arrival_rates[(size_t)n];
+					}
+					// If already at max_queue_depth: event cannot fire (total_arrival_rate excludes it)
+				}
+
+				// ---- Tick: increment all tracked waiting times by 1 ----
+				void tick() {
+					for (auto& q : waiting)
+						for (auto& t : q)
+							++t;
+				}
+
+				// ---- complete_job: FIL served -> shift-up, Koole-sample new bottom position ----
+				// Called during the FIL-refresh step (next_fil_job_type != -1).
+				// For max_queue_depth==1: identical behaviour to the old code (Koole applied to FIL).
+				// For max_queue_depth>1: SIL shifts to FIL deterministically; Koole applied at bottom.
+				void complete_job(int64_t n, double uniform_draw) {
+					if (n < 0 || n >= static_cast<int64_t>(waiting.size()))
+						throw std::runtime_error("complete_job: invalid job type");
+					auto& q = waiting[(size_t)n];
+					if (q.empty())
+						throw std::runtime_error("complete_job: queue is empty for type " + std::to_string(n));
+
+					const bool    was_full   = ((int64_t)q.size() == max_queue_depth);
+					const int64_t old_bottom = q.back();   // deepest tracked position before shift
+
+					q.pop_front();  // FIL served; SIL (if any) becomes new FIL
+
+					// Sample what fills the vacancy at the bottom of the tracked queue.
+					// Semantics: given a job has been waiting old_bottom ticks, what is the
+					// waiting time of the job behind it (if any)?  Same Koole formula as before.
+					//
+					// Special case: old_bottom == 0 means the served job had just arrived
+					// (waiting time 0).  No job can be behind one that just arrived, so the
+					// queue must be empty after the shift.  The Koole sampler returns 0 for
+					// i<=0 (not -1), so we must handle this explicitly to avoid a spurious
+					// zero-waiting-time job being pushed back.  (Matches the old code's
+					// `else if (current_fil == 0) { FIL_waiting[n] = -1; }` guard and the
+					// analytical NextFILDistribution which returns {-1, 1.0} for i==0.)
+					int64_t new_bottom;
+					if (old_bottom == 0) {
+						new_bottom = -1;  // queue becomes empty; no job can be behind a just-arrived job
+					} else {
+						new_bottom = (int64_t)sample_next_fil_after_completion(
+							(int)old_bottom, arrival_rates[(size_t)n], total_tick_rate, uniform_draw);
+					}
+
+					if (new_bottom >= 0)
+						q.push_back(new_bottom);
+
+					// If queue was full and is now not full, re-enable arrivals for this type
+					if (was_full && (int64_t)q.size() < max_queue_depth)
+						total_arrival_rate += arrival_rates[(size_t)n];
+				}
+
+				// ---- Rate helpers ----
+				double get_total_arrival_rate(const std::vector<double>& rates) const {
+					double total = 0.0;
+					for (size_t n = 0; n < waiting.size(); ++n)
+						if ((int64_t)waiting[n].size() < max_queue_depth)
+							total += rates[n];
+					return total;
+				}
+
+				void update_total_arrival_rate(const std::vector<double>& rates) {
+					total_arrival_rate = get_total_arrival_rate(rates);
+				}
+
 				void update_total_tick_rate(double tick_rate) {
 					total_tick_rate = compute_total_tick_rate(tick_rate);
 				}
-				
-				// function that calculates total tick rate
+
 				double compute_total_tick_rate(double tick_rate) const {
-					
 					return tick_rate;
 				}
 
-				double get_total_arrival_rate(const std::vector<double>& arrival_rates) const {
-					double total_rate = 0.0;
-					for (size_t n = 0; n < FIL_waiting.size(); ++n) {
-						if (FIL_waiting[n] < 0) {
-							total_rate += arrival_rates[n];
-						}
-					}
-					return total_rate;
-				}
-				
-				//get maximum possible tick rate
-				double get_max_tick_rate(const int64_t n_jobs,const double tick_rate) const {
+				double get_max_tick_rate(const int64_t n_jobs, const double tick_rate) const {
 					return n_jobs * tick_rate;
 				}
 
-				//get maximum possible arrival rate
-				double get_max_arrival_rate(const std::vector<double>& arrival_rates) const {
-					double total_rate = 0.0;
-					for (const auto& rate : arrival_rates) {
-						total_rate += rate;
-					}
-					return total_rate;
+				double get_max_arrival_rate(const std::vector<double>& rates) const {
+					double total = 0.0;
+					for (const auto& r : rates) total += r;
+					return total;
 				}
 
+				// ---- Koole geometric sampler (unchanged logic) ----
 				inline int sample_next_fil_after_completion(
 					int i,
-					double lambda, //arrival rate
-					double gamma, //tick rate
+					double lambda,   // arrival rate for this job type
+					double gamma,    // tick rate
 					double uniform_draw
 				) {
 					if (i <= 0) return 0;
-
 					const double denom = lambda + gamma;
 					if (denom <= 0.0) return 0;
-
-					// correct Koole probabilities
-					double alpha = lambda / denom;   // arrival probability
-					double beta = gamma / denom;   // tick probability
-
-					if (alpha <= 0.0) return 0;      // no arrivals possible
-					if (beta <= 0.0) return i;      // no ticks => all arrivals at same time => new FIL = i
-
-					// Sample geometric H: #ticks before arrival
+					const double alpha = lambda / denom;
+					const double beta  = gamma  / denom;
+					if (alpha <= 0.0) return 0;
+					if (beta  <= 0.0) return i;
 					double U = uniform_draw;
 					if (U <= 0.0) U = std::numeric_limits<double>::min();
 					if (U >= 1.0) U = std::nextafter(1.0, 0.0);
-
-					// geometric: P(H = h) = beta^h * alpha
-					int H = static_cast<int>(std::floor(std::log(U) / std::log(beta)));
-
-					if (H >= i) return -1;  // queue empty
+					const int H = static_cast<int>(std::floor(std::log(U) / std::log(beta)));
+					if (H >= i) return -1;
 					return i - H;
 				}
 
+				// ---- Serialization ----
 				DynaPlex::VarGroup ToVarGroup() const {
 					DynaPlex::VarGroup vg;
-					vg.Add("FIL_waiting", FIL_waiting);
-					vg.Add("total_tick_rate", total_tick_rate);
+					vg.Add("max_queue_depth", max_queue_depth);
+					const int64_t n_types = (int64_t)waiting.size();
+					vg.Add("n_types", n_types);
+					for (int64_t n = 0; n < n_types; ++n)
+						vg.Add("waiting_" + std::to_string(n),
+						       std::vector<int64_t>(waiting[(size_t)n].begin(), waiting[(size_t)n].end()));
+					vg.Add("total_tick_rate",    total_tick_rate);
 					vg.Add("total_arrival_rate", total_arrival_rate);
-					// optional: store arrival_rates if you treat it as part of state (usually not needed)
+					vg.Add("arrival_rates",      arrival_rates);
 					return vg;
 				}
 
 				explicit multi_queue(const DynaPlex::VarGroup& vg) {
-					vg.Get("FIL_waiting", FIL_waiting);
-					vg.Get("total_tick_rate", total_tick_rate);
+					vg.Get("max_queue_depth", max_queue_depth);
+					int64_t n_types = 0;
+					vg.Get("n_types", n_types);
+					waiting.resize((size_t)n_types);
+					for (int64_t n = 0; n < n_types; ++n) {
+						std::vector<int64_t> q;
+						vg.Get("waiting_" + std::to_string(n), q);
+						waiting[(size_t)n] = std::deque<int64_t>(q.begin(), q.end());
+					}
+					vg.Get("total_tick_rate",    total_tick_rate);
 					vg.Get("total_arrival_rate", total_arrival_rate);
+					if (vg.HasKey("arrival_rates"))
+						vg.Get("arrival_rates", arrival_rates);
 				}
-
 			};
 
 			struct State {

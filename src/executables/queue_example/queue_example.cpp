@@ -440,11 +440,11 @@ int main() {
 			std::cout << "cat not equal" << std::endl; 
 		}
 
-		if (state2.queue_manager.FIL_waiting == state.queue_manager.FIL_waiting) {
+		if (state2.queue_manager.get_FIL_waiting() == state.queue_manager.get_FIL_waiting()) {
 			std::cout << "FIL waiting equal" << std::endl;
 		}
 		else {
-			std::cout << "FIL waiting equal" << std::endl;
+			std::cout << "FIL waiting NOT equal" << std::endl;
 		}
 
 		
@@ -471,15 +471,15 @@ int main() {
 		}
 
 		// FIL_waiting
-		if (state2.queue_manager.FIL_waiting == state.queue_manager.FIL_waiting) {
+		if (state2.queue_manager.get_FIL_waiting() == state.queue_manager.get_FIL_waiting()) {
 			std::cout << "FIL_waiting equal\n";
 		}
 		else {
 			std::cout << "FIL_waiting NOT equal\n";
 			std::cout << "  state : ";
-			for (auto x : state.queue_manager.FIL_waiting) std::cout << x << " ";
+			for (auto x : state.queue_manager.get_FIL_waiting()) std::cout << x << " ";
 			std::cout << "\n  state2: ";
-			for (auto x : state2.queue_manager.FIL_waiting) std::cout << x << " ";
+			for (auto x : state2.queue_manager.get_FIL_waiting()) std::cout << x << " ";
 			std::cout << "\n";
 		}
 

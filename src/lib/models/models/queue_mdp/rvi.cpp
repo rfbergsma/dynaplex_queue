@@ -34,8 +34,8 @@ struct StateEncoder {
 	uint64_t encode(const MDP::State& state) const {
 		uint64_t key = 0, stride = 1;
 
-		// FIL: clamp to M, shift by 1 so -1 -> 0
-		for (int64_t fil : state.queue_manager.FIL_waiting) {
+		// FIL: clamp to M, shift by 1 so -1 -> 0  (RVI is FIL-projected)
+		for (int64_t fil : state.queue_manager.get_FIL_waiting()) {
 			int64_t v = std::min(fil, (int64_t)M) + 1;
 			key += (uint64_t)v * stride;
 			stride *= (uint64_t)(M + 2);
@@ -63,6 +63,11 @@ struct StateEncoder {
 
 // ---- runRVI(int M, int max_iter): BFS + RVI at a fixed truncation level ----
 MDP::RVISolution MDP::runRVI(int M, int max_iter) const {
+	if (max_queue_depth > 1)
+		std::cout << "[RVI] WARNING: max_queue_depth=" << max_queue_depth
+		          << " > 1.  RVI operates on FIL projection only.\n"
+		          << "              SIL/TIL state is ignored.  Use RL for multi-position problems.\n";
+
 	StateEncoder encoder(*this, M);
 
 	std::unordered_map<uint64_t, size_t> state_index;
@@ -72,8 +77,7 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter) const {
 	std::queue<size_t> bfs_queue;
 
 	auto add_state = [&](MDP::State s) -> size_t {
-		for (auto& fil : s.queue_manager.FIL_waiting)
-			fil = std::min(fil, (int64_t)M);
+		s.queue_manager.clamp_fil(M);
 		uint64_t key = encoder.encode(s);
 		auto it = state_index.find(key);
 		if (it != state_index.end()) return it->second;
@@ -102,8 +106,7 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter) const {
 			auto dist = getNextStateProbability(s, (int64_t)a);
 			for (const auto& entry : dist) {
 				MDP::State s_prime = entry.next_state;
-				for (auto& fil : s_prime.queue_manager.FIL_waiting)
-					fil = std::min(fil, (int64_t)M);
+				s_prime.queue_manager.clamp_fil(M);
 				size_t j = add_state(s_prime);
 				transitions[i][a].push_back({ j, entry.probability });
 			}
@@ -271,8 +274,7 @@ int64_t MDP::EvaluateRVIPolicy(const RVISolution& sol, const State& state) const
 
 	// Clamp FIL to sol.M before encoding (same truncation as during BFS)
 	State clamped = state;
-	for (auto& fil : clamped.queue_manager.FIL_waiting)
-		fil = std::min(fil, (int64_t)sol.M);
+	clamped.queue_manager.clamp_fil(sol.M);
 
 	uint64_t key = enc.encode(clamped);
 	auto it = sol.action_map.find(key);

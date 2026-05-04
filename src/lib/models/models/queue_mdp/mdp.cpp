@@ -1,5 +1,6 @@
 ﻿#include "mdp.h"
 #include "dynaplex/erasure/mdpregistrar.h"
+#include "dynaplex/retrievestate.h"
 #include "policies.h"
 #include <deque>
 #include <iostream>
@@ -19,7 +20,7 @@ namespace DynaPlex::Models {
 		static void DebugPrintFIL(const MDP::State& state, const char* prefix)
 		{
 			std::cout << prefix << " FIL_waiting = [";
-			const auto& FIL = state.queue_manager.FIL_waiting;
+			const auto FIL = state.queue_manager.get_FIL_waiting();
 			for (size_t i = 0; i < FIL.size(); ++i) {
 				std::cout << FIL[i];
 				if (i + 1 < FIL.size()) std::cout << ",";
@@ -344,29 +345,24 @@ namespace DynaPlex::Models {
 					// Generate vector of states, each equal to modified state, but with the FIL of the current action
 					modified_state.server_manager.take_action(action);
 
-					const int64_t i = state.queue_manager.FIL_waiting[current_job_type];
+					// RVI is FIL-projected: read and write only the FIL (position 0) for this type.
+					const int64_t i = state.queue_manager.get_FIL_waiting()[(size_t)current_job_type];
 					const double lambda = arrival_rates[current_job_type];
-					const double gamma = state.queue_manager.total_tick_rate; // careful: your gamma here is total tick hazard for that queue, see note below
+					const double gamma = state.queue_manager.total_tick_rate;
 
 					auto fil_dist = NextFILDistribution(i, lambda, gamma);
-
 
 					for (auto [next_fil, p_fil] : fil_dist) {
 						MDP::State s2 = modified_state;
 
-						// Set the new FIL for this job type after assignment
-						s2.queue_manager.FIL_waiting[current_job_type] = next_fil;
+						// Set new FIL for this job type (clears any deeper positions — FIL-projected)
+						s2.queue_manager.set_fil(current_job_type, next_fil);
 
 						// Update derived rates to reflect new FIL
 						s2.queue_manager.update_total_arrival_rate(arrival_rates);
 
-						// Regenerate action queue from scratch using new FIL values,
-						// exactly mirroring what DynaPlex does in ModifyStateWithEvent
-						// (FIL-refresh path). This ensures:
-						//   1. The queue reflects the actual new FIL (not stale pre-assign values)
-						//   2. The counter is reset to 0 so all remaining candidates are considered
-						//   3. Category is set correctly based on whether assignments remain
-						s2.server_manager.generate_actions(s2.queue_manager.FIL_waiting);
+						// Regenerate action queue from scratch using new FIL values
+						s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting());
 						s2.server_manager.set_action_counter(0);
 						s2.cat = s2.server_manager.action_queue.empty()
 							? StateCategory::AwaitEvent()
@@ -394,10 +390,10 @@ namespace DynaPlex::Models {
 			else {
 				const double Lambda = uniformization_rate;
 
-				// 1) ARRIVALS (only if FIL == -1)
+				// 1) ARRIVALS (only if queue not full for that type)
 				double A = 0.0;
 				for (int64_t n = 0; n < n_jobs; ++n) {
-					if (state.queue_manager.FIL_waiting[(size_t)n] == -1) {
+					if (state.queue_manager.waiting[(size_t)n].empty()) {
 						const double r = arrival_rates[(size_t)n];
 
 						MDP::State s2 = state;
@@ -406,8 +402,8 @@ namespace DynaPlex::Models {
 						// after arrival, tick-rate depends on #waiting:
 						s2.queue_manager.update_total_tick_rate(tick_rate);
 						s2.queue_manager.update_total_arrival_rate(arrival_rates);
-					
-						s2.server_manager.generate_actions(s2.queue_manager.FIL_waiting);
+
+						s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting());
 						s2.server_manager.set_action_counter(0);
 						
 						s2.cat = s2.server_manager.action_queue.empty()
@@ -446,8 +442,8 @@ namespace DynaPlex::Models {
 
 						// completion changes FIL(job) stochastically
 						s2.server_manager.complete_job(k, job);
-						
-						s2.server_manager.generate_actions(s2.queue_manager.FIL_waiting);
+
+						s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting());
 						s2.server_manager.set_action_counter(0);
 						s2.cat = s2.server_manager.action_queue.empty()
 							? StateCategory::AwaitEvent()
@@ -477,28 +473,35 @@ namespace DynaPlex::Models {
 		double MDP::ComputeTickCost(const State& state) const {
 			double cost = 0.0;
 			for (size_t n = 0; n < (size_t)n_jobs; ++n) {
-				const int64_t fil = state.queue_manager.FIL_waiting[n];
-				if (fil < 0) continue;
+				const auto& q = state.queue_manager.waiting[n];
+				if (q.empty()) continue;
+
 				if (reward_type == 0) {
-					// Binary: charge flat cost_rates[n] if FIL exceeds deadline
-					if (fil > (int64_t)due_times[n])
+					// Binary: only FIL matters (flat cost if FIL > deadline)
+					if (q.front() > (int64_t)due_times[n])
 						cost += cost_rates[n];
 				}
 				else {
-					// Queue-lateness: expected total lateness for job type n at this tick.
-					// Front-of-line job contributes (u - D)+ directly.
-					// Other jobs of type n still waiting contribute via Poisson arrivals:
-					//   E[q_n - 1 | W_n^1 = u] = lambda_n / tick_rate * u  (by independent increments)
-					//   Each of those arrived uniformly in [0, u), so E[excess | arrived at s] = (u-s-D)+
-					//   Integrating gives the triangular term below.
-					const double u      = (double)fil;
-					const double D      = due_times[n];
-					const double excess = u - D;
-					if (excess > 0.0) {
-						const double front  = excess;
-						const double others = (arrival_rates[n] / tick_rate)
-						                    * std::max(0.0, excess - 1.0) * excess / 2.0;
-						cost += cost_rates[n] * (front + others);
+					// Queue-lateness: exact excess summed over all tracked positions,
+					// plus a Koole tail approximation for untracked positions beyond max_queue_depth.
+
+					// Exact contribution from tracked positions
+					for (const int64_t t : q) {
+						const double excess = (double)t - due_times[n];
+						if (excess > 0.0)
+							cost += cost_rates[n] * excess;
+					}
+
+					// Tail approximation for jobs beyond max_queue_depth:
+					// Same Koole formula as the old single-position formula, but now anchored
+					// at the deepest tracked position (q.back()) instead of the FIL.
+					// At max_queue_depth==1, q.back()==q.front()==FIL, so this is identical
+					// to the original formula — full backward compatibility.
+					const double bottom_excess = (double)q.back() - due_times[n];
+					if (bottom_excess > 0.0) {
+						const double tail = (arrival_rates[n] / tick_rate)
+						                  * std::max(0.0, bottom_excess - 1.0) * bottom_excess / 2.0;
+						cost += cost_rates[n] * tail;
 					}
 				}
 			}
@@ -552,7 +555,10 @@ namespace DynaPlex::Models {
 
 			state.server_manager.update_total_service_rate();
 
-			// Recompute queue rates too (or do it inside multi_queue ctor)
+			// Restore arrival_rates (MDP parameter; not always stored in VarGroup)
+			if (state.queue_manager.arrival_rates.empty())
+				state.queue_manager.arrival_rates = arrival_rates;
+			// Recompute derived queue rates
 			state.queue_manager.update_total_arrival_rate(arrival_rates);
 			state.queue_manager.update_total_tick_rate(tick_rate);
 
@@ -582,8 +588,8 @@ namespace DynaPlex::Models {
 			State state{};
 			state.cat = StateCategory::AwaitEvent();//or AwaitAction(), depending on logic
 			
-			state.server_manager.initialize(&server_static_info,n_jobs);			
-			state.queue_manager.initialize(n_jobs,tick_rate, arrival_rates);
+			state.server_manager.initialize(&server_static_info,n_jobs);
+			state.queue_manager.initialize(n_jobs, tick_rate, arrival_rates, max_queue_depth);
 
 			state.next_fil_job_type = -1;
 			return state;
@@ -611,6 +617,19 @@ namespace DynaPlex::Models {
 				config.Get("reward_type", reward_type);
 			else
 				reward_type = 1;  // default: queue-lateness formula
+
+			// max_queue_depth: number of queue positions tracked per job type (default 1 = FIL only)
+			if (config.HasKey("max_queue_depth"))
+				config.Get("max_queue_depth", max_queue_depth);
+			else
+				max_queue_depth = 1;
+
+			// feature_queue_depth: NN feature slots per job type (default = max_queue_depth)
+			// Set > max_queue_depth to zero-pad for cross-deployment experiments
+			if (config.HasKey("feature_queue_depth"))
+				config.Get("feature_queue_depth", feature_queue_depth);
+			else
+				feature_queue_depth = max_queue_depth;
 
 			//initialize server manager
 			server_static_info.clear();
@@ -695,15 +714,13 @@ namespace DynaPlex::Models {
 				<< (arrival_rate + tick_rate) << "\n";
 		#endif
 			if (event_sample < state.queue_manager.total_arrival_rate) {
-				// Arrival event
+				// Arrival event — fires for types whose queue is not yet full
 				double cumulative_rate = 0.0;
 				for (int64_t n = 0; n < n_jobs; ++n) {
-					if (state.queue_manager.FIL_waiting[n] == -1) {
+					if ((int64_t)state.queue_manager.waiting[(size_t)n].size() < state.queue_manager.max_queue_depth) {
 						cumulative_rate += arrival_rates[(size_t)n];
-
-						if (event_sample < cumulative_rate) {
+						if (event_sample < cumulative_rate)
 							return Event_type::MakeArrival(n);
-						}
 					}
 				}
 			}
@@ -772,8 +789,17 @@ namespace DynaPlex::Models {
 			features.Add(last_evt);
 
 			// ----- (2) Queue state -----
-			// FIL vector (length = n_jobs)
-			features.Add(state.queue_manager.FIL_waiting);
+			// feature_queue_depth slots per job type (zero-padded for untracked positions).
+			// When feature_queue_depth == max_queue_depth: exact values.
+			// When feature_queue_depth > max_queue_depth: extra slots are 0
+			//   so a policy trained here can be deployed on a deeper-queue MDP.
+			const auto& waiting = state.queue_manager.waiting;
+			for (size_t n = 0; n < (size_t)n_jobs; ++n) {
+				for (int64_t d = 0; d < feature_queue_depth; ++d) {
+					const int64_t val = (d < (int64_t)waiting[n].size()) ? waiting[n][(size_t)d] : 0;
+					features.Add(val);
+				}
+			}
 
 			// Include derived rates (these DO change with state in your implementation)
 			features.Add(state.queue_manager.total_arrival_rate);
@@ -1007,7 +1033,8 @@ namespace DynaPlex::Models {
 						if (!is_fil_refresh) {
 							double rvi_step_cost = 0.0;
 							for (int64_t n = 0; n < mdp.n_jobs; ++n)
-								if (state.queue_manager.FIL_waiting[(size_t)n] > mdp.due_times[(size_t)n])
+								if (!state.queue_manager.waiting[(size_t)n].empty() &&
+								    state.queue_manager.waiting[(size_t)n].front() > (int64_t)mdp.due_times[(size_t)n])
 									rvi_step_cost += mdp.cost_rates[(size_t)n];
 							cumcost_rvi += (mdp.tick_rate / mdp.uniformization_rate) * rvi_step_cost;
 						}
@@ -1101,25 +1128,26 @@ namespace DynaPlex::Models {
 			// Sample collection
 			for (int64_t s = 0; s < n_samples; ++s) {
 				if (traj.Category.IsAwaitAction()) {
-					auto* sp = dynamic_cast<MDP::State*>(traj.GetState().get());
+					MDP::State& sp = DynaPlex::RetrieveState<MDP::State>(traj.GetState());
 
-					if (sp && sp->server_manager.action_counter == 0) {
-						int64_t f0 = sp->queue_manager.FIL_waiting[0];
-						int64_t f1 = sp->queue_manager.FIL_waiting[1];
+					if (sp.server_manager.action_counter == 0) {
+						const auto fil = sp.queue_manager.get_FIL_waiting();
+						int64_t f0 = fil[0];
+						int64_t f1 = fil[1];
 
 						if (f0 >= 0 && f1 >= 0 && f0 <= max_fil && f1 <= max_fil
 							&& grid[f0][f1] == -2)
 						{
 							// Canonical filter: exactly 1 server busy across all pools
 							int busy = 0;
-							for (const auto& row : sp->server_manager.busy_on)
+							for (const auto& row : sp.server_manager.busy_on)
 								for (int64_t b : row) busy += (int)b;
 
 							if (busy == 1) {
 								policy->SetAction(single);   // sets traj.NextAction
 								int64_t action = traj.NextAction;
 								if (action == 1) {
-									grid[f0][f1] = (int)sp->server_manager.action_queue[0].job_type;
+									grid[f0][f1] = (int)sp.server_manager.action_queue[0].job_type;
 								} else {
 									grid[f0][f1] = -1;  // skipped highest-FIL job
 								}

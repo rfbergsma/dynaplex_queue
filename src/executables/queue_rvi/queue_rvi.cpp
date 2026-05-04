@@ -109,12 +109,12 @@ int main() {
 
 		// Force a waiting job type 0
 		{
-			state.queue_manager.FIL_waiting[0] = 5;
+			state.queue_manager.set_fil(0, 5);
 			state.queue_manager.update_total_arrival_rate(mdp.arrival_rates);
 			// if you keep tick rate state-dependent, update it too:
 			state.queue_manager.update_total_tick_rate(mdp.tick_rate);
 
-			state.server_manager.generate_actions(state.queue_manager.FIL_waiting);
+			state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
 			state.server_manager.set_action_counter(0);
 			state.cat = state.server_manager.action_queue.empty()
 				? DynaPlex::StateCategory::AwaitEvent()
@@ -148,7 +148,7 @@ int main() {
 				}
 
 				// Always true: FIL either -1 or >=0
-				for (auto fil : ns.queue_manager.FIL_waiting) {
+				for (auto fil : ns.queue_manager.get_FIL_waiting()) {
 					if (fil < -1) {
 						std::cout << "[FAIL] FIL < -1 in next state " << idx << "\n";
 						std::abort();
@@ -203,7 +203,7 @@ int main() {
 				uint64_t key = 0, stride = 1;
 
 				// FIL values: base = M_test+2  (FIL ranges -1..M, shifted +1 so -1->0)
-				for (int64_t fil : s.queue_manager.FIL_waiting) {
+				for (int64_t fil : s.queue_manager.get_FIL_waiting()) {
 					int64_t v = (fil < M_test ? fil : M_test) + 1;
 					key    += (uint64_t)v * stride;
 					stride *= (uint64_t)(M_test + 2);
@@ -234,7 +234,7 @@ int main() {
 				for (int64_t n = 0; n < mdp.n_jobs; ++n) {
 					int64_t v = (int64_t)(rem % (uint64_t)(M_test + 2));
 					rem      /= (uint64_t)(M_test + 2);
-					s.queue_manager.FIL_waiting[n] = v - 1;   // undo +1 shift
+					s.queue_manager.set_fil(n, v - 1);   // undo +1 shift
 				}
 
 				// busy_on[k][j]
@@ -260,10 +260,10 @@ int main() {
 			// -- helper: print a state compactly --
 			auto print_state = [&](const QueueMDP::State& s) {
 				std::cout << "FIL=[";
-				for (size_t n = 0; n < s.queue_manager.FIL_waiting.size(); ++n) {
+				{ auto __fil = s.queue_manager.get_FIL_waiting(); for (size_t n = 0; n < __fil.size(); ++n) {
 					if (n) std::cout << ",";
-					std::cout << s.queue_manager.FIL_waiting[n];
-				}
+					std::cout << __fil[n];
+				} }
 				std::cout << "]  busy=[";
 				bool first = true;
 				for (size_t k = 0; k < s.server_manager.busy_on.size(); ++k)
@@ -283,10 +283,10 @@ int main() {
 			// Case 2: FIL[0]=3, idle server -> AwaitAction
 			{
 				QueueMDP::State s = mdp.GetInitialState();
-				s.queue_manager.FIL_waiting[0] = 3;
+				s.queue_manager.set_fil(0, 3);
 				s.queue_manager.update_total_arrival_rate(mdp.arrival_rates);
 				s.queue_manager.update_total_tick_rate(mdp.tick_rate);
-				s.server_manager.generate_actions(s.queue_manager.FIL_waiting);
+				s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
 				s.server_manager.set_action_counter(0);
 				s.cat = s.server_manager.action_queue.empty()
 					? DynaPlex::StateCategory::AwaitEvent()
@@ -297,10 +297,10 @@ int main() {
 			// Case 3: FIL[0]=M (boundary)
 			{
 				QueueMDP::State s = mdp.GetInitialState();
-				s.queue_manager.FIL_waiting[0] = M_test;
+				s.queue_manager.set_fil(0, (int64_t)M_test);
 				s.queue_manager.update_total_arrival_rate(mdp.arrival_rates);
 				s.queue_manager.update_total_tick_rate(mdp.tick_rate);
-				s.server_manager.generate_actions(s.queue_manager.FIL_waiting);
+				s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
 				s.server_manager.set_action_counter(0);
 				s.cat = s.server_manager.action_queue.empty()
 					? DynaPlex::StateCategory::AwaitEvent()
@@ -311,13 +311,13 @@ int main() {
 			// Case 4: FIL[0]=2, pool-0 server busy -> AwaitEvent
 			{
 				QueueMDP::State s = mdp.GetInitialState();
-				s.queue_manager.FIL_waiting[0] = 2;
+				s.queue_manager.set_fil(0, 2);
 				s.queue_manager.update_total_arrival_rate(mdp.arrival_rates);
 				s.queue_manager.update_total_tick_rate(mdp.tick_rate);
 				if (!mdp.server_static_info.empty() && !mdp.server_static_info[0].can_serve.empty())
 					s.server_manager.busy_on[0][0] = 1;
 				s.server_manager.update_total_service_rate();
-				s.server_manager.generate_actions(s.queue_manager.FIL_waiting);
+				s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
 				s.cat = s.server_manager.action_queue.empty()
 					? DynaPlex::StateCategory::AwaitEvent()
 					: DynaPlex::StateCategory::AwaitAction();
@@ -334,9 +334,7 @@ int main() {
 				const std::string&    desc   = cases[ci].first;
 				QueueMDP::State       s      = cases[ci].second;   // copy so we can clamp
 				// clamp FIL to M (same as BFS does)
-				for (size_t n = 0; n < s.queue_manager.FIL_waiting.size(); ++n)
-					if (s.queue_manager.FIL_waiting[n] > M_test)
-						s.queue_manager.FIL_waiting[n] = M_test;
+				s.queue_manager.clamp_fil((int64_t)M_test);
 
 				uint64_t       key  = encode(s);
 				QueueMDP::State s2  = decode(key);
@@ -607,11 +605,11 @@ int main() {
 				for (int f1 = 0; f1 < f0; ++f1) {
 					// Build canonical state: both jobs waiting, server idle
 					DynaPlex::Models::queue_mdp::MDP::State s = mdp7.GetInitialState();
-					s.queue_manager.FIL_waiting[0] = f0;
-					s.queue_manager.FIL_waiting[1] = f1;
+					s.queue_manager.set_fil(0, f0);
+					s.queue_manager.set_fil(1, f1);
 					s.queue_manager.update_total_arrival_rate(mdp7.arrival_rates);
 					s.queue_manager.update_total_tick_rate(mdp7.tick_rate);
-					s.server_manager.generate_actions(s.queue_manager.FIL_waiting);
+					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
 					s.server_manager.set_action_counter(0);
 					s.cat = s.server_manager.action_queue.empty()
 					        ? DynaPlex::StateCategory::AwaitEvent()
@@ -754,7 +752,7 @@ int main() {
 					// State: both queues empty (FIL=-1), server busy on job type j only
 					auto s = mdp8.GetInitialState();   // FIL=[-1,-1], busy=[[0,0]]
 					s.server_manager.busy_on[0][(size_t)j] = 1;
-					s.server_manager.generate_actions(s.queue_manager.FIL_waiting);
+					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
 					s.cat = DynaPlex::StateCategory::AwaitEvent();
 
 					auto dist = mdp8.getNextStateProbability(s, 0);
@@ -808,11 +806,11 @@ int main() {
 							const int fil1 = (faster == 0) ? f_slow : f_fast;
 
 							auto s = mdp8.GetInitialState();
-							s.queue_manager.FIL_waiting[0] = fil0;
-							s.queue_manager.FIL_waiting[1] = fil1;
+							s.queue_manager.set_fil(0, fil0);
+							s.queue_manager.set_fil(1, fil1);
 							s.queue_manager.update_total_arrival_rate(mdp8.arrival_rates);
 							s.queue_manager.update_total_tick_rate(mdp8.tick_rate);
-							s.server_manager.generate_actions(s.queue_manager.FIL_waiting);
+							s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
 							s.server_manager.set_action_counter(0);
 							s.cat = s.server_manager.action_queue.empty()
 							        ? DynaPlex::StateCategory::AwaitEvent()
@@ -952,11 +950,11 @@ int main() {
 
 				for (int64_t f0 = D0 + 1; f0 <= 30; ++f0) {
 					auto s = mdp9_ql.GetInitialState();
-					s.queue_manager.FIL_waiting[0] = f0;
-					s.queue_manager.FIL_waiting[1] = 2;
+					s.queue_manager.set_fil(0, f0);
+					s.queue_manager.set_fil(1, 2);
 					s.queue_manager.update_total_arrival_rate(mdp9_ql.arrival_rates);
 					s.queue_manager.update_total_tick_rate(mdp9_ql.tick_rate);
-					s.server_manager.generate_actions(s.queue_manager.FIL_waiting);
+					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
 					s.server_manager.set_action_counter(0);
 					s.cat = s.server_manager.action_queue.empty()
 					    ? DynaPlex::StateCategory::AwaitEvent()
@@ -1061,6 +1059,198 @@ int main() {
 				    ? "  [PASS] Binary-trained policy cheaper under binary metric (expected)\n"
 				    : "  [NOTE] Policies similar under binary metric in this system\n");
 			}
+		}
+		// =========================================================
+		// Test 10: NN (FIL+SIL, depth=2) vs RVI (FIL-only, depth=1)
+		//
+		// Same system as Test 9 (QL reward, 1 server, 2 types, mu=0.2,
+		// D=3, rho=0.75).  Research question: does knowing SIL allow the
+		// NN to outperform the FIL-only optimal policy?
+		//
+		// Design note — why RVI must be solved at depth=1:
+		//   Running RVI on the depth=2 MDP with the FIL-only encoder
+		//   causes BFS state collisions (same FIL, different SIL → same
+		//   key).  SIL-arrival events then appear as self-loops in the
+		//   transition table, corrupting h-values and producing a worse-
+		//   than-FIFO policy.  The clean approach is to solve RVI on a
+		//   depth=1 MDP (no collisions) and then cross-apply the resulting
+		//   DynaPlex::Policy to depth=2 states.  Both MDPs share the same
+		//   State type, so GetAction(depth2_state) calls EvaluateRVIPolicy
+		//   which reads only get_FIL_waiting() — exactly what we want.
+		//
+		//   10a: Solve RVI on depth=1 → FIL-only optimal policy + g*
+		//   10b: Train NN on depth=2 via DCL, starting from that policy.
+		//        N=10 000, 2 generations.  NN features = [FIL_0,SIL_0,
+		//        FIL_1,SIL_1], so it can learn to exploit SIL.
+		//   10c: 3-way comparison on depth=2 MDP:
+		//          FIFO  (always-assign)
+		//          RVI   (FIL-only optimal, from depth=1 solve)
+		//          NN    (FIL+SIL, depth=2 trained)
+		//        [PASS] if NN significantly beats RVI (2*se gap).
+		//        [NOTE] if not — FIL may be sufficient for this system.
+		// =========================================================
+		{
+			auto make_cfg10 = [](int64_t depth) -> DynaPlex::VarGroup {
+				DynaPlex::VarGroup srv;
+				srv.Add("servers",       int64_t{1});
+				srv.Add("service_rates", std::vector<double>{0.2, 0.2});
+				srv.Add("can_serve",     std::vector<int64_t>{0, 1});
+				DynaPlex::VarGroup cfg;
+				cfg.Add("id",             std::string{"queue_mdp"});
+				cfg.Add("discount_factor",double{1.0});
+				cfg.Add("k_servers",      int64_t{1});
+				cfg.Add("n_jobs",         int64_t{2});
+				cfg.Add("arrival_rates",  std::vector<double>{0.15, 0.15});
+				cfg.Add("tick_rate",      double{1.0});
+				cfg.Add("cost_rates",     std::vector<double>{1.0, 1.0});
+				cfg.Add("due_times",      std::vector<double>{3.0, 3.0});
+				cfg.Add("reward_type",    int64_t{1});    // queue-lateness
+				cfg.Add("max_queue_depth",depth);          // feature_queue_depth=depth by default
+				cfg.Add("server_type_0",  srv);
+				return cfg;
+			};
+
+			std::cout << "\n=== Test 10: NN (depth=2, FIL+SIL) vs RVI (depth=1, FIL only) ===\n";
+			std::cout << "    System: 1 server, 2 types, mu=0.2, D=3, QL reward, rho=0.75\n";
+
+			// ---- 10a: Solve RVI on depth=1 (FIL-only), policy registered with fw10 ----
+			// feature_queue_depth=1 tells RVI_optimal to internally create a depth=1 copy
+			// of the MDP, solve RVI on that (clean BFS, no SIL collisions), and store the
+			// FIL-only action map.  The policy is still registered with fw10 (depth=2),
+			// so it passes DynaPlex's instance check in both DCL training and the comparer.
+			// EvaluateRVIPolicy only reads get_FIL_waiting() — depth-agnostic.
+			std::cout << "\n--- Test 10a: RVI solve on depth=1 (FIL-only) ---\n";
+			DynaPlex::MDP fw10 = dp.GetMDP(make_cfg10(2));
+			DynaPlex::VarGroup rvi10_cfg{
+				{"id",                std::string{"RVI_optimal"}},
+				{"M",                 int64_t{50}},
+				{"feature_queue_depth", int64_t{1}}  // solve RVI internally on depth=1 MDP
+			};
+			DynaPlex::Policy rvi10_pol = fw10->GetPolicy(rvi10_cfg);
+
+			// ---- Cross-depth EvaluateRVIPolicy sanity check (before DCL) ----
+			// Directly compare depth=1 vs depth=2 as *this in EvaluateRVIPolicy,
+			// and measure raw costs via EvaluatePolicyRaw to isolate the source of error.
+			{
+				DynaPlex::Models::queue_mdp::MDP raw_d1(make_cfg10(1));
+				auto sol_dbg = raw_d1.runRVI(50);
+				DynaPlex::Models::queue_mdp::MDP raw_d2(make_cfg10(2));
+
+				// Single-state key-match test: FIL=[5,3], server idle, counter=0
+				auto s2 = raw_d2.GetInitialState();
+				s2.queue_manager.set_fil(0, 5);
+				s2.queue_manager.set_fil(1, 3);
+				s2.queue_manager.update_total_arrival_rate(raw_d2.arrival_rates);
+				s2.queue_manager.update_total_tick_rate(raw_d2.tick_rate);
+				s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting());
+				s2.server_manager.set_action_counter(0);
+				s2.cat = s2.server_manager.action_queue.empty()
+				    ? DynaPlex::StateCategory::AwaitEvent()
+				    : DynaPlex::StateCategory::AwaitAction();
+
+				int64_t a_d1 = raw_d1.EvaluateRVIPolicy(sol_dbg, s2); // depth=1 MDP as *this
+				int64_t a_d2 = raw_d2.EvaluateRVIPolicy(sol_dbg, s2); // depth=2 MDP as *this
+				std::cout << "\n  [10a debug] FIL=[5,3] idle ctr=0:"
+				          << "  via_d1=" << a_d1 << "  via_d2=" << a_d2
+				          << (a_d1 == a_d2 ? "  [KEY MATCH]" : "  [KEY MISMATCH!]") << "\n";
+
+				// Trajectory-level comparison with EvaluatePolicyRaw (100 traj, 100K steps)
+				auto eval_fifo = DynaPlex::Models::queue_mdp::EvaluatePolicyRaw(
+				    raw_d2,
+				    [](const DynaPlex::Models::queue_mdp::MDP::State&) -> int64_t { return 1; },
+				    50, 100000, 10000, 42);
+
+				auto eval_rvi_d1 = DynaPlex::Models::queue_mdp::EvaluatePolicyRaw(
+				    raw_d2,
+				    [&](const DynaPlex::Models::queue_mdp::MDP::State& s) -> int64_t {
+				        return raw_d1.EvaluateRVIPolicy(sol_dbg, s);   // depth=1 as *this
+				    },
+				    50, 100000, 10000, 42);
+
+				auto eval_rvi_d2 = DynaPlex::Models::queue_mdp::EvaluatePolicyRaw(
+				    raw_d2,
+				    [&](const DynaPlex::Models::queue_mdp::MDP::State& s) -> int64_t {
+				        return raw_d2.EvaluateRVIPolicy(sol_dbg, s);   // depth=2 as *this
+				    },
+				    50, 100000, 10000, 42);
+
+				std::cout << "  [10a debug] Raw EvaluatePolicyRaw on depth=2 (50 traj, 100K steps):\n"
+				          << "    FIFO            cost/step=" << eval_fifo.mean_cost_per_rvi_step << "\n"
+				          << "    RVI via depth=1 cost/step=" << eval_rvi_d1.mean_cost_per_rvi_step << "\n"
+				          << "    RVI via depth=2 cost/step=" << eval_rvi_d2.mean_cost_per_rvi_step << "\n";
+			}
+
+			// ---- 10b: DCL training on depth=2, starting from RVI ----
+			// gen-0 data collected using the FIL-only RVI policy in the depth=2
+			// environment.  The NN then learns whether SIL adds any value.
+			std::cout << "\n--- Test 10b: DCL training (depth=2, N=10000, 2 gens, start=RVI) ---\n";
+
+			DynaPlex::VarGroup nn_arch10{
+				{"type",         std::string{"mlp"}},
+				{"hidden_layers",DynaPlex::VarGroup::Int64Vec{64, 32}}
+			};
+			DynaPlex::VarGroup nn_train10{
+				{"early_stopping_patience", int64_t{5}},
+				{"mini_batch_size",         int64_t{64}},
+				{"max_training_epochs",     int64_t{500}}
+			};
+			DynaPlex::VarGroup dcl_cfg10{
+				{"N",              int64_t{10000}},
+				{"num_gens",       int64_t{2}},
+				{"M",              int64_t{500}},
+				{"H",              int64_t{100}},
+				{"nn_architecture",nn_arch10},
+				{"nn_training",    nn_train10}
+			};
+
+			// rvi10_pol comes from fw10_1 (depth=1) but shares the same State
+			// type → GetDCL calls GetAction on depth=2 states, which works correctly.
+			auto dcl10 = dp.GetDCL(fw10, rvi10_pol, dcl_cfg10);
+			dcl10.TrainPolicy();
+			DynaPlex::Policy nn10_pol = dcl10.GetPolicy();
+
+			// ---- 10c: 3-way comparison on depth=2 MDP ----
+			std::cout << "\n--- Test 10c: FIFO vs RVI(depth=1) vs NN(depth=2) ---\n";
+
+			DynaPlex::Policy fifo10_pol = fw10->GetPolicy("FIFO policy");
+
+			DynaPlex::VarGroup eval10;
+			eval10.Add("number_of_trajectories", int64_t{200});
+			eval10.Add("periods_per_trajectory", int64_t{100000});
+
+			auto comparer10 = dp.GetPolicyComparer(fw10, eval10);
+			// rvi10_pol from fw10_1 is passed to fw10's comparer: same State type,
+			// EvaluateRVIPolicy is depth-agnostic → valid cross-MDP evaluation.
+			auto res10 = comparer10.Compare({fifo10_pol, rvi10_pol, nn10_pol});
+
+			double fifo10_m, fifo10_e, rvi10_m, rvi10_e, nn10_m, nn10_e;
+			res10[0].Get("mean",  fifo10_m); res10[0].Get("error", fifo10_e);
+			res10[1].Get("mean",  rvi10_m);  res10[1].Get("error", rvi10_e);
+			res10[2].Get("mean",  nn10_m);   res10[2].Get("error", nn10_e);
+
+			std::cout << "  FIFO (depth=2, always-assign)      : "
+			          << std::setprecision(8) << fifo10_m << " +/- " << fifo10_e << "\n";
+			std::cout << "  RVI  (depth=1 solve, FIL-only)     : "
+			          << std::setprecision(8) << rvi10_m  << " +/- " << rvi10_e  << "\n";
+			std::cout << "  NN   (depth=2 trained, FIL+SIL)    : "
+			          << std::setprecision(8) << nn10_m   << " +/- " << nn10_e   << "\n";
+
+			std::cout << "  RVI improvement over FIFO : "
+			          << std::setprecision(4)
+			          << 100.0 * (fifo10_m - rvi10_m) / fifo10_m << "%\n";
+			std::cout << "  NN  improvement over RVI  : "
+			          << std::setprecision(4)
+			          << 100.0 * (rvi10_m  - nn10_m)  / rvi10_m  << "%\n";
+
+			const double gap10  = rvi10_m - nn10_m;
+			const double thr10  = 2.0 * (rvi10_e + nn10_e);
+			const bool   pass10 = gap10 > thr10;
+
+			std::cout << "  gap (RVI - NN) = " << gap10
+			          << "  threshold (2*se) = " << thr10 << "\n";
+			std::cout << (pass10
+			    ? "  [PASS] NN (FIL+SIL) significantly outperforms RVI (FIL-only)\n"
+			    : "  [NOTE] NN does not significantly beat RVI -- FIL may be sufficient\n");
 		}
 	}
 	catch (const std::exception& e)
