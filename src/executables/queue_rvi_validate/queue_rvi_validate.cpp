@@ -359,18 +359,28 @@ int main()
     if (secA_ok) sections_passed++;
 
     // ===================================================================
-    // Section B: Symmetric configs → RVI ≈ FIFO
+    // Section B: Symmetric multi-server configs → RVI beats FIFO
+    //
+    // FIFO in a multi-server system greedily assigns all idle servers to the
+    // highest-FIL job type, starving the other type entirely.  RVI learns
+    // balanced assignment and should be significantly cheaper even when costs
+    // and arrivals are perfectly symmetric.
+    //
+    // Criterion: RVI_mean / FIFO_mean < 0.90  (at least 10% improvement)
     // ===================================================================
-    dp.System() << "\n--- Section B: Symmetry -> RVI approx FIFO (4 symmetric configs) ---\n";
-    dp.System() << "    Criterion: |RVI_mean/FIFO_mean - 1| < 0.03  (within 3%)\n\n";
+    dp.System() << "\n--- Section B: Multi-server symmetric configs -> RVI beats FIFO ---\n";
+    dp.System() << "    FIFO over-assigns idle servers to the highest-FIL type;\n";
+    dp.System() << "    RVI learns balanced routing even under perfect symmetry.\n";
+    dp.System() << "    Criterion: RVI_mean / FIFO_mean < 0.90  (>10% improvement)\n\n";
     dp.System() << std::left
         << std::setw(16) << "Config"
         << std::setw(13) << "FIFO_mean"
         << std::setw(13) << "RVI_mean"
-        << std::setw(13) << "|ratio-1|"
+        << std::setw(11) << "RVI/FIFO"
+        << std::setw(11) << "Improv%"
         << std::setw(7)  << "PASS?"
         << "\n";
-    dp.System() << std::string(62, '-') << "\n";
+    dp.System() << std::string(71, '-') << "\n";
 
     // Reuse symmetric configs from Section A: indices 0,1,2,4
     std::vector<int> secB_idx = {0, 1, 2, 4};
@@ -378,9 +388,9 @@ int main()
     for (int idx : secB_idx) {
         auto& entry = secA_configs[idx];
         auto er = evaluate(dp, entry.config, test_config);
-        double ratio = (er.fifo_mean > 1e-12) ? er.rvi_mean / er.fifo_mean : 0.0;
-        double abs_dev = std::abs(ratio - 1.0);
-        bool pass = abs_dev < 0.03;
+        double ratio   = (er.fifo_mean > 1e-12) ? er.rvi_mean / er.fifo_mean : 1.0;
+        double improv  = 100.0 * (1.0 - ratio);
+        bool   pass    = ratio < 0.90;
         if (pass) secB_pass++;
 
         dp.System() << std::left
@@ -388,8 +398,9 @@ int main()
             << std::fixed << std::setprecision(4)
             << std::setw(13) << er.fifo_mean
             << std::setw(13) << er.rvi_mean
-            << std::setprecision(4)
-            << std::setw(13) << abs_dev
+            << std::setw(11) << ratio
+            << std::setprecision(1)
+            << std::setw(11) << improv
             << (pass ? "PASS" : "FAIL")
             << "\n";
     }

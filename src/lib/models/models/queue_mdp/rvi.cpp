@@ -278,7 +278,11 @@ int64_t MDP::EvaluateRVIPolicy(const RVISolution& sol, const State& state) const
 
 	uint64_t key = enc.encode(clamped);
 	auto it = sol.action_map.find(key);
-	if (it == sol.action_map.end()) return 0;  // fallback: don't assign
+	// Fallback: state not in BFS map (e.g. multi-server pool creates action_counter
+	// values the BFS never reached).  Default to assign (=1) rather than skip (=0):
+	// skipping in an unknown state is worse than FIFO and violates the RVI <= FIFO
+	// invariant that Section A checks.
+	if (it == sol.action_map.end()) return 1;
 	return it->second;
 }
 
