@@ -736,6 +736,58 @@ namespace DynaPlex::Models {
 			RVISolution runRVI(int M, int max_iter = 10000) const;  // solve at fixed M, verbose output
 			RVISolution runRVI(double rel_tol = 1e-4) const;       // auto-select M via heuristic + convergence check
 			int64_t EvaluateRVIPolicy(const RVISolution& sol, const State& state) const;
+
+			// ----------------------------------------------------------------
+			// Continuous-time event-driven simulator
+			// ----------------------------------------------------------------
+			// Simulates the exact continuous-time system (exponential arrivals
+			// and services, exact sojourn times) without the uniformised chain.
+			// The policy is queried at every assignment decision point by
+			// converting exact sojourn times tau_n to tick counts
+			// f_n = floor(tau_n * tick_rate) and constructing a canonical
+			// AwaitAction state.
+			//
+			// Returns:
+			//   mean_cost_per_time  - time-averaged cost rate  (g*_time = g* x E[Lambda])
+			//   mean_cost_per_event - cost per arrival/completion event
+			//                         (comparable to the policy-comparer output)
+			//   std_err_per_time    - standard error of mean_cost_per_time
+			//   avg_events          - average events per trajectory
+			//   avg_decisions       - average assignment decisions per trajectory
+			// ----------------------------------------------------------------
+			struct ContinuousSimResult {
+				double mean_cost_per_time;
+				double mean_cost_per_event;
+				double std_err_per_time;
+				long long avg_events;
+				long long avg_decisions;
+			};
+
+			ContinuousSimResult SimulateContinuous(
+				std::function<int64_t(const State&)> policy_fn,
+				int    n_traj   = 100,
+				double t_max    = 500000.0,
+				double t_warmup =  50000.0) const;
+
+			// ----------------------------------------------------------------
+			// TraceContinuous
+			// Runs one short trajectory of the continuous-time simulator and
+			// prints a human-readable event log to std::cout.  Useful for
+			// visually verifying that the simulator behaves as expected.
+			//
+			// Each line shows: physical time, event kind (ARRIVAL / COMPLETION /
+			// TICK), updated queue sojourn times, server occupancy, and the
+			// sequence of assignment decisions made by the policy.
+			//
+			// Parameters:
+			//   policy_fn - raw lambda (same type as SimulateContinuous)
+			//   t_trace   - print events in [0, t_trace]; default 20.0
+			//   rng_seed  - RNG seed; default 42
+			// ----------------------------------------------------------------
+			void TraceContinuous(
+				std::function<int64_t(const State&)> policy_fn,
+				double  t_trace  = 20.0,
+				int64_t rng_seed = 42) const;
 		};
 
 		/**
@@ -782,6 +834,7 @@ namespace DynaPlex::Models {
 			double  mean_cost_per_rvi_step;     // cost / (action_steps + real_event_steps)  [tick-event cost]
 			double  mean_cost_per_rvi_step_rvi; // cost / (action_steps + real_event_steps)  [RVI-style: per-step at FIL>due_time]
 			double  mean_cost_per_event;        // cost / real_event_steps  (matches comparer)
+			double  mean_cost_per_step_gic;     // GetImmediateCost (non-FIL-refresh only) / rvi_steps -> matches g* from runRVI()
 			double  std_error;                  // std error of mean_cost_per_rvi_step
 			int64_t total_action_steps;
 			int64_t total_real_event_steps;
@@ -809,6 +862,23 @@ namespace DynaPlex::Models {
 			int     max_fil   = 15,
 			int64_t n_warmup  = 100000,
 			int64_t n_samples = 2000000);
+
+		/**
+		 * Enumeration-based heatmap: directly constructs canonical AwaitAction states
+		 * for every (FIL_0, FIL_1) cell and queries the policy without simulation.
+		 * Eliminates '-' (not-visited) artifacts of the simulation-based version.
+		 *
+		 * Canonical state: pool 0 busy on type 0 (1 server busy), pool 1 idle,
+		 * both job types waiting (FIL_0=f0, FIL_1=f1), action_counter=0.
+		 *
+		 * @param mdp        Concrete queue_mdp::MDP instance (not type-erased)
+		 * @param policy_fn  Returns action (0=skip, 1=assign top) for a given State
+		 * @param max_fil    Grid spans [0, max_fil] x [0, max_fil]
+		 */
+		void PrintEnumeratedHeatmap(
+			const MDP& mdp,
+			std::function<int64_t(const MDP::State&)> policy_fn,
+			int max_fil = 15);
 
 	}  // namespace queue_mdp
 }  // namespace DynaPlex::Models

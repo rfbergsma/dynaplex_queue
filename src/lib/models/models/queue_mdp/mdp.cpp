@@ -997,6 +997,7 @@ namespace DynaPlex::Models {
 		{
 			std::vector<double> costs_per_rvi_step(n_trajectories, 0.0);
 			std::vector<double> costs_per_rvi_step_rvi(n_trajectories, 0.0);
+			std::vector<double> costs_per_step_gic(n_trajectories, 0.0);
 			int64_t grand_action_steps      = 0;
 			int64_t grand_real_event_steps  = 0;
 			int64_t grand_fil_refresh_steps = 0;
@@ -1013,6 +1014,7 @@ namespace DynaPlex::Models {
 				int64_t fil_refresh_steps = 0;
 				double  cumcost           = 0.0;
 				double  cumcost_rvi       = 0.0;
+				double  cumcost_gic       = 0.0;
 
 				// --- warm-up phase ---
 				for (int64_t s = 0; s < warmup_steps; ++s) {
@@ -1047,6 +1049,14 @@ namespace DynaPlex::Models {
 									rvi_step_cost += mdp.cost_rates[(size_t)n];
 							cumcost_rvi += (mdp.tick_rate / mdp.uniformization_rate) * rvi_step_cost;
 						}
+						// GetImmediateCost-based charge: matches the RVI Bellman cost exactly.
+						// Only charged at NON-FIL-refresh AwaitEvent states, because the RVI
+						// chain has no FIL-refresh states (action=1 uses NextFILDistribution
+						// to jump directly to the post-FIL state without an extra chain step).
+						// Divide by rvi_steps (= action + real_event) — not all_steps — for the
+						// same reason: the denominator of g* is the number of RVI chain steps.
+						if (!is_fil_refresh)
+							cumcost_gic += mdp.GetImmediateCost(state);
 						MDP::Event evt = mdp.GetEvent(rng_provider.GetEventRNG(0));
 						double cost = mdp.ModifyStateWithEvent(state, evt);
 						cumcost += cost;
@@ -1063,6 +1073,10 @@ namespace DynaPlex::Models {
 					: 0.0;
 				costs_per_rvi_step_rvi[i] = (rvi_steps > 0)
 					? cumcost_rvi / static_cast<double>(rvi_steps)
+					: 0.0;
+				// Divide by rvi_steps (action + real_event, same as RVI chain denominator) -> matches g*
+				costs_per_step_gic[i] = (rvi_steps > 0)
+					? cumcost_gic / static_cast<double>(rvi_steps)
 					: 0.0;
 
 				grand_action_steps      += action_steps;
@@ -1093,10 +1107,15 @@ namespace DynaPlex::Models {
 				  / static_cast<double>(grand_real_event_steps)
 				: 0.0;
 
+			double mean_gic = 0.0;
+			for (double c : costs_per_step_gic) mean_gic += c;
+			mean_gic /= static_cast<double>(n_trajectories);
+
 			RawEvalResult result;
 			result.mean_cost_per_rvi_step     = mean;
 			result.mean_cost_per_rvi_step_rvi = mean_rvi;
 			result.mean_cost_per_event        = mean_cost_per_event;
+			result.mean_cost_per_step_gic     = mean_gic;
 			result.std_error                  = std_error;
 			result.total_action_steps         = grand_action_steps;
 			result.total_real_event_steps     = grand_real_event_steps;
@@ -1192,6 +1211,95 @@ namespace DynaPlex::Models {
 			std::cout << "  Below diagonal (FIL_0>FIL_1): FIFO serves type 0  -> expect '0'\n";
 			std::cout << "  Above diagonal (FIL_1>FIL_0): FIFO serves type 1  -> expect '1'\n";
 			std::cout << "  Deviations from diagonal pattern = RVI != FIFO\n";
+		}
+
+		// -----------------------------------------------------------------------
+		// PrintEnumeratedHeatmap
+		// Enumeration-based: directly constructs the canonical AwaitAction state
+		// for every (FIL_0, FIL_1) cell and queries the supplied policy function.
+		// No simulation -> no '-' (not-visited) artifacts.
+		//
+		// Canonical state: server pool 0 is busy on job type 0 (1 server busy),
+		// pool 1 idle, both job types have a job waiting (FIL_0=f0, FIL_1=f1),
+		// action_counter=0.  This matches the states a simulation would sample
+		// most often when recording the first scheduling decision.
+		// -----------------------------------------------------------------------
+		void PrintEnumeratedHeatmap(
+			const MDP& mdp,
+			std::function<int64_t(const MDP::State&)> policy_fn,
+			int max_fil)
+		{
+			// grid[f0][f1]:  -2 = no valid action (shouldn't occur)
+			//                -1 = skip/idle (action=0, '.')
+			//                 0 = serve type 0
+			//                 1 = serve type 1
+			std::vector<std::vector<int>> grid(
+				max_fil + 1, std::vector<int>(max_fil + 1, -2));
+
+			for (int f0 = 0; f0 <= max_fil; ++f0) {
+				for (int f1 = 0; f1 <= max_fil; ++f1) {
+					// ---- Construct canonical AwaitAction state ----
+					MDP::State s;
+
+					// Queue: FIL_0 = f0, FIL_1 = f1
+					s.queue_manager.initialize(
+						mdp.n_jobs, mdp.tick_rate, mdp.arrival_rates, mdp.max_queue_depth);
+					s.queue_manager.set_fil(0, (int64_t)f0);
+					s.queue_manager.set_fil(1, (int64_t)f1);
+
+					// Servers: pool 0 busy on type 0, pool 1 idle
+					s.server_manager.initialize(&mdp.server_static_info, mdp.n_jobs);
+					// busy_on[pool][canServeIndex(pool,job)]:
+					// for fully-flexible pools, can_serve={0,1} -> index 0 = job type 0
+					s.server_manager.busy_on[0][0] = 1;
+
+					// Generate the action queue and reset counter
+					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
+					s.server_manager.set_action_counter(0);
+					s.server_manager.update_total_service_rate();
+
+					s.next_fil_job_type = -1;
+					s.cat = DynaPlex::StateCategory::AwaitAction();
+
+					if (s.server_manager.action_queue.empty()) {
+						// No idle capacity -> nothing to assign (mark with '*')
+						grid[f0][f1] = -2;
+						continue;
+					}
+
+					// ---- Query policy ----
+					int64_t action = policy_fn(s);
+
+					if (action == 0) {
+						grid[f0][f1] = -1;  // skip top candidate
+					} else {
+						// action == 1: assign action_queue[0]; record its job type
+						grid[f0][f1] = (int)s.server_manager.action_queue[0].job_type;
+					}
+				}
+			}
+
+			// ---- Print header ----
+			std::cout << "\n      FIL_1:";
+			for (int f1 = 0; f1 <= max_fil; ++f1)
+				std::cout << std::setw(3) << f1;
+			std::cout << "\nFIL_0\n";
+
+			for (int f0 = 0; f0 <= max_fil; ++f0) {
+				std::cout << std::setw(7) << f0 << " :";
+				for (int f1 = 0; f1 <= max_fil; ++f1) {
+					int v = grid[f0][f1];
+					if      (v == -2) std::cout << "  *";   // no valid action
+					else if (v == -1) std::cout << "  .";   // skip
+					else              std::cout << "  " << v;
+				}
+				std::cout << "\n";
+			}
+			std::cout << "\nLegend: 0=serve type 0, 1=serve type 1, .=skip/idle, *=no valid action\n";
+			std::cout << "FIFO boundary: diagonal\n";
+			std::cout << "  Below diagonal (FIL_0>FIL_1): FIFO serves type 0  -> expect '0'\n";
+			std::cout << "  Above diagonal (FIL_1>FIL_0): FIFO serves type 1  -> expect '1'\n";
+			std::cout << "  Deviations from FIFO pattern = RVI overrides (type-0 priority)\n";
 		}
 
 		void Register(DynaPlex::Registry& registry)

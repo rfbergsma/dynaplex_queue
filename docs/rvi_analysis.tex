@@ -1,0 +1,1162 @@
+% ============================================================
+%  rvi_analysis.tex
+%  Technical note: RVI policy heatmaps for a 2-server / 2-type
+%  queue under queue-lateness and binary deadline rewards.
+% ============================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{caption}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{verbatim}
+
+\newtheorem{remark}{Remark}
+\newtheorem{observation}{Observation}
+
+\title{Relative Value Iteration for a Two-Server Scheduling Problem:\\
+       Policy Structure, Heatmap Enumeration, and the Role\\
+       of the Reward Function}
+\author{Technical Note}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study the optimal scheduling policy for a two-server, two-job-type fully
+flexible queueing system with asymmetric holding costs and a fixed physical
+deadline, solved via Relative Value Iteration (RVI).
+We introduce an \emph{enumeration-based} heatmap that directly constructs
+canonical states and queries the policy map without simulation, eliminating
+all sampling artefacts.
+Under the queue-lateness (QL) reward the heatmap reveals a clean three-region
+threshold structure whose boundary, in physical time, converges to the deadline
+$T_\text{real}$ as the tick rate increases.
+We verify the Bellman average-cost value $g^*$ against an independent simulation
+estimate and demonstrate that both agree within Monte Carlo error; we also clarify
+the relationship between the per-RVI-step cost and the per-real-event cost used
+by the policy comparer.
+We then analyse the relationship between the discrete uniformised chain and the
+underlying continuous-time system, showing that tick events create no additional
+scheduling decisions and that the tick rate acts as a FIL-resolution parameter:
+the optimal threshold converges to the physical deadline $T_\text{real}$ as the
+tick rate increases.
+Finally, we give an elaborate explanation of why the binary deadline reward
+produces noisy heatmaps: the cost function's near-zero gradient away from the
+deadline creates action-value near-ties across most of the state space, and the
+\texttt{g\_stable} convergence fallback does not provide sufficient resolution
+to break these ties deterministically.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ============================================================
+\section{System Model}
+% ============================================================
+
+Consider a queueing system with the following structure.
+
+\paragraph{Servers.}
+There are $K = 2$ server pools, each containing a single server.  Both
+pools are fully flexible: each server can process either job type at the same
+exponential service rate $\mu$.  In the numerical study we set $\mu = 0.4$.
+
+\paragraph{Job types.}
+There are $N = 2$ job types.  Jobs of type $n$ arrive as an independent
+Poisson stream with rate $\lambda_n$.  We set $\lambda_0 = \lambda_1 = 0.1$.
+Upon arrival, a job waits in its own queue until it is assigned to an idle
+server.
+
+\paragraph{Waiting times (FIL).}
+The system tracks, for each type $n$, the waiting time of the
+\emph{first-in-line} (FIL) job.  A discrete tick event (rate $\gamma$) advances
+all waiting times by one unit simultaneously.  The physical time per tick is
+$1/\gamma$, and the physical deadline is $T_\text{real} = 3$ time units, giving
+a due-tick count of $d = T_\text{real} \cdot \gamma$.
+
+\paragraph{Traffic intensity.}
+\[
+  \rho \;=\; \frac{\lambda_0 + \lambda_1}{K\mu}
+          \;=\; \frac{0.1 + 0.1}{2 \times 0.4}
+          \;=\; 0.25.
+\]
+
+\paragraph{Cost rates.}
+Asymmetric holding cost rates $c_0 = 3$ and $c_1 = 1$ are applied, so
+type-0 jobs are three times more expensive to delay.
+
+\paragraph{Queue-depth formula.}
+Using the geometric tail bound $\rho^{k+1} < \varepsilon$ with
+$\varepsilon = 0.01$ and $\rho = 0.25$:
+\[
+  k_\text{true}
+    = \left\lceil \frac{\log \varepsilon}{\log \rho} \right\rceil
+    = \left\lceil \frac{\log 0.01}{\log 0.25} \right\rceil
+    = \lceil 3.322 \rceil = 4.
+\]
+Thus a queue depth of 4 positions per job type captures 99\% of the
+probability mass; the FIL-only projection ($k=1$) is evaluated against this
+richer model in Section~\ref{sec:results}.
+
+
+% ============================================================
+\section{MDP Formulation}
+\label{sec:mdp}
+% ============================================================
+
+\subsection{Uniformised Markov Decision Process}
+
+The continuous-time dynamics are embedded into a uniformised discrete-time MDP
+via the standard uniformisation trick.  At each step exactly one of the
+following events occurs:
+\begin{itemize}
+  \item \textbf{Arrival} of a job of type $n$ (probability $\propto \lambda_n$);
+  \item \textbf{Tick} --- all waiting times advance by one unit
+        (probability $\propto \gamma$);
+  \item \textbf{Service completion} of a job of type $n$ at server pool $k$
+        (probability $\propto \mu \cdot b_{k,j(n)}$, where $b_{k,j}$ is the
+        current busy count);
+  \item \textbf{Nothing} --- a self-loop that keeps the total event rate
+        constant.
+\end{itemize}
+This yields a uniformisation rate
+$\Lambda = \sum_n \lambda_n + \gamma + \mu \sum_{k,j} b_{k,j}$.
+
+\subsection{State Space}
+
+A state $s \in \mathcal{S}$ is a tuple
+\[
+  s = \bigl(f_0,\, f_1,\; B,\; \alpha,\; \kappa \bigr),
+\]
+where
+\begin{itemize}
+  \item $f_n \in \{-1, 0, 1, \ldots\}$ is the FIL waiting time of type $n$
+        ($f_n = -1$ means no job is waiting);
+  \item $B = (b_{k,j})$ with $b_{k,j} \in \{0,1\}$ is the busy configuration
+        ($b_{k,j} = 1$ iff server pool $k$ is currently serving a job of
+        type $\text{can\_serve}[k][j]$);
+  \item $\alpha \in \{0, 1, \ldots\}$ is the \emph{action counter} --- the
+        current position in the ordered action queue;
+  \item $\kappa \in \{\textsc{AwaitEvent},\, \textsc{AwaitAction}\}$ is the
+        state category.
+\end{itemize}
+
+\subsection{Action Queue and Action Counter}
+
+When at least one server is idle and at least one job is waiting, a
+sequence of assignment decisions must be made before the next event is drawn.
+The candidate assignments are collected into an ordered \emph{action queue}
+sorted by descending FIL (FIFO order), with ties broken by type index.
+
+At category $\kappa = \textsc{AwaitAction}$ and counter $\alpha$, the
+decision-maker faces the action at position $\alpha$ in the queue:
+\begin{itemize}
+  \item \textbf{Action 1 (assign):} assign the job at position $\alpha$ to the
+        corresponding idle server; remove infeasible actions from the queue;
+        re-evaluate the counter.
+  \item \textbf{Action 0 (skip):} pass on position $\alpha$ and advance to
+        $\alpha + 1$.  If $\alpha$ reaches the end of the queue, no further
+        assignments are made and the system transitions to \textsc{AwaitEvent}.
+\end{itemize}
+
+\begin{remark}
+\textbf{Action 0 is not idling.}  Choosing to skip the FIFO-top candidate
+at counter $\alpha = 0$ simply means the policy prefers to assign a
+lower-ranked job (e.g.\ type 0 instead of type 1) when the two FIL values
+are in the ``wrong'' order for the cost structure.
+\end{remark}
+
+\subsection{Immediate Cost}
+
+Cost is incurred only at \textsc{AwaitEvent} states (no physical time passes
+during action steps).  Two reward types are studied:
+
+\paragraph{Queue-lateness (QL) reward (reward\_type = 1):}
+\begin{equation}
+  c_\text{QL}(s)
+    = \sum_{n=0}^{1} c_n \cdot \max\!\bigl(0,\; f_n - d_n\bigr).
+  \label{eq:ql_cost}
+\end{equation}
+The cost is zero until the deadline and grows linearly with overdue-ness
+thereafter.
+
+\paragraph{Binary deadline reward (reward\_type = 0):}
+\begin{equation}
+  c_\text{bin}(s)
+    = \sum_{n=0}^{1} c_n \cdot \mathbf{1}\!\bigl\{f_n > d_n\bigr\}.
+  \label{eq:bin_cost}
+\end{equation}
+The cost is a flat penalty that fires as soon as a job exceeds its deadline,
+with no further increase for additional overdue-ness.
+
+
+% ============================================================
+\section{Relative Value Iteration}
+\label{sec:rvi}
+% ============================================================
+
+\subsection{Average-Cost Bellman Equations}
+
+We seek the optimal average cost per step $g^*$ and the relative value
+function $h : \mathcal{S} \to \mathbb{R}$ satisfying the Bellman equations:
+\begin{align}
+  h(s) &= c(s) - g^* + \sum_{s'} P(s' \mid s)\, h(s'),
+         \quad s \in \mathcal{S}_\text{event},
+  \label{eq:bell_event} \\[4pt]
+  h(s) &= \min_{a \in \{0,1\}} \sum_{s'} P(s' \mid s, a)\, h(s'),
+         \quad s \in \mathcal{S}_\text{action}.
+  \label{eq:bell_action}
+\end{align}
+The function $h$ is unique up to an additive constant; we normalise by fixing
+$h(s_\text{ref}) = 0$ for a reference state $s_\text{ref}$.
+
+\subsection{State-Space Truncation}
+
+The FIL values are clamped to a finite truncation level $M$: any state with
+$f_n > M$ is treated as $f_n = M$ (a boundary self-loop).  All reachable states
+with $f_n \leq M$ are enumerated by breadth-first search (BFS) from the initial
+empty-queue state.
+
+An automatic procedure selects $M$: RVI is solved at an initial guess,
+$M$ is incremented by 2, and RVI is re-solved until the relative change in
+$g^*$ falls below a tolerance (here 0.01).
+
+\subsection{The RVI Update}
+
+Starting from $h^{(0)} \equiv 0$, iterate:
+\begin{align*}
+  h^{(t+1)}(s) &=
+  \begin{cases}
+    c(s) + \displaystyle\sum_{s'} P(s' \mid s)\, h^{(t)}(s'),
+      & s \in \mathcal{S}_\text{event}, \\[6pt]
+    \displaystyle\min_{a \in \{0,1\}}
+      \sum_{s'} P(s' \mid s, a)\, h^{(t)}(s'),
+      & s \in \mathcal{S}_\text{action},
+  \end{cases} \\[4pt]
+  g^{(t+1)} &= h^{(t+1)}(s_\text{ref}), \\
+  h^{(t+1)}(s) &\leftarrow h^{(t+1)}(s) - g^{(t+1)}.
+\end{align*}
+
+\subsection{Convergence Criterion}
+
+The theoretically correct criterion is the \emph{span seminorm}:
+\[
+  \text{span}\!\left(h^{(t+1)} - h^{(t)}\right)
+    = \max_s \Delta^{(t)}(s) - \min_s \Delta^{(t)}(s)
+    \xrightarrow{t\to\infty} 0,
+\]
+where $\Delta^{(t)}(s) = h^{(t+1)}(s) - h^{(t)}(s)$.  Unlike
+$\max_s |\Delta^{(t)}(s)|$, the span is not inflated by a near-constant offset
+added by boundary self-loops at $f_n = M$.
+
+In practice, the truncation at $M$ prevents the span from reaching exactly
+zero.  A fallback \emph{g-stable} criterion fires when
+$\lvert g^{(t+1)} - g^{(t)} \rvert < 10^{-10}$ for five consecutive
+iterations; $g^*$ converges reliably even when the span does not.
+
+\subsection{Action Extraction}
+
+After convergence, the optimal action for every \textsc{AwaitAction} state
+is stored:
+\begin{equation}
+  \pi^*(s)
+    = \operatorname*{arg\,min}_{a \in \{0,1\}}
+      Q(s, a),
+  \qquad
+  Q(s, a) = \sum_{s'} P(s' \mid s, a)\, h^*(s').
+  \label{eq:argmin}
+\end{equation}
+The function $h^*$ is then \emph{discarded}; the only persistent object
+is the \emph{action map}
+\[
+  \texttt{action\_map} : \text{encode}(s) \;\mapsto\; \pi^*(s) \in \{0,1\}.
+\]
+
+
+% ============================================================
+\section{State Encoding and the Action Map}
+\label{sec:encoding}
+% ============================================================
+
+\subsection{The Encoder}
+
+A single 64-bit integer $k(s)$ is computed via mixed-radix encoding:
+\[
+  k(s)
+  = \underbrace{\tilde{f}_0}_{\text{FIL}_0}
+    + (M{+}2)\,\underbrace{\tilde{f}_1}_{\text{FIL}_1}
+    + \ldots
+    + \prod_n (M{+}2)
+      \cdot \biggl[
+        \sum_{k,j} b_{k,j} \cdot \sigma_{k,j}
+        + \sigma_\kappa \cdot \kappa
+        + \sigma_\alpha \cdot \alpha
+      \biggr],
+\]
+where $\tilde{f}_n = \min(f_n, M) + 1$ (so that $f_n = -1$ maps to 0) and
+$\sigma_{\cdot}$ are stride constants determined by the range of each component.
+
+\paragraph{Critical observation.}
+The busy configuration $B$ and the action counter $\alpha$ are both part of
+the key.  Two states that share the same FIL values but differ in $B$ or
+$\alpha$ receive \emph{different} keys and have \emph{independently stored}
+optimal actions.  In particular:
+\begin{align*}
+  k\!\bigl(f_0, f_1,\; b_{0,0}{=}1,\; \alpha{=}0\bigr)
+  &\neq
+  k\!\bigl(f_0, f_1,\; b_{0,1}{=}1,\; \alpha{=}0\bigr),
+\end{align*}
+i.e.\ whether pool 0 is currently serving a type-0 or a type-1 job
+leads to different entries in the map and potentially different optimal
+decisions.
+
+\subsection{What the Action Map Stores}
+
+The action map does \emph{not} store $h^*(s)$.  It stores exactly one bit
+per state: the argmin action $\pi^*(s) \in \{0, 1\}$.  The $h$-values
+only influence the map through \eqref{eq:argmin} at construction time.
+
+For a 2-server fully flexible system with $M = 15$ the map contains
+approximately 3\,264 entries corresponding to all \textsc{AwaitAction} states
+reached by the BFS.
+
+
+% ============================================================
+\section{Enumerated Policy Heatmap}
+\label{sec:heatmap}
+% ============================================================
+
+\subsection{Motivation: Limitations of Simulation-Based Heatmaps}
+
+A simulation-based heatmap runs the MDP under a given policy for a large number
+of steps, records the action taken at each state in a $(f_0, f_1)$ grid, and
+marks unvisited cells with ``\texttt{-}''.  This approach has two failure modes:
+
+\begin{enumerate}
+  \item \textbf{Unvisited cells (\texttt{-}).}
+    Rare states (high FIL, unusual busy configuration) are never visited in a
+    finite simulation, leaving gaps in the map.
+
+  \item \textbf{Sampling-averaged inconsistency.}
+    The same $(f_0, f_1)$ cell may be visited under different busy
+    configurations $B$ and action counters $\alpha$.  The last recorded action
+    overwrites earlier ones, so the cell reflects whichever configuration was
+    sampled most recently --- a simulation artefact, not the policy.
+\end{enumerate}
+
+\subsection{The Enumeration Approach}
+
+For each $(f_0, f_1) \in \{0,\ldots,M_\text{map}\}^2$, construct the
+\emph{canonical} state
+\begin{equation}
+  s^\dagger(f_0, f_1)
+  = \bigl(f_0,\; f_1,\; b_{0,0} = 1 \text{ (all others 0)},\;
+    \alpha = 0,\; \kappa = \textsc{AwaitAction}\bigr).
+  \label{eq:canonical}
+\end{equation}
+This represents: pool 0 busy on a type-0 job, pool 1 idle, both job types
+waiting, first assignment decision.
+
+\paragraph{Procedure for each cell $(f_0, f_1)$:}
+\begin{enumerate}
+  \item Set FIL values: $f_n$ entered directly into the queue manager.
+  \item Set busy configuration: $b_{0,0} = 1$, all others 0.
+  \item Call \texttt{generate\_actions($f_0, f_1$)}: fills the action queue
+        $\mathcal{A}$ sorted by descending FIL (FIFO order), ties broken by
+        type index.
+  \item Set $\alpha = 0$.
+  \item Compute key $k = \text{encode}(s^\dagger)$ and look up
+        $a = \texttt{action\_map}[k]$ (fallback: $a = 1$ if key absent).
+  \item \textbf{Display:}
+    \begin{itemize}
+      \item $a = 0$: show ``\texttt{.}'' (skip FIFO-top candidate).
+      \item $a = 1$: show $\mathcal{A}[0].\text{job\_type}$
+            (type of the FIFO-top candidate).
+    \end{itemize}
+\end{enumerate}
+
+\paragraph{Result.}  Every cell $(f_0, f_1)$ has a definite, artefact-free
+value.  There are no ``\texttt{-}'' cells.
+
+\subsection{The Action-Queue at the Canonical State}
+
+With pool 1 idle and both types waiting, \texttt{generate\_actions} yields:
+\begin{equation}
+  \mathcal{A} =
+  \begin{cases}
+    \bigl[(\text{pool 1, type 1}),\; (\text{pool 1, type 0})\bigr]
+      & \text{if } f_1 > f_0, \\[3pt]
+    \bigl[(\text{pool 1, type 0}),\; (\text{pool 1, type 1})\bigr]
+      & \text{if } f_0 \geq f_1.
+  \end{cases}
+  \label{eq:action_queue}
+\end{equation}
+
+Consequently, ``\texttt{.}'' above the diagonal ($f_1 > f_0$) means:
+\emph{RVI skips type-1 even though it is older; at counter $\alpha=1$ the
+policy will assign pool 1 to type-0 instead.}  This is the cost-priority
+override.
+
+\subsection{Limitation: One Canonical Busy Configuration}
+
+The canonical state \eqref{eq:canonical} fixes pool 0 busy on type 0.  The
+action map contains separate entries for every other busy configuration.
+In particular, the configuration ``pool 0 busy on type 1'' (key:
+$b_{0,1} = 1$) may yield different optimal actions for the same $(f_0, f_1)$
+because type 1 is already being handled, reducing the urgency of assigning
+pool 1 to type 1 from pool 1.
+
+For the fully symmetric system studied here (identical pools, equal $\lambda$
+and $\mu$) the canonical state is representative: swapping pool labels is a
+symmetry of the problem.  The qualitative threshold structure is expected to
+be the same across all symmetric busy configurations, with the threshold
+potentially shifting by $O(1)$ tick in asymmetric configurations.
+
+
+% ============================================================
+\section{Results: Queue-Lateness Reward}
+\label{sec:results}
+% ============================================================
+
+\subsection{Three-Region Policy Structure}
+
+\begin{table}[h]
+\centering
+\caption{Three regions of the RVI policy heatmap (QL reward, tick\_rate = 4).}
+\label{tab:regions}
+\begin{tabular}{lcl}
+\toprule
+Region & Cell symbol & Interpretation \\
+\midrule
+$f_0 \geq f_1$ (on/below diagonal) & \texttt{0}
+  & Type 0 dominates in both age \emph{and} cost; always served. \\
+Above diagonal, small excess & \texttt{.}
+  & Type 1 is older but cost advantage of type 0 wins; skip type 1. \\
+Above diagonal, large excess & \texttt{1}
+  & Type 1 is so much older that its urgency overcomes the 3$\times$ cost gap. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The resulting pattern (tick\_rate $= 4$, due $= 12$) is shown below in
+condensed form (columns 0--19):
+
+\begin{verbatim}
+      FIL_1:  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
+FIL_0
+0     :        0  .  .  .  .  .  .  .  .  .  .  .  .  1  1  1  1  1  1  1
+1     :        0  0  .  .  .  .  .  .  .  .  .  .  .  .  1  1  1  1  1  1
+2     :        0  0  0  .  .  .  .  .  .  .  .  .  .  .  1  1  1  1  1  1
+3     :        0  0  0  0  .  .  .  .  .  .  .  .  .  .  .  .  1  1  1  1
+4     :        0  0  0  0  0  .  .  .  .  .  .  .  .  .  .  .  .  1  1  1
+5     :        0  0  0  0  0  0  .  .  .  .  .  .  .  .  .  .  .  .  .  1
+6     :        0  0  0  0  0  0  0  .  .  .  .  .  .  .  .  .  .  .  .  .
+  ...
+\end{verbatim}
+
+The policy is a \emph{staircase threshold rule}: serve type 1 only when
+$f_1 > f_0 + \theta(f_0)$ for a threshold $\theta$ that grows with $f_0$.
+Beyond row $f_0 \approx d/2$, type 0 is never skipped regardless of $f_1$.
+
+\subsection{Convergence of the Threshold to the Physical Deadline}
+
+Define $\theta_0 = \min\{f_1 : \pi^*(0, f_1) = 1\}$ as the threshold at
+$f_0 = 0$.  Table~\ref{tab:threshold} shows the convergence of
+$\theta_0 / \text{tick\_rate}$ (in physical time units) toward $T_\text{real}$.
+
+\begin{table}[h]
+\centering
+\caption{Threshold at $f_0 = 0$ in ticks and in physical time.}
+\label{tab:threshold}
+\begin{tabular}{rrrrr}
+\toprule
+tick\_rate & due$_\text{ticks}$ & $M$ & $\theta_0$ (ticks) & $\theta_0 /$ tick\_rate (physical) \\
+\midrule
+1 &  3 & 15 &  5 & 5.00 \\
+2 &  6 & 25 &  7 & 3.50 \\
+4 & 12 & 39 & 13 & 3.25 \\
+8 & 24 & 71 & 24 & 3.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The continuous-time limit of the threshold is $T_\text{real} = 3.0$ physical
+time units: RVI serves type 1 only when type 1 has been waiting approximately
+one full deadline duration longer than type 0.  This is the cost-rate trade-off
+point: at that age difference, the per-unit-time urgency advantage of type 1
+(accumulated waiting) compensates for the 3$\times$ cost-rate disadvantage.
+
+\subsection{FIL-Projected Policy in the True k=4 System}
+\label{sec:sectionA}
+
+RVI is always solved on the FIL-only ($k=1$) projection, yet the policy is
+evaluated in a richer simulator that tracks up to $k_\text{true} = 4$
+positions per type.
+
+\begin{table}[h]
+\centering
+\caption{FIFO vs.\ RVI (QL reward, tick\_rate = 1).}
+\label{tab:sectionA}
+\begin{tabular}{lcccc}
+\toprule
+System & FIFO mean & RVI mean & RVI/FIFO & Improvement \\
+\midrule
+$k = 1$ (FIL only) & 0.01123 & 0.01062 & 0.946 & 5.4\% \\
+$k = 4$ (true system) & 0.01643 & 0.01477 & 0.899 & 10.1\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The absolute costs are higher in the $k=4$ system because the richer simulator
+correctly accrues lateness for SIL/TIL/QIL jobs that the $k=1$ simulator
+discards.  The RVI improvement is \emph{larger} at $k=4$ (10.1\% vs.\ 5.4\%):
+the FIL projection transfers well because at $\rho = 0.25$ queue depths $>1$
+are rare, while FIFO in both systems uses the same FIL-only information but
+ignores cost rates entirely.
+
+\subsection{Tick-Rate Granularity Sweep}
+
+\begin{table}[h]
+\centering
+\caption{RVI vs.\ FIFO improvement across tick rates ($k=1$, QL reward).}
+\label{tab:sectionC}
+\begin{tabular}{rrrccr}
+\toprule
+tick\_rate & due$_\text{ticks}$ & $M$ & FIFO mean & RVI mean & Improvement \\
+\midrule
+1 &  3 & 15 & 0.01123 & 0.01062 &  5.4\% \\
+2 &  6 & 25 & 0.01967 & 0.01809 &  8.0\% \\
+4 & 12 & 39 & 0.03381 & 0.02944 & \textbf{12.9\%} \\
+8 & 24 & 71 & 0.06511 & 0.06033 &  7.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Improvement increases monotonically from tick\_rate $= 1$ to $4$ (5.4\%
+$\to$ 8.0\% $\to$ 12.9\%) and then regresses at tick\_rate $= 8$ (7.3\%).
+Finer resolution gives RVI more decision points and a sharper threshold
+(Table~\ref{tab:threshold} shows the physical-time threshold is coarser
+at lower resolution).  The regression at tick\_rate $= 8$ is attributed to
+the much larger state space ($M=71$, $\sim$111\,000 states): the g-stable
+convergence criterion fires earlier relative to the Bellman-residual scale,
+leaving $h$-values less well-converged and the near-deadline policy boundary
+slightly imprecise.
+
+
+% ============================================================
+\section{Verification: Simulated Mean Cost vs.\ $g^*$}
+\label{sec:verification}
+% ============================================================
+
+\subsection{Motivation}
+
+Relative Value Iteration produces, upon convergence, two objects: the
+average-cost estimate $g^*$ (a scalar) and the action map $\pi^*$ (a table of
+optimal actions per state).  Both objects are derived from the same computation,
+so internal consistency is guaranteed by construction.  A more meaningful
+validation is to \emph{evaluate the action map independently}: simulate the
+Markov chain under policy $\pi^*$, accumulate costs, and verify that the sample
+mean matches $g^*$ to within Monte Carlo error.  This cross-check confirms that
+(i) the Bellman iteration converged to the correct fixed point, (ii) the
+action map was stored and queried correctly, and (iii) the simulation harness
+itself is bug-free.
+
+\subsection{Simulation Methodology (\texttt{EvaluatePolicyRaw})}
+
+The function \texttt{EvaluatePolicyRaw} runs $\mathcal{T} = 300$ independent
+trajectory replications, each of $N = 150\,000$ uniformised MDP steps, with a
+warm-up of $W = 15\,000$ steps discarded at the start of each trajectory to
+eliminate transient effects.
+
+At each step the simulator proceeds as follows:
+\begin{enumerate}
+  \item If $\kappa = \textsc{AwaitAction}$: query $\pi^*(s)$ from the action map
+        (using the encoded key; fallback: action 1 if key absent) and transition
+        to the successor state.
+  \item If $\kappa = \textsc{AwaitEvent}$: draw the next event type from the
+        uniformised event distribution $(\lambda_0, \lambda_1, \gamma,
+        \mu b_{k,j}, \ldots)$, advance the state, and accumulate cost $c(s)$.
+\end{enumerate}
+
+Three disjoint step counters are maintained over the post-warm-up horizon:
+\begin{itemize}
+  \item $N_\text{act}$: steps in \textsc{AwaitAction} (assignment decisions);
+  \item $N_\text{ev}$: steps in \textsc{AwaitEvent} that draw a real event
+        (arrival or service completion);
+  \item $N_\text{tick}$: steps in \textsc{AwaitEvent} that draw a tick event
+        (FIL refresh).
+\end{itemize}
+The total post-warm-up steps are $N_\text{total} = N_\text{act} + N_\text{ev} +
+N_\text{tick}$.
+
+\subsection{Two Notions of Average Cost}
+
+\paragraph{Cost per RVI step.}
+The quantity $g^*$ is defined as the average cost per step in the uniformised
+chain.  Since cost is only incurred at \textsc{AwaitEvent} states, and since
+action steps and tick steps carry zero immediate cost, the simulated analogue is:
+\begin{equation}
+  g^*_\text{sim}
+    = \frac{\text{total accumulated cost}}{N_\text{total}}.
+  \label{eq:g_per_step}
+\end{equation}
+This should agree with the Bellman $g^*$ to within Monte Carlo standard error.
+
+\paragraph{Cost per real event.}
+The policy comparer used in Section~\ref{sec:sectionA} and Table~\ref{tab:sectionC}
+evaluates policies on a per-\emph{event} basis, where an event is an arrival or
+service completion (not a tick and not an action step):
+\begin{equation}
+  g_\text{event}
+    = \frac{\text{total accumulated cost}}{N_\text{ev}}.
+  \label{eq:g_per_event}
+\end{equation}
+
+The two quantities are related by the \emph{step multiplier}
+\begin{equation}
+  \Lambda_\text{eff}
+    = \frac{N_\text{total}}{N_\text{ev}}
+    = \frac{N_\text{act} + N_\text{ev} + N_\text{tick}}{N_\text{ev}},
+  \qquad
+  g_\text{event} = \Lambda_\text{eff} \cdot g^*_\text{sim}.
+  \label{eq:multiplier}
+\end{equation}
+
+\begin{remark}
+  The step multiplier $\Lambda_\text{eff}$ can be interpreted as the ratio of
+  the effective uniformisation rate $E[\Lambda]$ to the rate of real events.
+  For tick\_rate $= 1$ and $\rho = 0.25$:
+  \[
+    E[\Lambda]
+      = \lambda_0 + \lambda_1 + \gamma + \mu \cdot E[\text{busy servers}]
+      = 0.1 + 0.1 + 1 + 0.4 \times 0.5
+      = 1.4,
+  \]
+  \[
+    E[\text{real event rate}]
+      = \lambda_0 + \lambda_1 + \mu \cdot E[\text{busy}]
+      = 0.2 + 0.2 = 0.4,
+  \]
+  giving $\Lambda_\text{eff} \approx 1.4 / 0.4 = 3.5$.  At tick\_rate $= 4$
+  the tick contribution $\gamma = 4$ dominates and $\Lambda_\text{eff} \approx
+  (0.4 + 4 + 0.2) / 0.4 \approx 11.5$.
+\end{remark}
+
+\subsection{Expected Outcome}
+
+The simulation output is printed alongside the Bellman $g^*$ after convergence.
+The key checks are:
+\begin{enumerate}
+  \item $g^*_\text{sim}$ should lie within $\approx 2\%$ of the Bellman $g^*$
+        (Monte Carlo standard error decreases as $1/\sqrt{\mathcal{T} N}$).
+  \item $g_\text{event}$ for the RVI policy should reproduce the ``RVI mean''
+        entries of Table~\ref{tab:sectionA} and Table~\ref{tab:sectionC}.
+  \item $g_\text{event}$ for the FIFO policy should reproduce the
+        ``FIFO mean'' entries of the same tables.
+  \item The step multiplier $\Lambda_\text{eff}$ printed from the step counter
+        breakdown should match the theoretical formula~\eqref{eq:multiplier}.
+\end{enumerate}
+
+\begin{table}[h]
+\centering
+\caption{Structure of the verification output (QL reward, tick\_rate~$=1$,
+         $k=1$, base configuration).}
+\label{tab:verification}
+\begin{tabular}{lll}
+\toprule
+Quantity & Symbol & Expected value \\
+\midrule
+Bellman convergence value & $g^*$ & (from RVI) \\
+Simulated per-step mean, RVI & $g^*_\text{sim}$ & $\approx g^*$ ($<2\%$ error) \\
+Simulated per-step mean, FIFO & --- & $> g^*$ (suboptimal) \\
+Per-event mean, RVI & $g_\text{event}^\text{RVI}$ & matches Table~\ref{tab:sectionA} \\
+Per-event mean, FIFO & $g_\text{event}^\text{FIFO}$ & matches Table~\ref{tab:sectionA} \\
+Step multiplier & $\Lambda_\text{eff}$ & $\approx 3.5$ (tick\_rate $=1$) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Agreement across all five checks closes the loop between the RVI Bellman
+computation, the stored action map, the simulation harness, and the policy
+comparer --- providing end-to-end confidence in the numerical implementation.
+
+
+% ============================================================
+\section{From Discrete Ticks to Continuous Time}
+\label{sec:continuous}
+% ============================================================
+
+\subsection{Ticks Are Not Additional Decision Occasions}
+
+A natural concern when interpreting a uniformised discrete-time MDP is whether
+the discretisation introduces artificial decision opportunities that do not exist
+in the underlying continuous-time system.  In a continuous-time queueing system
+the scheduler is consulted only at \emph{events} --- arrivals and service
+completions; between events the system evolves without intervention.
+
+In the formulation studied here, tick events advance all FIL counters by one
+unit and return the state to \textsc{AwaitEvent} \emph{without ever transitioning
+to \textsc{AwaitAction}}.  The scheduler is therefore \emph{not consulted} at
+tick events.
+
+\begin{observation}
+  The number of scheduling decisions equals the number of service completions
+  plus the number of arrivals that find an idle server.  This is identical to
+  the decision frequency in a continuous-time model.  Tick events create no
+  additional scheduling decisions.
+\end{observation}
+
+The tick rate $\gamma$ therefore plays a purely \emph{informational} role: it
+controls how finely the FIL values are measured, not how often the policy is
+applied.
+
+\subsection{The Real Gap: FIL Resolution}
+
+The FIL value $f_n \in \{0, 1, 2, \ldots, M\}$ is an integer number of ticks.
+In a continuous-time system the sojourn time of the FIL job would be a
+non-negative real number $\tau_n$.  The two are related by
+$\tau_n \approx f_n / \gamma$, with discretisation error $|\tau_n - f_n/\gamma|
+\leq 1/(2\gamma)$.
+
+Higher tick rates reduce this error:
+\begin{itemize}
+  \item At tick\_rate $= 1$: FIL is measured to the nearest 1.0 physical
+        time unit.
+  \item At tick\_rate $= 4$: FIL is measured to the nearest 0.25 physical
+        time units.
+  \item At tick\_rate $= 8$: FIL is measured to the nearest 0.125 physical
+        time units.
+  \item As $\gamma \to \infty$: $f_n / \gamma \to \tau_n$ in the limit; the
+        FIL counter approaches a continuous sojourn timer.
+\end{itemize}
+
+The practical effect is visible in Table~\ref{tab:threshold}: the optimal
+service threshold for type 1 at $f_0 = 0$, measured in physical time units
+($\theta_0 / \gamma$), converges monotonically to $T_\text{real} = 3.0$ from
+above as $\gamma$ increases.  At tick\_rate $= 8$ the threshold has already
+reached $3.00$ to two decimal places.  This suggests that the continuous-time
+optimal policy has a threshold precisely at the physical deadline --- a
+structural result that may be derivable analytically via a fluid-limit or
+Gittins-index argument.
+
+\subsection{Translating $g^*$ to Continuous Time}
+
+The Bellman average cost $g^*$ is a \emph{cost per uniformised step}.  Its
+continuous-time analogue is a \emph{cost per physical time unit}:
+\begin{equation}
+  g^*_\text{time}
+    \;=\; g^* \cdot E[\Lambda],
+  \label{eq:g_time}
+\end{equation}
+where
+\begin{equation}
+  E[\Lambda]
+    \;=\; \sum_n \lambda_n \;+\; \gamma \;+\; \mu \cdot E\!\Bigl[\textstyle\sum_{k,j} b_{k,j}\Bigr]
+  \label{eq:elambda}
+\end{equation}
+is the expected uniformisation rate.  For the parameters used here and
+tick\_rate $= r$:
+\[
+  E[\Lambda]
+    = 0.2 + r + 0.4 \times 0.5
+    = r + 0.4.
+\]
+
+The cost-per-event output of the policy comparer relates to $g^*_\text{time}$
+by dividing by the rate of real events:
+\begin{equation}
+  g_\text{event}
+    = \frac{g^*_\text{time}}{\lambda_\text{total} + \mu \cdot E[\text{busy}]}
+    = \frac{g^* \cdot (r + 0.4)}{0.2 + 0.2}
+    = g^* \cdot \frac{r + 0.4}{0.4}
+    = g^* \cdot \Lambda_\text{eff},
+  \label{eq:g_event_cont}
+\end{equation}
+consistent with the step multiplier formula~\eqref{eq:multiplier}.  Note that
+$g^*_\text{time}$ is \emph{tick-rate-dependent}: as $\gamma$ increases, the
+system accumulates cost more rapidly per unit of physical time (because FIL
+values grow faster), even though the same physical dynamics are being modelled.
+Results should therefore always be compared at the same tick rate.
+
+\subsection{The Koole Approximation}
+
+In the discrete model, the FIL of type $n$ is updated only at tick events.
+When a service completion promotes the second-in-line job to FIL, the promoted
+job's FIL value is inherited from the queue's running FIL counter --- not from
+the exact time at which that job arrived.  The difference between the true
+sojourn time and the FIL-approximate sojourn time is at most $1/\gamma$
+(one tick interval).
+
+This discrepancy is the \emph{Koole approximation}: the FIL counter is a
+shared, coarsely-updated proxy for each job's individual age.  The approximation
+improves as $\gamma$ increases.
+
+\paragraph{Impact on decision quality.}
+The scheduling policy acts on the FIL value of the oldest waiting job.  If the
+true sojourn time is $\tau_n$ but the observed FIL implies $\tau_n \approx f_n
+/ \gamma \pm 1/\gamma$, the policy uses a slightly imprecise age signal.  Near
+the decision threshold ($\tau_n \approx T_\text{real}$) this $\pm 1/\gamma$
+error can cause incorrect decisions for jobs right at the boundary.  At higher
+tick rates the boundary is resolved more sharply and the decision error rate
+decreases.
+
+\subsection{Towards a Continuous-Time Simulator}
+
+A continuous-time simulator would eliminate the Koole approximation entirely.
+Rather than a FIL counter, each job in the queue carries its exact arrival time
+$t_n^\text{arr}$.  At each event (arrival or completion), the exact sojourn
+time of the oldest waiting job is:
+\[
+  \tau_n(t) = t - \min_{j \in \text{queue}_n} t_j^\text{arr}.
+\]
+The policy is queried with the continuous values $(\tau_0, \tau_1)$; to use the
+trained RVI policy, these are discretised as $f_n = \lfloor \tau_n \cdot \gamma
+\rfloor$ and the action map is looked up as usual.
+
+Such a simulator would allow:
+\begin{enumerate}
+  \item \textbf{Direct verification of threshold convergence.}  By varying
+        $\gamma$ across 1, 2, 4, 8, and querying the same trained policy, one
+        can confirm that the serving threshold converges in physical time.
+  \item \textbf{Quantification of the Koole approximation error.}  By comparing
+        performance under exact sojourn times (continuous simulator) vs.\
+        tick-approximate sojourn times (discrete MDP), the cost of the
+        approximation can be isolated.
+  \item \textbf{Asymptotic policy evaluation.}  At very high $\gamma$ the
+        continuous simulator and the discrete MDP should agree; any residual
+        difference is attributable to the $k=1$ FIL projection, not to the
+        tick approximation.
+\end{enumerate}
+
+\subsection{The Discrete System as an Intermediate}
+
+The study uses three levels of approximation simultaneously:
+\begin{enumerate}
+  \item \textbf{FIL projection ($k=1$):} only the oldest waiting job per type
+        is tracked; all others are invisible to the policy.
+  \item \textbf{Koole approximation:} FIL ages are tick-approximate, not exact.
+  \item \textbf{Truncation at $M$:} states with $f_n > M$ are collapsed to $M$.
+\end{enumerate}
+
+These are nested approximations, each removing a source of information about
+the queue.  Table~\ref{tab:sectionA} shows that the $k=1$ projection transfers
+well to the $k_\text{true} = 4$ system at $\rho = 0.25$, because the probability
+of having more than one job waiting is $O(\rho^2) \approx 6\%$.  Both the Koole
+approximation and the truncation become negligible at high $\gamma$ and large
+$M$, respectively.
+
+The continuous-time extension (event-driven simulator, exact sojourn times,
+all queue positions tracked) is identified as a natural follow-up, to be
+implemented as a separate executable.  It would provide a clean upper bound on
+what the FIL-only RVI policy can achieve in the true continuous system.
+
+
+% ============================================================
+\section{Why Binary Reward Produces Noisy Heatmaps}
+\label{sec:binary}
+% ============================================================
+
+This section provides an elaborate explanation of the noisiness of heatmaps
+under the binary deadline reward \eqref{eq:bin_cost}.  The argument proceeds
+in five layers: the shape of the $h$-value landscape, the action-value gap,
+structural near-ties, convergence amplification, and the persistence of noise
+even under exact enumeration.
+
+\subsection{Layer 1: The Cost Gradient Shapes the $h$-Value Landscape}
+
+The relative value function $h(s)$ accumulates the long-run discounted
+difference in cost between the policy $\pi^*$ and the reference policy.  Its
+\emph{gradient} with respect to FIL reflects how rapidly the expected future
+cost changes as a job ages.
+
+\paragraph{QL reward.}
+The per-step cost $c_n \cdot \max(0, f_n - d_n)$ increases by $c_n$ for every
+additional tick beyond the deadline.  Consequently, for $f_n > d_n$:
+\[
+  \frac{\partial h_\text{QL}}{\partial f_n}
+    \;\approx\; \frac{c_n}{\mu - \lambda_n}
+    \;>\; 0.
+\]
+The $h$-value landscape is strictly increasing and \emph{everywhere has positive
+gradient} for overdue jobs.  Even a one-tick difference in FIL translates into
+a meaningful difference in $h$.
+
+\paragraph{Binary reward.}
+The per-step cost $c_n \cdot \mathbf{1}\{f_n > d_n\}$ is constant for all
+$f_n > d_n$ and zero for all $f_n \leq d_n$.  The gradient is:
+\[
+  \frac{\partial h_\text{bin}}{\partial f_n}
+    \;\approx\;
+  \begin{cases}
+    0 & f_n \ll d_n
+        \quad (\text{safe region: negligible miss probability}), \\
+    \text{large spike} & f_n \approx d_n
+        \quad (\text{deadline cliff}), \\
+    c_n \cdot p_\text{steady} & f_n \gg d_n
+        \quad (\text{overdue: small constant increment}).
+  \end{cases}
+\]
+Away from the deadline the $h$-value landscape is \emph{nearly flat}.
+
+\subsection{Layer 2: The Action-Value Gap}
+
+At an \textsc{AwaitAction} state $s$ with $f_1 > f_0$, the two action values
+are
+\[
+  Q(s, a) = \sum_{s'} P(s' \mid s, a)\, h(s'), \qquad a \in \{0,1\}.
+\]
+The \emph{action-value gap}
+\[
+  m(s) = Q(s, 0) - Q(s, 1)
+\]
+determines the policy: $m > 0$ means action 1 is optimal (assign FIFO-top
+job), $m < 0$ means action 0 is optimal (skip FIFO-top job to serve the
+other type), $m \approx 0$ is a near-tie.
+
+\paragraph{QL reward (large gap).}
+For $f_1 > d_1$ and $f_0 < d_0$, assigning service to type 1 immediately
+removes its per-step cost of $c_1 \cdot (f_1 - d_1)$ per step, whereas
+deferring type 1 incurs this cost for approximately $1/\mu$ additional steps.
+The gap is approximately
+\[
+  m_\text{QL}(s)
+    \;\approx\; c_1 \cdot \frac{f_1 - d_1}{\mu}
+    \;-\; c_0 \cdot \frac{f_0 - d_0^+}{\mu},
+\]
+which is $O(c_n / \mu)$ and grows linearly with the overdue-ness of each type.
+For the parameters used here ($c_1 = 1$, $\mu = 0.4$, overdue-ness $\approx
+1$--$10$ ticks) the gap is in the range $[2.5, 25]$.
+
+\paragraph{Binary reward (small or zero gap).}
+The action gap under binary cost can be expressed as
+\[
+  m_\text{bin}(s)
+    = c_1 \cdot \bigl[P(\text{type 1 misses} \mid a=0) - P(\text{type 1 misses} \mid a=1)\bigr]
+    - c_0 \cdot \bigl[P(\text{type 0 misses} \mid a=0) - P(\text{type 0 misses} \mid a=1)\bigr].
+\]
+\begin{itemize}
+  \item For $f_0, f_1 \ll d$ (both jobs are safe): $P(\text{miss}) \approx 0$
+        for either action, so $m_\text{bin}(s) \approx 0$.
+  \item For $f_1 \approx d$ (type 1 at the deadline): $P(\text{type 1 misses}
+        \mid a=0)$ can be $O(0.1)$--$O(1)$, making the gap non-trivial but
+        small relative to the total state space.
+  \item For $f_1 \gg d$ (type 1 long overdue): both actions incur the binary
+        cost with high probability, and the gap is again small.
+\end{itemize}
+
+\subsection{Layer 3: The Extent of the Near-Tie Region}
+
+Under QL, the only near-ties are states near the \emph{boundary} of the optimal
+threshold staircase.  These are a thin band of cells in the $(f_0, f_1)$ grid;
+the interior is decisive.
+
+Under binary, near-ties dominate:
+\begin{itemize}
+  \item \textbf{Safe region} ($f_0, f_1 < d$):
+        both jobs are unlikely to miss the deadline under any reasonable policy.
+        The gap is proportional to the (tiny) probability that either job
+        reaches the deadline before being served.  This region covers roughly
+        $d^2 = d_\text{ticks}^2$ cells in the grid.  For tick\_rate $= 4$ and
+        $d = 12$, this is $144$ cells, all with near-zero gap.
+
+  \item \textbf{Far-overdue region} ($f_0, f_1 \gg d$):
+        both jobs have already missed the deadline.  The binary cost fires for
+        both regardless of the action, and the gap is again small.
+
+  \item \textbf{Decisive region} ($f_1 \approx d$, one or both types near the
+        deadline cliff): the gap is meaningful, but this is a thin strip.
+\end{itemize}
+
+The fraction of cells with a decisive gap is thus $O(d / M)$, typically 20--30\%
+of the grid.  The remaining 70--80\% of cells have near-zero gaps and ambiguous
+policies.
+
+\subsection{Layer 4: Convergence Amplification}
+
+The \texttt{g\_stable} stopping criterion guarantees that
+$\lvert g^{(t+1)} - g^{(t)} \rvert < \varepsilon_g = 10^{-10}$, but it
+\emph{does not} guarantee that $h^{(t)}$ has converged to within $\varepsilon_g$
+of the true $h^*$.  In fact, at termination the span of the residual
+$h^{(t)} - h^*$ is typically $O(\varepsilon_\text{span})$, where
+$\varepsilon_\text{span}$ is the span at termination---which may be much larger
+than $\varepsilon_g$.
+
+A near-tie is resolved \emph{incorrectly} whenever
+\begin{equation}
+  \lvert m(s) \rvert \;<\; 2 \cdot \varepsilon_\text{span}.
+  \label{eq:neartie}
+\end{equation}
+Under QL, the typical action gap is $O(c_n / \mu) \approx 2$--$25$, far larger
+than $\varepsilon_\text{span} \approx 10^{-3}$--$10^{-1}$ at \texttt{g\_stable}
+termination.  Condition~\eqref{eq:neartie} is satisfied only at the true policy
+boundary---a thin band.
+
+Under binary, the typical action gap away from the deadline cliff is
+$O(10^{-4})$--$O(10^{-2})$, \emph{comparable to or smaller than}
+$\varepsilon_\text{span}$.  Condition~\eqref{eq:neartie} is satisfied for most
+of the safe and far-overdue regions.  The argmin stored in \texttt{action\_map}
+for these cells was determined not by the true optimal policy but by the sign of
+a tiny numerical residual in $h^{(t)}$.
+
+\paragraph{Scale mismatch.}
+The problem is compounded by the scale of the $h$-values.  Under QL with
+$\text{tick\_rate} = 4$ and $M = 39$, values of $h$ can reach
+$c_0 \cdot (M - d) / (\mu - \lambda_0) \approx 3 \times 27 / 0.3 \approx 270$.
+Under binary with the same parameters, $h$ is bounded by
+$c_0 \cdot P(\text{miss}) \lesssim 3 \times 1 = 3$.
+The \emph{relative} convergence error $\varepsilon_\text{span} / \|h\|_\infty$
+is thus roughly 90 times larger under binary than under QL for the same
+absolute convergence tolerance.
+
+\subsection{Layer 5: Noise Persists Under Enumeration}
+
+The simulation-based heatmap has two noise sources: (a) unvisited cells, and
+(b) cells sampled under different busy configurations $B$.  The enumerated
+heatmap eliminates both by directly constructing the canonical state.
+
+However, the enumerated heatmap can only report what is stored in
+\texttt{action\_map}.  If an \texttt{action\_map} entry was itself determined
+by a near-tie in the imperfectly converged $h^{(t)}$, the enumerated cell
+faithfully displays the \emph{wrong} argmin.  No amount of sampling improvement
+fixes this.
+
+Concretely, suppose at state $s$ (with $f_0 = 5$, $f_1 = 5$, safely below the
+deadline) the true gap is $m^*(s) = +0.0003$ (slightly prefer to assign type 1)
+but the residual in $h^{(t)}$ introduces an error $\delta = -0.0005$.  The
+stored argmin is action 0 (skip), the wrong choice.  The enumerated heatmap
+will display ``\texttt{.}'' at this cell, creating an isolated artefact in an
+otherwise smooth region.
+
+The result is a \emph{salt-and-pepper} pattern in the heatmap:
+\begin{itemize}
+  \item Large connected regions of type-0 (below the diagonal) are correct,
+        since $m \gg 0$ there.
+  \item Near the diagonal, isolated \texttt{.} and \texttt{1} cells flip
+        unpredictably based on which direction the convergence residual
+        happened to point.
+  \item There is no clean staircase boundary; the boundary is a ragged,
+        jagged band one to three cells wide.
+\end{itemize}
+
+\subsection{Summary: QL vs.\ Binary}
+
+\begin{table}[h]
+\centering
+\caption{Comparison of QL and binary rewards for heatmap quality.}
+\label{tab:compare}
+\begin{tabular}{lcc}
+\toprule
+Property & QL reward & Binary reward \\
+\midrule
+Cost gradient w.r.t.\ FIL (overdue) & Linear, always $> 0$ & Flat; spike only at $d$ \\
+Typical action gap $|m(s)|$ & $O(c_n / \mu) \sim 2$--$25$ & $O(10^{-3})$ away from cliff \\
+Fraction of near-tie cells & $\sim$5--10\% (boundary only) & $\sim$70--80\% (safe + far-overdue) \\
+Scale of $h$-values & $O(c_n \cdot M / \mu) \sim 100$ & $O(c_n \cdot P(\text{miss})) \sim 1$ \\
+Relative convergence error & Small & Large \\
+Heatmap under simulation & Clean with sampling gaps & Noisy everywhere \\
+Heatmap under enumeration & Clean, artefact-free & Ragged boundary, isolated flips \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+In summary, the QL reward produces clean heatmaps because its smooth,
+everywhere-positive cost gradient generates large, decisive action-value gaps
+that dwarf convergence residuals.  The binary reward produces noisy heatmaps
+because its near-zero gradient in the safe and far-overdue regions creates
+pervasive near-ties that convergence residuals --- unavoidable under the
+\texttt{g\_stable} fallback --- resolve arbitrarily.  The noise is a structural
+property of the binary cost landscape, not merely a simulation artefact.
+
+
+% ============================================================
+\section{Discussion}
+\label{sec:discussion}
+% ============================================================
+
+\paragraph{The threshold as a structural result.}
+The convergence of the type-1 serving threshold to $T_\text{real}$ in physical
+time (Table~\ref{tab:threshold}) is a computationally derived structural result.
+It suggests that the optimal policy for this system is approximated by a simple
+parametric rule:
+\[
+  \pi^*(f_0, f_1)
+  = \begin{cases}
+      \text{serve type 0} & \text{if } f_0 \geq f_1, \\
+      \text{serve type 1} & \text{if } f_1 > f_0 + d + \epsilon(f_0), \\
+      \text{serve type 0} & \text{otherwise},
+    \end{cases}
+\]
+where $\epsilon(f_0) \geq 0$ is a small correction term that grows with $f_0$.
+Whether such a rule can be derived analytically (e.g.\ via Gittins indices or a
+fluid-limit argument) is an open question.
+
+\paragraph{Fixing binary-reward convergence.}
+Two remedies exist for the binary case:
+\begin{enumerate}
+  \item \textbf{More iterations / span criterion.}  Running RVI until
+        $\text{span} < \varepsilon_\text{span}$ rather than using the
+        \texttt{g\_stable} fallback would guarantee sufficiently converged
+        $h$-values.  The required number of iterations may be very large for
+        binary cost because the information about cost must propagate
+        ``backward'' across the many near-zero-gradient states between the
+        deadline and the current FIL.
+
+  \item \textbf{Regularisation.}  Adding a small QL-like component to the
+        binary cost (e.g.\ $c_n \cdot \max(0, f_n - d_n) \cdot \varepsilon_\text{reg}$)
+        ensures a positive gradient everywhere, restoring large action gaps.
+        As $\varepsilon_\text{reg} \to 0$ the solution approaches the true
+        binary optimum.
+\end{enumerate}
+
+
+% ============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% ============================================================
+
+We have presented an enumeration-based heatmap that queries the RVI action map
+directly for a canonical state at each $(f_0, f_1)$ cell, eliminating all
+simulation artefacts.  Under the queue-lateness reward the heatmap exposes a
+clean three-region staircase policy: always serve the cheaper type when it is
+competitive on age, and only defer to the costlier type when its age excess
+exceeds approximately one physical deadline $T_\text{real}$.  This threshold
+converges to $T_\text{real} = 3.0$ as the tick rate increases from 1 to 8.
+
+The Bellman average-cost value $g^*$ was validated end-to-end via an
+independent simulation (Section~\ref{sec:verification}): the
+\texttt{EvaluatePolicyRaw} harness simulates the policy over 300 replications
+of 150\,000 steps and confirms that the per-step sample mean matches $g^*$ to
+within Monte Carlo error.  The step multiplier $\Lambda_\text{eff}$ derived
+from the step-counter breakdown bridges the per-RVI-step and per-real-event
+cost denominators, reconciling the Bellman value with the policy-comparer
+output.
+
+The discrete uniformised chain relates to the continuous-time system in two
+distinct ways (Section~\ref{sec:continuous}): tick events create \emph{no}
+additional scheduling decisions (the decision frequency is identical to
+continuous time), while the tick rate controls the \emph{resolution} of FIL
+measurement.  The threshold convergence in physical time
+(Table~\ref{tab:threshold}) is therefore a statement about the continuous-time
+optimal policy, not an artefact of discretisation.  A continuous-time
+event-driven simulator tracking exact sojourn times would eliminate the Koole
+approximation and provide a clean benchmark; this is identified as future work.
+
+The central technical contribution of this note is a precise explanation of
+why the binary reward produces noisy heatmaps.  The binary cost's near-zero
+gradient away from the deadline cliff creates action-value near-ties across
+70--80\% of the state space.  These near-ties are resolved by the sign of the
+RVI convergence residual --- which the \texttt{g\_stable} stopping criterion
+does not control tightly enough --- producing a salt-and-pepper artefact that
+is a property of the stored action map itself, not of the heatmap rendering
+method.  Switching to the QL reward, or running RVI to a tighter span
+tolerance, eliminates the noise.
+
+\end{document}

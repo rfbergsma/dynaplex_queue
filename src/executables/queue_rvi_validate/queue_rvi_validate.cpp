@@ -19,7 +19,8 @@ static VarGroup make_2x2(
     double mu0,  double mu1,
     double due0, double due1,
     double cost0, double cost1,
-    double tick_rate = 1.0)
+    double tick_rate = 1.0,
+    int64_t reward_type = 0)
 {
     VarGroup srv0;
     srv0.Add("servers",      int64_t(1));
@@ -37,6 +38,7 @@ static VarGroup make_2x2(
     cfg.Add("k_servers",       int64_t(2));
     cfg.Add("n_jobs",          int64_t(2));
     cfg.Add("tick_rate",       tick_rate);
+    cfg.Add("reward_type",     reward_type);
     cfg.Add("arrival_rates",   VarGroup::DoubleVec{lam0, lam1});
     cfg.Add("cost_rates",      VarGroup::DoubleVec{cost0, cost1});
     cfg.Add("due_times",       VarGroup::DoubleVec{due0, due1});
@@ -278,14 +280,17 @@ static double get_gstar(const VarGroup& config, int M)
     return sol.g_star;
 }
 
-int main()
+int main(int argc, char* argv[])
 {
     auto& dp = DynaPlexProvider::Get();
+    bool heatmap_only = (argc > 1 && std::string(argv[1]) == "--heatmap");
 
     // Evaluation settings (more trajectories than analysis scripts — reduces noise)
     VarGroup test_config;
     test_config.Add("number_of_trajectories", 200);
     test_config.Add("periods_per_trajectory", 10000);
+
+    if (!heatmap_only) {
 
     int sections_passed = 0;
     const int total_sections = 6;
@@ -633,32 +638,108 @@ int main()
     if (secF_ok) sections_passed++;
 
     // ===================================================================
-    // Section G: Policy Heatmap (informational)
-    // ===================================================================
-    dp.System() << "\n--- Section G: Policy Heatmap (informational, no PASS/FAIL) ---\n";
-    dp.System() << "    For each (FIL_0, FIL_1) canonical state (1 server busy, both job types waiting),\n";
-    dp.System() << "    shows which job type the policy assigns: 0=type 0, 1=type 1, .=skip/idle.\n";
-    {
-        auto cfg    = make_2x2(0.250, 0.250, 0.35, 0.35, 5.0, 5.0, 100.0, 100.0);  // sym_med_rho
-        auto fw_mdp = dp.GetMDP(cfg);
-
-        dp.System() << "\n[RVI policy, sym_med_rho]\n";
-        auto rvi_pol = fw_mdp->GetPolicy(VarGroup{{"id", std::string("RVI_optimal")}, {"rel_tol", 0.01}});
-        DynaPlex::Models::queue_mdp::PrintPolicyHeatmap(fw_mdp, rvi_pol, /*max_fil=*/15);
-
-        dp.System() << "\n[FIFO policy, sym_med_rho]\n";
-        auto fifo_pol = fw_mdp->GetPolicy(std::string("FIFO policy"));
-        DynaPlex::Models::queue_mdp::PrintPolicyHeatmap(fw_mdp, fifo_pol, /*max_fil=*/15);
-    }
-    dp.System() << "\nSection G: informational only\n";
-
-    // ===================================================================
     // Final summary
     // ===================================================================
     dp.System() << "\n";
     dp.System() << std::string(80, '=') << "\n";
     dp.System() << "=== Overall: " << sections_passed << " / " << total_sections << " sections PASS ===\n";
     dp.System() << std::string(80, '=') << "\n";
+
+    } // end if (!heatmap_only)
+
+    // ===================================================================
+    // Section G: Policy Heatmap (informational, always runs)
+    // ===================================================================
+    dp.System() << "\n";
+    dp.System() << std::string(80, '=') << "\n";
+    dp.System() << "=== Section G: Policy Heatmap (informational) ===\n";
+    dp.System() << std::string(80, '=') << "\n";
+    dp.System() << "    Row = FIL_0 (age of oldest waiting type-0 job, in ticks)\n";
+    dp.System() << "    Col = FIL_1 (age of oldest waiting type-1 job, in ticks)\n";
+    dp.System() << "    Cell: 0=serve type 0, 1=serve type 1, .=skip top candidate\n\n";
+
+    // -------------------------------------------------------------------
+    // G.1: sym_med_rho (noisy — educational contrast)
+    // -------------------------------------------------------------------
+    dp.System() << "--- G.1: sym_med_rho [binary reward, rho~0.71] — noisy (educational) ---\n";
+    dp.System() << "    High load + binary reward + symmetric costs -> near-tied h-values -> noisy map.\n";
+    {
+        auto cfg_noisy = make_2x2(0.250, 0.250, 0.35, 0.35, 5.0, 5.0, 100.0, 100.0);
+        auto mdp_noisy = dp.GetMDP(cfg_noisy);
+
+        dp.System() << "\n[RVI policy, sym_med_rho]\n";
+        auto rvi_noisy = mdp_noisy->GetPolicy(VarGroup{{"id", std::string("RVI_optimal")}, {"rel_tol", 0.01}});
+        DynaPlex::Models::queue_mdp::PrintPolicyHeatmap(mdp_noisy, rvi_noisy, /*max_fil=*/12);
+
+        dp.System() << "\n[FIFO policy, sym_med_rho]\n";
+        auto fifo_noisy = mdp_noisy->GetPolicy(std::string("FIFO policy"));
+        DynaPlex::Models::queue_mdp::PrintPolicyHeatmap(mdp_noisy, fifo_noisy, /*max_fil=*/12);
+    }
+
+    // -------------------------------------------------------------------
+    // G.2: clean QL demo  (rho=0.25, cost=[3,1], reward_type=1)
+    // -------------------------------------------------------------------
+    dp.System() << "\n--- G.2: clean_ql [QL reward, rho=0.25, cost 3:1] ---\n";
+    dp.System() << "    Low load + queue-lateness reward + asymmetric costs (3:1)\n";
+    dp.System() << "    -> large h-value gap -> decisive, clean heatmap.\n";
+    dp.System() << "    RVI should strongly prefer type 0 (cost=3) over type 1 (cost=1).\n";
+    {
+        // lam=[0.10,0.10], mu=[0.40,0.40], due=[3,3], cost=[3,1], tick_rate=1, reward_type=1
+        auto cfg_ql = make_2x2(0.10, 0.10, 0.40, 0.40, 3.0, 3.0, 3.0, 1.0, 1.0, /*reward_type=*/1);
+        auto mdp_ql = dp.GetMDP(cfg_ql);
+
+        auto fifo_ql = mdp_ql->GetPolicy(std::string("FIFO policy"));
+        auto rvi_ql  = mdp_ql->GetPolicy(VarGroup{{"id", std::string("RVI_optimal")}, {"rel_tol", 0.01}});
+
+        auto cmp_ql = dp.GetPolicyComparer(mdp_ql, test_config);
+        auto res_ql = cmp_ql.Compare({fifo_ql, rvi_ql});
+        double fifo_mean_ql = 0.0, rvi_mean_ql = 0.0;
+        res_ql[0].Get("mean", fifo_mean_ql);
+        res_ql[1].Get("mean", rvi_mean_ql);
+        double ratio_ql = (fifo_mean_ql > 1e-12) ? rvi_mean_ql / fifo_mean_ql : 0.0;
+        dp.System() << std::fixed << std::setprecision(4)
+                    << "  FIFO mean = " << fifo_mean_ql
+                    << "  RVI mean = "  << rvi_mean_ql
+                    << "  RVI/FIFO = "  << ratio_ql << "\n";
+
+        dp.System() << "\n[RVI policy, clean_ql]\n";
+        DynaPlex::Models::queue_mdp::PrintPolicyHeatmap(mdp_ql, rvi_ql, /*max_fil=*/12);
+
+        dp.System() << "\n[FIFO policy, clean_ql]\n";
+        DynaPlex::Models::queue_mdp::PrintPolicyHeatmap(mdp_ql, fifo_ql, /*max_fil=*/12);
+    }
+
+    // -------------------------------------------------------------------
+    // G.3: same topology but binary reward  (reward_type=0)
+    // -------------------------------------------------------------------
+    dp.System() << "\n--- G.3: clean_binary [binary reward, rho=0.25, cost 3:1] ---\n";
+    dp.System() << "    Same topology as G.2 but binary reward — compare heatmap structure.\n";
+    {
+        auto cfg_bin = make_2x2(0.10, 0.10, 0.40, 0.40, 3.0, 3.0, 3.0, 1.0, 1.0, /*reward_type=*/0);
+        auto mdp_bin = dp.GetMDP(cfg_bin);
+
+        auto fifo_bin = mdp_bin->GetPolicy(std::string("FIFO policy"));
+        auto rvi_bin  = mdp_bin->GetPolicy(VarGroup{{"id", std::string("RVI_optimal")}, {"rel_tol", 0.01}});
+
+        auto cmp_bin = dp.GetPolicyComparer(mdp_bin, test_config);
+        auto res_bin = cmp_bin.Compare({fifo_bin, rvi_bin});
+        double fifo_mean_bin = 0.0, rvi_mean_bin = 0.0;
+        res_bin[0].Get("mean", fifo_mean_bin);
+        res_bin[1].Get("mean", rvi_mean_bin);
+        double ratio_bin = (fifo_mean_bin > 1e-12) ? rvi_mean_bin / fifo_mean_bin : 0.0;
+        dp.System() << std::fixed << std::setprecision(4)
+                    << "  FIFO mean = " << fifo_mean_bin
+                    << "  RVI mean = "  << rvi_mean_bin
+                    << "  RVI/FIFO = "  << ratio_bin << "\n";
+
+        dp.System() << "\n[RVI policy, clean_binary]\n";
+        DynaPlex::Models::queue_mdp::PrintPolicyHeatmap(mdp_bin, rvi_bin, /*max_fil=*/12);
+
+        dp.System() << "\n[FIFO policy, clean_binary]\n";
+        DynaPlex::Models::queue_mdp::PrintPolicyHeatmap(mdp_bin, fifo_bin, /*max_fil=*/12);
+    }
+
+    dp.System() << "\nSection G: informational only\n";
 
     return 0;
 }
