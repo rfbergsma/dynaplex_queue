@@ -3,16 +3,12 @@
 // M/M/1 comparison: Random vs FIFO vs RVI (optimal) vs Neural Network (DCL).
 // Runs for multiple tick_rates to verify it is a pure granularity parameter.
 //
-// Evaluates using EvaluatePolicyRawParallel -> mean_cost_per_event
-//   = cost / real_event_steps  (FIL-refresh steps NOT in denominator)
+// Evaluates with EvaluatePolicyRawParallel, then RESCALES:
+//   physical_cost_rate = mean_cost_per_event * Lambda    (cost per unit real-time)
+// This rescaled metric is tick_rate-invariant.  Theory for M/M/1 with
+// binary cost 1{wait>0}, D=0:  physical_cost_rate = rho^2.
 //
-// Cost is normalised in the MDP constructor: cost per tick = cost_rate / tick_rate,
-// so the physical cost rate is tick_rate-independent.  The mean_cost_per_event
-// metric still depends on tick_rate through its denominator (tick events are
-// included), giving theory = rho^2 / (tick_rate * Lambda).
-// Policy quality (NN/RVI, FIFO%err) must be tick_rate-invariant.
-//
-// NN trained via DCL from a random starting policy (N=10K, M=100, H=50).
+// NN trained via DCL from a FIFO starting policy (better signal than random).
 
 #include <iostream>
 #include <iomanip>
@@ -93,15 +89,15 @@ int main()
     const double mu = 1.0;
 
     dp.System() << "\n=== mm1_baseline: Random / FIFO / RVI / NN ===\n";
-    dp.System() << "  reward_type=0 (binary cost), D=0, mu=1\n";
-    dp.System() << "  cost_rates and due_times are in real-time units (normalised by tick_rate)\n";
-    dp.System() << "  Theory: rho^2 / Lambda,  Lambda = tick_rate + lambda + mu\n";
-    dp.System() << "  NN trained via DCL from random policy (N=10K, M=100, H=50)\n";
+    dp.System() << "  reward_type=0 (binary cost 1{wait>0}), D=0, mu=1\n";
+    dp.System() << "  Displayed metric: physical cost rate = mean_cost_per_event * Lambda\n";
+    dp.System() << "  Theory (M/M/1): rho^2  (tick_rate-invariant)\n";
+    dp.System() << "  NN trained via DCL from FIFO policy (N=10K, M=100, H=50)\n";
 
     for (double tick_rate : {1.0, 2.0, 10.0})
     {
         dp.System() << "\n--- tick_rate = " << std::fixed << std::setprecision(0) << tick_rate
-                    << "  (Lambda = tick_rate + rho*mu + mu) ---\n\n";
+                    << "  (Lambda = tick_rate + lambda + mu) ---\n\n";
         print_header(dp);
 
         for (double rho : {0.2, 0.4, 0.6, 0.8})
@@ -122,7 +118,7 @@ int main()
             rvi_cfg.Add("silent",  int64_t(1));
             auto rvi = mdp->GetPolicy(rvi_cfg);
 
-            // DCL: train NN from random starting policy
+            // DCL: train NN from FIFO starting policy (better signal than random)
             VarGroup nn_arch;
             nn_arch.Add("type",          std::string("mlp"));
             nn_arch.Add("hidden_layers", VarGroup::Int64Vec{64, 32, 2});
@@ -135,7 +131,7 @@ int main()
             dcl_cfg.Add("silent",      true);
             dcl_cfg.Add("nn_architecture", nn_arch);
 
-            auto dcl = dp.GetDCL(mdp, random, dcl_cfg);
+            auto dcl = dp.GetDCL(mdp, fifo, dcl_cfg);
             dcl.TrainPolicy();
             auto nn = dcl.GetPolicies().back();
 
@@ -153,24 +149,28 @@ int main()
             auto r_rvi    = eval(rvi);
             auto r_nn     = eval(nn);
 
-            // Theory: rho^2 / Lambda
-            // mean_cost_per_event = (cost/tick) * P(FIL>0) / Lambda.
-            // With normalised cost (1/tick_rate per tick) and uniformisation Lambda=tick_rate+lambda+mu,
-            // the product simplifies to rho^2/Lambda (verified empirically; tick_rate-independent formula).
-            double theory   = (rho * rho) / raw_mdp.uniformization_rate;
+            // Rescale: physical cost rate = mean_cost_per_event * Lambda (tick_rate-invariant).
+            // Theory for M/M/1 with binary cost 1{wait>0}, D=0: physical_cost_rate = rho^2.
+            const double Lambda = raw_mdp.uniformization_rate;
+            double rate_random = r_random.mean_cost_per_event * Lambda;
+            double rate_fifo   = r_fifo.mean_cost_per_event   * Lambda;
+            double rate_rvi    = r_rvi.mean_cost_per_event    * Lambda;
+            double rate_nn     = r_nn.mean_cost_per_event     * Lambda;
+
+            double theory   = rho * rho;
             double fifo_err = (theory > 1e-15)
-                            ? (r_fifo.mean_cost_per_event - theory) / theory * 100.0
+                            ? (rate_fifo - theory) / theory * 100.0
                             : 0.0;
-            double nn_ratio = (r_rvi.mean_cost_per_event > 1e-15)
-                            ? r_nn.mean_cost_per_event / r_rvi.mean_cost_per_event
+            double nn_ratio = (rate_rvi > 1e-15)
+                            ? rate_nn / rate_rvi
                             : 1.0;
 
             dp.System() << std::fixed
                         << std::setw(5)  << std::setprecision(1) << rho
-                        << std::setw(11) << std::setprecision(6) << r_random.mean_cost_per_event
-                        << std::setw(11) << std::setprecision(6) << r_fifo.mean_cost_per_event
-                        << std::setw(11) << std::setprecision(6) << r_rvi.mean_cost_per_event
-                        << std::setw(11) << std::setprecision(6) << r_nn.mean_cost_per_event
+                        << std::setw(11) << std::setprecision(6) << rate_random
+                        << std::setw(11) << std::setprecision(6) << rate_fifo
+                        << std::setw(11) << std::setprecision(6) << rate_rvi
+                        << std::setw(11) << std::setprecision(6) << rate_nn
                         << std::setw(9)  << std::setprecision(4) << nn_ratio
                         << std::setw(11) << std::setprecision(6) << theory
                         << std::setw(8)  << std::setprecision(2) << fifo_err << "%"
@@ -185,7 +185,8 @@ int main()
     // ================================================================
     dp.System() << "\n\n=== Exp 2: Strategic Idleness (2 types, 2 servers, rho=0.6, D=7) ===\n";
     dp.System() << "  c1=1 fixed, mu=1, rho=0.6 (lambda1=lambda2=0.6)\n";
-    dp.System() << "  NN: DCL from random policy (N=20K, M=200, H=50, num_gens=3)\n";
+    dp.System() << "  Displayed metric: physical cost rate = mean_cost_per_event * Lambda\n";
+    dp.System() << "  NN: DCL from FIFO policy (N=20K, M=200, H=50, num_gens=3)\n";
     dp.System() << "  RVI: optimal solver (rel_tol=0.01, silent)\n";
 
     // State saved for heatmaps (tick_rate=5, c2=20)
@@ -214,7 +215,6 @@ int main()
             qm::MDP raw_mdp2(cfg2);
 
             auto fifo2   = mdp2->GetPolicy("FIFO policy");
-            auto random2 = mdp2->GetPolicy("random");
 
             // RVI: optimal solver
             VarGroup rvi_cfg2;
@@ -223,7 +223,7 @@ int main()
             rvi_cfg2.Add("silent",  int64_t(1));
             auto rvi2 = mdp2->GetPolicy(rvi_cfg2);
 
-            // DCL: train NN from random starting policy
+            // DCL: train NN from FIFO starting policy (better signal than random)
             VarGroup nn_arch2;
             nn_arch2.Add("type",          std::string("mlp"));
             nn_arch2.Add("hidden_layers", VarGroup::Int64Vec{64, 32, 2});
@@ -236,7 +236,7 @@ int main()
             dcl_cfg2.Add("silent",          true);
             dcl_cfg2.Add("nn_architecture", nn_arch2);
 
-            auto dcl2 = dp.GetDCL(mdp2, random2, dcl_cfg2);
+            auto dcl2 = dp.GetDCL(mdp2, fifo2, dcl_cfg2);
             dcl2.TrainPolicy();
             auto nn2 = dcl2.GetPolicies().back();
 
@@ -249,15 +249,19 @@ int main()
             auto r_rvi2  = eval2(rvi2);
             auto r_nn2   = eval2(nn2);
 
-            double ratio2 = (r_rvi2.mean_cost_per_event > 1e-15)
-                          ? r_nn2.mean_cost_per_event / r_rvi2.mean_cost_per_event
-                          : 1.0;
+            // Rescale to physical cost rate (tick_rate-invariant)
+            const double Lambda2 = raw_mdp2.uniformization_rate;
+            double rate_fifo = r_fifo2.mean_cost_per_event * Lambda2;
+            double rate_rvi  = r_rvi2.mean_cost_per_event  * Lambda2;
+            double rate_nn   = r_nn2.mean_cost_per_event   * Lambda2;
+
+            double ratio2 = (rate_rvi > 1e-15) ? rate_nn / rate_rvi : 1.0;
 
             dp.System() << std::fixed << std::right
                         << std::setw(5)  << std::setprecision(0) << c2  << " "
-                        << std::setw(11) << std::setprecision(6) << r_fifo2.mean_cost_per_event
-                        << std::setw(11) << std::setprecision(6) << r_rvi2.mean_cost_per_event
-                        << std::setw(11) << std::setprecision(6) << r_nn2.mean_cost_per_event
+                        << std::setw(11) << std::setprecision(6) << rate_fifo
+                        << std::setw(11) << std::setprecision(6) << rate_rvi
+                        << std::setw(11) << std::setprecision(6) << rate_nn
                         << std::setw(9)  << std::setprecision(4) << ratio2
                         << "\n";
 
