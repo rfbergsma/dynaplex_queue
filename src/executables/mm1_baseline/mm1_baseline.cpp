@@ -67,7 +67,7 @@ int main()
     dp.System() << "\n=== mm1_baseline: Random / FIFO / RVI / NN ===\n";
     dp.System() << "  reward_type=0 (binary cost), D=0, mu=1\n";
     dp.System() << "  cost_rates and due_times are in real-time units (normalised by tick_rate)\n";
-    dp.System() << "  Theory: rho^2 / (tick_rate * Lambda),  Lambda = tick_rate + lambda + mu\n";
+    dp.System() << "  Theory: rho^2 / Lambda,  Lambda = tick_rate + lambda + mu\n";
     dp.System() << "  NN trained via DCL from random policy (N=10K, M=100, H=50)\n";
 
     for (double tick_rate : {1.0, 2.0, 10.0})
@@ -125,10 +125,11 @@ int main()
             auto r_rvi    = eval(rvi);
             auto r_nn     = eval(nn);
 
-            // Theory: rho^2 / (tick_rate * Lambda)
-            // With cost normalisation (cost_rate / tick_rate per tick), the formula
-            // ρ²/Λ (for tick_rate=1) scales to ρ²/(tick_rate * Λ) for general tick_rate.
-            double theory   = (rho * rho) / (tick_rate * raw_mdp.uniformization_rate);
+            // Theory: rho^2 / Lambda
+            // mean_cost_per_event = (cost/tick) * P(FIL>0) / Lambda.
+            // With normalised cost (1/tick_rate per tick) and uniformisation Lambda=tick_rate+lambda+mu,
+            // the product simplifies to rho^2/Lambda (verified empirically; tick_rate-independent formula).
+            double theory   = (rho * rho) / raw_mdp.uniformization_rate;
             double fifo_err = (theory > 1e-15)
                             ? (r_fifo.mean_cost_per_event - theory) / theory * 100.0
                             : 0.0;
