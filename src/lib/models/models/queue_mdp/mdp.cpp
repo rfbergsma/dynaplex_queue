@@ -613,6 +613,15 @@ namespace DynaPlex::Models {
 			config.Get("tick_rate", tick_rate);
 			config.Get("cost_rates", cost_rates);
 			config.Get("due_times", due_times);
+
+			// Normalise so that callers express cost_rates and due_times in real-time units,
+			// making tick_rate a pure granularity parameter with no effect on cost levels:
+			//   cost_rates[n]  : cost per unit real time  →  stored as cost per tick (/ tick_rate)
+			//   due_times[n]   : deadline in real seconds  →  stored in tick units   (* tick_rate)
+			// At tick_rate = 1 this is a no-op, so existing configs are unaffected.
+			for (auto& c : cost_rates) c /= tick_rate;
+			for (auto& d : due_times)  d *= tick_rate;
+
 			if (config.HasKey("reward_type"))
 				config.Get("reward_type", reward_type);
 			else
@@ -662,6 +671,8 @@ namespace DynaPlex::Models {
 				                                  server_static_info[i].mu_kj.end());
 				uniformization_rate += max_mu * server_static_info[i].servers;
 			}
+
+		int_hash = config.Int64Hash();
 
 		#if QUEUE_MDP_DEBUG
 			std::cout << "[QMDP]   INITIALIZATION \n";
@@ -1121,6 +1132,48 @@ namespace DynaPlex::Models {
 			result.total_real_event_steps     = grand_real_event_steps;
 			result.total_fil_refresh_steps    = grand_fil_refresh_steps;
 			return result;
+		}
+
+		// -----------------------------------------------------------------------
+		// EvaluatePolicyRaw (DynaPlex::Policy overload)
+		// Bridges a DynaPlex::Policy into the std::function interface above.
+		//
+		// Key implementation notes:
+		//  1. The Trajectory is heap-allocated to avoid stack-size issues when
+		//     called deep in a call chain (e.g. after DCL training).
+		//  2. RNGProvider must be seeded before any SetAction call; without seeding,
+		//     policies that use GetAction(state, RNG&) throw "empty provider" errors.
+		//  3. The concrete MDP::State is overwritten in-place on every call so we
+		//     avoid a heap allocation per step while keeping the state adapter valid.
+		// -----------------------------------------------------------------------
+		RawEvalResult EvaluatePolicyRaw(
+			const MDP&              mdp,
+			const DynaPlex::Policy& policy,
+			int64_t n_trajectories,
+			int64_t steps_per_traj,
+			int64_t warmup_steps,
+			int64_t rng_seed)
+		{
+			// Heap-allocated; seeded so GetPolicyRNG() doesn't throw for random-type policies.
+			auto action_traj = std::make_unique<DynaPlex::Trajectory>();
+			action_traj->RNGProvider.SeedEventStreams(false, rng_seed);
+			action_traj->Category = DynaPlex::StateCategory::AwaitAction();
+			action_traj->Reset(
+				std::make_unique<DynaPlex::Erasure::StateAdapter<MDP::State>>(
+					mdp.int_hash, mdp.GetInitialState()));
+
+			auto get_action = [&policy, &action_traj](const MDP::State& s) -> int64_t {
+				// Overwrite the stored state in-place — no per-call allocation.
+				auto* adapter = static_cast<DynaPlex::Erasure::StateAdapter<MDP::State>*>(
+					action_traj->GetState().get());
+				adapter->state = s;
+				action_traj->Category = DynaPlex::StateCategory::AwaitAction();
+				policy->SetAction(std::span<DynaPlex::Trajectory>(action_traj.get(), 1));
+				return action_traj->NextAction;
+			};
+
+			return EvaluatePolicyRaw(mdp, std::function<int64_t(const MDP::State&)>(get_action),
+				n_trajectories, steps_per_traj, warmup_steps, rng_seed);
 		}
 
 		// -----------------------------------------------------------------------

@@ -425,6 +425,7 @@ namespace DynaPlex::Models {
 			int64_t reward_type;      // 0=binary (FIL>D), 1=queue-lateness (default)
 			int64_t max_queue_depth;  // tracked positions per job type: 1=FIL only (default)
 			int64_t feature_queue_depth; // NN feature slots per job type (>= max_queue_depth; pads with 0)
+			int64_t int_hash = 0;        // config hash — used by EvaluatePolicyRaw(Policy) to build type-erased states
 
 			struct multi_queue {
 				// waiting[n] = deque of waiting times for job type n, front = FIL (oldest).
@@ -733,8 +734,8 @@ namespace DynaPlex::Models {
 				int M;          // truncation level used
 				std::unordered_map<uint64_t, int64_t> action_map;  // encoded state key -> optimal action
 			};
-			RVISolution runRVI(int M, int max_iter = 10000) const;  // solve at fixed M, verbose output
-			RVISolution runRVI(double rel_tol = 1e-4) const;       // auto-select M via heuristic + convergence check
+			RVISolution runRVI(int M, int max_iter = 10000, bool silent = false) const;  // solve at fixed M
+			RVISolution runRVI(double rel_tol = 1e-4, bool silent = false) const;       // auto-select M via heuristic + convergence check
 			int64_t EvaluateRVIPolicy(const RVISolution& sol, const State& state) const;
 
 			// ----------------------------------------------------------------
@@ -844,6 +845,16 @@ namespace DynaPlex::Models {
 		RawEvalResult EvaluatePolicyRaw(
 			const MDP&                                  mdp,
 			std::function<int64_t(const MDP::State&)>   get_action,
+			int64_t n_trajectories = 200,
+			int64_t steps_per_traj = 100000,
+			int64_t warmup_steps   = 10000,
+			int64_t rng_seed       = 42);
+
+		/// Convenience overload: wraps a DynaPlex::Policy into the std::function form above.
+		/// Requires mdp.int_hash to be set (done automatically in MDP::MDP(VarGroup)).
+		RawEvalResult EvaluatePolicyRaw(
+			const MDP&                  mdp,
+			const DynaPlex::Policy&     policy,
 			int64_t n_trajectories = 200,
 			int64_t steps_per_traj = 100000,
 			int64_t warmup_steps   = 10000,

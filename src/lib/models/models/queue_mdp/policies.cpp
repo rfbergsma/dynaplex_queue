@@ -46,6 +46,14 @@ namespace DynaPlex::Models {
 		RVI_optimal::RVI_optimal(std::shared_ptr<const MDP> mdp, const VarGroup& config)
 			: mdp{ mdp }, varGroup{ config }
 		{
+			// Extract silent flag from config
+			bool silent = false;
+			if (config.HasKey("silent")) {
+				int64_t s;
+				config.Get("silent", s);
+				silent = (s != 0);
+			}
+
 			// Determine which MDP to solve RVI on
 			int64_t rvi_depth = mdp->max_queue_depth;
 			if (config.HasKey("feature_queue_depth"))
@@ -55,14 +63,24 @@ namespace DynaPlex::Models {
 			std::unique_ptr<MDP> temp_mdp;
 			const MDP* solve_on = mdp.get();
 			if (rvi_depth < mdp->max_queue_depth) {
+				// The MDP constructor normalises cost_rates (/tick_rate) and due_times (*tick_rate)
+				// on load. mdp->cost_rates / mdp->due_times are already normalised, so we must
+				// invert before passing them through the constructor again to avoid double-scaling.
+				std::vector<double> orig_cost_rates(mdp->cost_rates.size());
+				for (size_t i = 0; i < orig_cost_rates.size(); ++i)
+					orig_cost_rates[i] = mdp->cost_rates[i] * mdp->tick_rate;
+				std::vector<double> orig_due_times(mdp->due_times.size());
+				for (size_t i = 0; i < orig_due_times.size(); ++i)
+					orig_due_times[i] = mdp->due_times[i] / mdp->tick_rate;
+
 				VarGroup rc;
 				rc.Add("discount_factor", mdp->discount_factor);
 				rc.Add("k_servers",       mdp->k_servers);
 				rc.Add("n_jobs",          mdp->n_jobs);
 				rc.Add("arrival_rates",   mdp->arrival_rates);
 				rc.Add("tick_rate",       mdp->tick_rate);
-				rc.Add("cost_rates",      mdp->cost_rates);
-				rc.Add("due_times",       mdp->due_times);
+				rc.Add("cost_rates",      orig_cost_rates);
+				rc.Add("due_times",       orig_due_times);
 				rc.Add("reward_type",     mdp->reward_type);
 				rc.Add("max_queue_depth", rvi_depth);
 				for (int64_t i = 0; i < mdp->k_servers; ++i) {
@@ -76,24 +94,26 @@ namespace DynaPlex::Models {
 				solve_on  = temp_mdp.get();
 			}
 
-			std::cout << "[RVI_optimal] rvi_depth=" << rvi_depth
-			          << "  mdp->max_queue_depth=" << mdp->max_queue_depth
-			          << "  solving on depth=" << solve_on->max_queue_depth << "\n";
+			if (!silent) {
+				std::cout << "[RVI_optimal] rvi_depth=" << rvi_depth
+				          << "  mdp->max_queue_depth=" << mdp->max_queue_depth
+				          << "  solving on depth=" << solve_on->max_queue_depth << "\n";
+			}
 
 			if (config.HasKey("M")) {
 				int64_t M;
 				config.Get("M", M);
-				sol = solve_on->runRVI((int)M);
+				sol = solve_on->runRVI((int)M, 10000, silent);
 			}
 			else {
 				double rel_tol = 1e-4;
 				if (config.HasKey("rel_tol"))
 					config.Get("rel_tol", rel_tol);
-				sol = solve_on->runRVI(rel_tol);
+				sol = solve_on->runRVI(rel_tol, silent);
 			}
 
 			// Debug: count action=0 vs action=1 in the map
-			{
+			if (!silent) {
 				int n0 = 0, n1 = 0;
 				for (auto& kv : sol.action_map) { if (kv.second == 0) ++n0; else ++n1; }
 				std::cout << "[RVI_optimal] action_map size=" << sol.action_map.size()

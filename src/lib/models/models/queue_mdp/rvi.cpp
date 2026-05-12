@@ -62,8 +62,8 @@ struct StateEncoder {
 } // anonymous namespace
 
 // ---- runRVI(int M, int max_iter): BFS + RVI at a fixed truncation level ----
-MDP::RVISolution MDP::runRVI(int M, int max_iter) const {
-	if (max_queue_depth > 1)
+MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
+	if (max_queue_depth > 1 && !silent)
 		std::cout << "[RVI] WARNING: max_queue_depth=" << max_queue_depth
 		          << " > 1.  RVI operates on FIL projection only.\n"
 		          << "              SIL/TIL state is ignored.  Use RL for multi-position problems.\n";
@@ -120,11 +120,13 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter) const {
 		for (int a = 0; a < 2; ++a)
 			total_transitions += transitions[i][a].size();
 	}
-	std::cout << "\n--- Transition table (M=" << M << ") ---\n"
-		      << "Total states     : " << states.size() << "\n"
-		      << "  AwaitEvent     : " << n_await_event << "\n"
-		      << "  AwaitAction    : " << n_await_action << "\n"
-		      << "Total transitions: " << total_transitions << "\n";
+	if (!silent) {
+		std::cout << "\n--- Transition table (M=" << M << ") ---\n"
+			      << "Total states     : " << states.size() << "\n"
+			      << "  AwaitEvent     : " << n_await_event << "\n"
+			      << "  AwaitAction    : " << n_await_action << "\n"
+			      << "Total transitions: " << total_transitions << "\n";
+	}
 
 	// ---- RVI loop ----
 	const size_t ref = 0;
@@ -178,7 +180,7 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter) const {
 
 		std::swap(h, h_new);
 
-		if (iter % 500 == 0)
+		if (!silent && iter % 500 == 0)
 			std::cout << "iter " << std::setw(6) << iter
 				      << "  g*=" << std::setprecision(10) << g_star
 				      << "  span=" << std::setprecision(6) << span << "\n";
@@ -195,9 +197,10 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter) const {
 		g_prev = g_star;
 
 		if (span < eps || g_stable_count >= 5) {
-			std::cout << "\nConverged at iter " << iter
-				      << (span < eps ? "  [span]" : "  [g_stable]")
-				      << "  g* = " << std::setprecision(12) << g_star << "\n";
+			if (!silent)
+				std::cout << "\nConverged at iter " << iter
+					      << (span < eps ? "  [span]" : "  [g_stable]")
+					      << "  g* = " << std::setprecision(12) << g_star << "\n";
 			break;
 		}
 	}
@@ -225,7 +228,7 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter) const {
 }
 
 // ---- runRVI(double rel_tol): auto-select M via heuristic + convergence check ----
-MDP::RVISolution MDP::runRVI(double rel_tol) const {
+MDP::RVISolution MDP::runRVI(double rel_tol, bool silent) const {
 	// Traffic-intensity heuristic for initial M
 	double max_due_time = *std::max_element(due_times.begin(), due_times.end());
 	double total_lambda = 0.0;
@@ -239,28 +242,36 @@ MDP::RVISolution MDP::runRVI(double rel_tol) const {
 	double mean_excess = tick_rate / (total_mu * (1.0 - rho));
 	int M = std::max((int)std::ceil(max_due_time + 3.0 * mean_excess) + 5, 10);
 
-	std::cout << "Initial M guess: " << M << "\n";
+	if (!silent)
+		std::cout << "Initial M guess: " << M << "\n";
 
 	double g_prev_M = -1.0;
 	RVISolution sol;
 
 	while (true) {
-		sol = runRVI(M);
-		std::cout << "  --> M=" << M
-			      << "  g* = " << std::setprecision(12) << sol.g_star << "\n";
+		sol = runRVI(M, 10000, silent);
+		if (!silent)
+			std::cout << "  --> M=" << M
+				      << "  g* = " << std::setprecision(12) << sol.g_star << "\n";
 
 		if (g_prev_M >= 0.0) {
 			double rel = std::abs(sol.g_star - g_prev_M) / std::max(g_prev_M, 1e-12);
-			std::cout << "  rel change from prev M: " << std::setprecision(4) << rel << "\n";
+			if (!silent)
+				std::cout << "  rel change from prev M: " << std::setprecision(4) << rel << "\n";
 			if (rel < rel_tol) {
-				std::cout << "\nM converged. Final g* = " << std::setprecision(12)
-					      << sol.g_star << "  (M=" << M << ")\n";
+				if (!silent)
+					std::cout << "\nM converged. Final g* = " << std::setprecision(12)
+						      << sol.g_star << "  (M=" << M << ")\n";
 				break;
 			}
 		}
 		g_prev_M = sol.g_star;
 		M += 2;
-		if (M > 500) { std::cout << "M limit reached.\n"; break; }
+		if (M > 500) {
+			if (!silent)
+				std::cout << "M limit reached.\n";
+			break;
+		}
 	}
 
 	return sol;
