@@ -186,7 +186,7 @@ int main()
     dp.System() << "\n\n=== Exp 2: Strategic Idleness (2 types, 2 servers, rho=0.6, D=0) ===\n";
     dp.System() << "  c1=1 fixed, mu=1, D=0, rho=0.6 (lambda1=lambda2=0.6)\n";
     dp.System() << "  Displayed metric: physical cost rate = mean_cost_per_event * Lambda\n";
-    dp.System() << "  NN: DCL from FIFO policy (N=20K, M=200, H=200, num_gens=5)\n";
+    dp.System() << "  NN: DCL from FIFO policy (N=20K, M=1600, H=100, num_gens=3)\n";
     dp.System() << "  RVI: optimal solver (rel_tol=0.01, silent)\n";
 
     // State saved for heatmaps (tick_rate=5, c2=20)
@@ -230,9 +230,9 @@ int main()
 
             VarGroup dcl_cfg2;
             dcl_cfg2.Add("N",               int64_t(20000));
-            dcl_cfg2.Add("M",               int64_t(200));
-            dcl_cfg2.Add("H",               int64_t(200));   // long enough to see cost events
-            dcl_cfg2.Add("num_gens",        int64_t(5));     // more generations to refine
+            dcl_cfg2.Add("M",               int64_t(1600));  // high M key for asymmetric problems
+            dcl_cfg2.Add("H",               int64_t(100));   // shorter H → smaller Q values → faster training
+            dcl_cfg2.Add("num_gens",        int64_t(3));
             dcl_cfg2.Add("silent",          true);
             dcl_cfg2.Add("nn_architecture", nn_arch2);
 
