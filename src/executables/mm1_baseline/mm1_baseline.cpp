@@ -180,29 +180,32 @@ int main()
 
     // ================================================================
     // Experiment 2: Strategic Idleness
-    // 2 job types, 1 pool of 2 fully-flexible servers, rho=0.6
-    // c1=1 fixed; vary c2 in {1,2,5,10,20}; tick_rates {1,5,10}
+    // 2 job types, 1 pool of 2 fully-flexible servers, rho=0.6, D=7
+    // c1=1 fixed; vary c2 in {1,2,5,10,20}; tick_rate=5 (test phase)
     // ================================================================
-    dp.System() << "\n\n=== Exp 2: Strategic Idleness (2 types, 2 servers, rho=0.6) ===\n";
-    dp.System() << "  c1=1 fixed, D=0, mu=1, rho=0.6 (lambda1=lambda2=0.6)\n";
-    dp.System() << "  NN: DCL from random policy (N=10K, M=100, H=50, num_gens=3)\n";
+    dp.System() << "\n\n=== Exp 2: Strategic Idleness (2 types, 2 servers, rho=0.6, D=7) ===\n";
+    dp.System() << "  c1=1 fixed, mu=1, rho=0.6 (lambda1=lambda2=0.6)\n";
+    dp.System() << "  NN: DCL from random policy (N=20K, M=200, H=50, num_gens=3)\n";
+    dp.System() << "  RVI: optimal solver (rel_tol=0.01, silent)\n";
 
     // State saved for heatmaps (tick_rate=5, c2=20)
     bool             have_saved2  = false;
     VarGroup         saved_cfg2;
     DynaPlex::Policy saved_fifo_si;
+    DynaPlex::Policy saved_rvi_si;
     DynaPlex::Policy saved_nn_si;
 
-    for (double tr2 : {1.0, 5.0, 10.0})
+    double tr2 = 5.0;  // Test with tick_rate=5 only
     {
         dp.System() << "\n--- tick_rate = " << std::fixed << std::setprecision(0)
                     << tr2 << " ---\n\n";
         dp.System() << std::left
                     << std::setw(6)  << "c2"
                     << std::setw(11) << "FIFO"
+                    << std::setw(11) << "RVI"
                     << std::setw(11) << "NN"
-                    << std::setw(9)  << "NN/FIFO"
-                    << "\n" << std::string(37, '-') << "\n";
+                    << std::setw(9)  << "NN/RVI"
+                    << "\n" << std::string(48, '-') << "\n";
 
         for (double c2 : {1.0, 2.0, 5.0, 10.0, 20.0})
         {
@@ -213,13 +216,21 @@ int main()
             auto fifo2   = mdp2->GetPolicy("FIFO policy");
             auto random2 = mdp2->GetPolicy("random");
 
+            // RVI: optimal solver
+            VarGroup rvi_cfg2;
+            rvi_cfg2.Add("id",      std::string("RVI_optimal"));
+            rvi_cfg2.Add("rel_tol", 0.01);
+            rvi_cfg2.Add("silent",  int64_t(1));
+            auto rvi2 = mdp2->GetPolicy(rvi_cfg2);
+
+            // DCL: train NN from random starting policy
             VarGroup nn_arch2;
             nn_arch2.Add("type",          std::string("mlp"));
             nn_arch2.Add("hidden_layers", VarGroup::Int64Vec{64, 32, 2});
 
             VarGroup dcl_cfg2;
-            dcl_cfg2.Add("N",               int64_t(10000));
-            dcl_cfg2.Add("M",               int64_t(100));
+            dcl_cfg2.Add("N",               int64_t(20000));  // doubled from 10K
+            dcl_cfg2.Add("M",               int64_t(200));    // doubled from 100
             dcl_cfg2.Add("H",               int64_t(50));
             dcl_cfg2.Add("num_gens",        int64_t(3));
             dcl_cfg2.Add("silent",          true);
@@ -235,24 +246,27 @@ int main()
             };
 
             auto r_fifo2 = eval2(fifo2);
+            auto r_rvi2  = eval2(rvi2);
             auto r_nn2   = eval2(nn2);
 
-            double ratio2 = (r_fifo2.mean_cost_per_event > 1e-15)
-                          ? r_nn2.mean_cost_per_event / r_fifo2.mean_cost_per_event
+            double ratio2 = (r_rvi2.mean_cost_per_event > 1e-15)
+                          ? r_nn2.mean_cost_per_event / r_rvi2.mean_cost_per_event
                           : 1.0;
 
             dp.System() << std::fixed << std::right
                         << std::setw(5)  << std::setprecision(0) << c2  << " "
                         << std::setw(11) << std::setprecision(6) << r_fifo2.mean_cost_per_event
+                        << std::setw(11) << std::setprecision(6) << r_rvi2.mean_cost_per_event
                         << std::setw(11) << std::setprecision(6) << r_nn2.mean_cost_per_event
                         << std::setw(9)  << std::setprecision(4) << ratio2
                         << "\n";
 
             // Save tick_rate=5, c2=20 for heatmaps
-            if (std::abs(tr2 - 5.0) < 1e-9 && std::abs(c2 - 20.0) < 1e-9)
+            if (std::abs(c2 - 20.0) < 1e-9)
             {
                 saved_cfg2    = cfg2;
                 saved_fifo_si = fifo2;
+                saved_rvi_si  = rvi2;
                 saved_nn_si   = nn2;
                 have_saved2   = true;
             }
@@ -272,7 +286,11 @@ int main()
         qm::PrintPolicyHeatmap(mdp_hm, saved_fifo_si, HEAT_MAX,
                                /*n_warmup=*/10000, /*n_samples=*/100000);
 
-        dp.System() << "\n--- NN Policy ---\n";
+        dp.System() << "\n--- RVI (Optimal) Policy ---\n";
+        qm::PrintPolicyHeatmap(mdp_hm, saved_rvi_si, HEAT_MAX,
+                               /*n_warmup=*/10000, /*n_samples=*/100000);
+
+        dp.System() << "\n--- NN (DCL, N=20K, M=200) Policy ---\n";
         qm::PrintPolicyHeatmap(mdp_hm, saved_nn_si, HEAT_MAX,
                                /*n_warmup=*/10000, /*n_samples=*/100000);
     }
