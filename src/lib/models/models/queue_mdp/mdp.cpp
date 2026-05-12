@@ -1,12 +1,14 @@
 ﻿#include "mdp.h"
 #include "dynaplex/erasure/mdpregistrar.h"
 #include "dynaplex/retrievestate.h"
+#include "dynaplex/parallel_execute.h"
 #include "policies.h"
 #include <deque>
 #include <iostream>
 #include <iomanip>
 #include <functional>
 #include <span>
+#include <thread>
 
 
 namespace DynaPlex::Models {
@@ -1174,6 +1176,159 @@ namespace DynaPlex::Models {
 
 			return EvaluatePolicyRaw(mdp, std::function<int64_t(const MDP::State&)>(get_action),
 				n_trajectories, steps_per_traj, warmup_steps, rng_seed);
+		}
+
+	// -----------------------------------------------------------------------
+		// EvaluatePolicyRawParallel
+		// Parallel version: splits n_trajectories across num_threads using
+		// DynaPlex::Parallel::parallel_compute (std::jthread-based, no OpenMP).
+		//
+		// Each thread owns one heap-allocated Trajectory for action queries,
+		// created once per thread and reused across all trajectories in its slice.
+		// The per-trajectory simulation RNG is seeded by global trajectory index i,
+		// so the statistical results are equivalent to the serial version.
+		// -----------------------------------------------------------------------
+		RawEvalResult EvaluatePolicyRawParallel(
+			const MDP&              mdp,
+			const DynaPlex::Policy& policy,
+			int64_t n_trajectories,
+			int64_t steps_per_traj,
+			int64_t warmup_steps,
+			int64_t rng_seed,
+			int64_t num_threads)
+		{
+			if (num_threads <= 0)
+				num_threads = (int64_t)std::thread::hardware_concurrency();
+
+			// Per-trajectory result collected inside the parallel region.
+			struct PerTrajResult {
+				double  cost_rvi     = 0.0;   // cumcost / rvi_steps
+				double  cost_rvi2    = 0.0;   // cumcost_rvi / rvi_steps
+				double  cost_gic     = 0.0;   // cumcost_gic / rvi_steps
+				int64_t action_steps = 0;
+				int64_t event_steps  = 0;
+				int64_t fil_steps    = 0;
+			};
+			std::vector<PerTrajResult> results((size_t)n_trajectories);
+
+			// work(span, offset): called once per thread.
+			// offset = global index of span[0]; span.size() = number of trajectories for this thread.
+			auto work = [&](std::span<PerTrajResult> span, int64_t offset) {
+
+				// One action trajectory per thread — heap-allocated, seeded once.
+				auto action_traj = std::make_unique<DynaPlex::Trajectory>();
+				action_traj->RNGProvider.SeedEventStreams(false, rng_seed, 0, offset);
+				action_traj->Category = DynaPlex::StateCategory::AwaitAction();
+				action_traj->Reset(
+					std::make_unique<DynaPlex::Erasure::StateAdapter<MDP::State>>(
+						mdp.int_hash, mdp.GetInitialState()));
+
+				auto get_action = [&policy, &action_traj](const MDP::State& s) -> int64_t {
+					auto* adapter = static_cast<DynaPlex::Erasure::StateAdapter<MDP::State>*>(
+						action_traj->GetState().get());
+					adapter->state = s;
+					action_traj->Category = DynaPlex::StateCategory::AwaitAction();
+					policy->SetAction(std::span<DynaPlex::Trajectory>(action_traj.get(), 1));
+					return action_traj->NextAction;
+				};
+
+				for (int64_t j = 0; j < (int64_t)span.size(); ++j) {
+					int64_t i = offset + j;   // global trajectory index
+
+					// Per-trajectory simulation RNG — keyed on i for reproducibility.
+					DynaPlex::RNGProvider rng_provider;
+					rng_provider.SeedEventStreams(true, rng_seed, 0, i);
+
+					MDP::State state = mdp.GetInitialState();
+
+					// --- warm-up ---
+					for (int64_t s = 0; s < warmup_steps; ++s) {
+						if (state.cat == DynaPlex::StateCategory::AwaitAction())
+							mdp.ModifyStateWithAction(state, get_action(state));
+						else {
+							MDP::Event evt = mdp.GetEvent(rng_provider.GetEventRNG(0));
+							mdp.ModifyStateWithEvent(state, evt);
+						}
+					}
+
+					// --- main phase ---
+					int64_t action_steps = 0, real_event_steps = 0, fil_refresh_steps = 0;
+					double cumcost = 0.0, cumcost_rvi = 0.0, cumcost_gic = 0.0;
+
+					for (int64_t s = 0; s < steps_per_traj; ++s) {
+						if (state.cat == DynaPlex::StateCategory::AwaitAction()) {
+							mdp.ModifyStateWithAction(state, get_action(state));
+							++action_steps;
+						} else {
+							bool is_fil_refresh = (state.next_fil_job_type != -1);
+							if (!is_fil_refresh) {
+								double rvi_step_cost = 0.0;
+								for (int64_t n = 0; n < mdp.n_jobs; ++n)
+									if (!state.queue_manager.waiting[(size_t)n].empty() &&
+									    state.queue_manager.waiting[(size_t)n].front() > (int64_t)mdp.due_times[(size_t)n])
+										rvi_step_cost += mdp.cost_rates[(size_t)n];
+								cumcost_rvi += (mdp.tick_rate / mdp.uniformization_rate) * rvi_step_cost;
+								cumcost_gic += mdp.GetImmediateCost(state);
+							}
+							MDP::Event evt = mdp.GetEvent(rng_provider.GetEventRNG(0));
+							double cost = mdp.ModifyStateWithEvent(state, evt);
+							cumcost += cost;
+							if (is_fil_refresh) ++fil_refresh_steps;
+							else               ++real_event_steps;
+						}
+					}
+
+					int64_t rvi_steps = action_steps + real_event_steps;
+					span[j] = {
+						rvi_steps > 0 ? cumcost     / (double)rvi_steps : 0.0,
+						rvi_steps > 0 ? cumcost_rvi / (double)rvi_steps : 0.0,
+						rvi_steps > 0 ? cumcost_gic / (double)rvi_steps : 0.0,
+						action_steps, real_event_steps, fil_refresh_steps
+					};
+				}
+			};
+
+			DynaPlex::Parallel::parallel_compute<PerTrajResult>(
+				results,
+				std::function<void(std::span<PerTrajResult>, int64_t)>(work),
+				num_threads);
+
+			// --- reduce ---
+			int64_t grand_action_steps      = 0;
+			int64_t grand_real_event_steps  = 0;
+			int64_t grand_fil_refresh_steps = 0;
+			for (auto& r : results) {
+				grand_action_steps      += r.action_steps;
+				grand_real_event_steps  += r.event_steps;
+				grand_fil_refresh_steps += r.fil_steps;
+			}
+
+			double mean = 0.0, mean_rvi = 0.0, mean_gic = 0.0;
+			for (auto& r : results) { mean += r.cost_rvi; mean_rvi += r.cost_rvi2; mean_gic += r.cost_gic; }
+			mean     /= (double)n_trajectories;
+			mean_rvi /= (double)n_trajectories;
+			mean_gic /= (double)n_trajectories;
+
+			double var = 0.0;
+			for (auto& r : results) var += (r.cost_rvi - mean) * (r.cost_rvi - mean);
+			if (n_trajectories > 1) var /= (double)(n_trajectories - 1);
+			double std_error = std::sqrt(var / (double)n_trajectories);
+
+			double mean_cost_per_event = (grand_real_event_steps > 0)
+				? (mean * (double)(grand_action_steps + grand_real_event_steps))
+				  / (double)grand_real_event_steps
+				: 0.0;
+
+			RawEvalResult result;
+			result.mean_cost_per_rvi_step     = mean;
+			result.mean_cost_per_rvi_step_rvi = mean_rvi;
+			result.mean_cost_per_event        = mean_cost_per_event;
+			result.mean_cost_per_step_gic     = mean_gic;
+			result.std_error                  = std_error;
+			result.total_action_steps         = grand_action_steps;
+			result.total_real_event_steps     = grand_real_event_steps;
+			result.total_fil_refresh_steps    = grand_fil_refresh_steps;
+			return result;
 		}
 
 		// -----------------------------------------------------------------------

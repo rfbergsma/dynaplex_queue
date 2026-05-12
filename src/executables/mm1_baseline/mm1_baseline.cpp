@@ -1,16 +1,18 @@
 // mm1_baseline.cpp
 //
 // M/M/1 comparison: Random vs FIFO vs RVI (optimal) vs Neural Network (DCL).
+// Runs for multiple tick_rates to verify it is a pure granularity parameter.
 //
-// Evaluates using EvaluatePolicyRaw -> mean_cost_per_event
+// Evaluates using EvaluatePolicyRawParallel -> mean_cost_per_event
 //   = cost / real_event_steps  (FIL-refresh steps NOT in denominator)
-// Theoretical value for FIFO (binary cost, D=0): rho^2 / Lambda
-//   where Lambda = uniformization_rate = tick_rate + lambda + mu
 //
-// NN policy trained via DCL from a random starting policy (N=10K, M=100, H=50).
+// Cost is normalised in the MDP constructor: cost per tick = cost_rate / tick_rate,
+// so the physical cost rate is tick_rate-independent.  The mean_cost_per_event
+// metric still depends on tick_rate through its denominator (tick events are
+// included), giving theory = rho^2 / (tick_rate * Lambda).
+// Policy quality (NN/RVI, FIFO%err) must be tick_rate-invariant.
 //
-// NOTE: raw_mdp must be created AFTER DCL training to avoid a clash with
-// VarGroup::Int64Hash() being called twice on the same config object.
+// NN trained via DCL from a random starting policy (N=10K, M=100, H=50).
 
 #include <iostream>
 #include <iomanip>
@@ -21,7 +23,7 @@
 using namespace DynaPlex;
 namespace qm = DynaPlex::Models::queue_mdp;
 
-static VarGroup mm1_config(double lam, double mu)
+static VarGroup mm1_config(double lam, double mu, double tick_rate)
 {
     VarGroup srv;
     srv.Add("servers",      int64_t(1));
@@ -33,29 +35,18 @@ static VarGroup mm1_config(double lam, double mu)
     cfg.Add("discount_factor", 1.0);
     cfg.Add("k_servers",       int64_t(1));
     cfg.Add("n_jobs",          int64_t(1));
-    cfg.Add("tick_rate",       1.0);
+    cfg.Add("tick_rate",       tick_rate);
     cfg.Add("reward_type",     int64_t(0));       // binary cost: 1{FIL > D}
     cfg.Add("max_queue_depth", int64_t(1));
     cfg.Add("arrival_rates",   VarGroup::DoubleVec{lam});
-    cfg.Add("cost_rates",      VarGroup::DoubleVec{1.0});
-    cfg.Add("due_times",       VarGroup::DoubleVec{0.0});
+    cfg.Add("cost_rates",      VarGroup::DoubleVec{1.0});   // real-time units; constructor divides by tick_rate
+    cfg.Add("due_times",       VarGroup::DoubleVec{0.0});   // real-time seconds; constructor multiplies by tick_rate
     cfg.Add("server_type_0",   srv);
     return cfg;
 }
 
-int main()
+static void print_header(DynaPlex::DynaPlexProvider& dp)
 {
-    auto& dp = DynaPlexProvider::Get();
-    const double mu = 1.0;
-
-    dp.System() << "\n=== mm1_baseline: Random / FIFO / RVI / NN ===\n";
-    dp.System() << "  reward_type=0 (binary cost), D=0, tick_rate=1, mu=1\n";
-    dp.System() << "  Evaluator : EvaluatePolicyRaw -> mean_cost_per_event\n";
-    dp.System() << "               = cost / real_event_steps  (FIL-refresh NOT in denom)\n";
-    dp.System() << "  Theory    : rho^2 / Lambda  (Lambda = tick+lambda+mu)\n";
-    dp.System() << "  NN trained via DCL from random policy (N=10K, M=100, H=50)\n\n";
-
-    // Print header
     dp.System() << std::left
                 << std::setw(5)  << "rho"
                 << std::setw(11) << "Random"
@@ -66,73 +57,96 @@ int main()
                 << std::setw(11) << "Theory"
                 << std::setw(9)  << "FIFO%err"
                 << "\n" << std::string(78, '-') << "\n";
+}
 
-    for (double rho : {0.2, 0.4, 0.6, 0.8})
+int main()
+{
+    auto& dp = DynaPlexProvider::Get();
+    const double mu = 1.0;
+
+    dp.System() << "\n=== mm1_baseline: Random / FIFO / RVI / NN ===\n";
+    dp.System() << "  reward_type=0 (binary cost), D=0, mu=1\n";
+    dp.System() << "  cost_rates and due_times are in real-time units (normalised by tick_rate)\n";
+    dp.System() << "  Theory: rho^2 / (tick_rate * Lambda),  Lambda = tick_rate + lambda + mu\n";
+    dp.System() << "  NN trained via DCL from random policy (N=10K, M=100, H=50)\n";
+
+    for (double tick_rate : {1.0, 2.0, 10.0})
     {
-        double lam = rho * mu;
-        auto cfg = mm1_config(lam, mu);
+        dp.System() << "\n--- tick_rate = " << std::fixed << std::setprecision(0) << tick_rate
+                    << "  (Lambda = tick_rate + rho*mu + mu) ---\n\n";
+        print_header(dp);
 
-        // Type-erased MDP for DynaPlex framework calls (GetPolicy, GetDCL, etc.)
-        auto mdp = dp.GetMDP(cfg);
+        for (double rho : {0.2, 0.4, 0.6, 0.8})
+        {
+            double lam = rho * mu;
+            auto cfg = mm1_config(lam, mu, tick_rate);
 
-        // ---- policies ----
-        auto random = mdp->GetPolicy("random");
-        auto fifo   = mdp->GetPolicy("FIFO policy");
+            // Type-erased MDP for DynaPlex framework calls
+            auto mdp = dp.GetMDP(cfg);
 
-        VarGroup rvi_cfg;
-        rvi_cfg.Add("id",      std::string("RVI_optimal"));
-        rvi_cfg.Add("rel_tol", 0.01);
-        rvi_cfg.Add("silent",  int64_t(1));
-        auto rvi = mdp->GetPolicy(rvi_cfg);
+            // ---- policies ----
+            auto random = mdp->GetPolicy("random");
+            auto fifo   = mdp->GetPolicy("FIFO policy");
 
-        // DCL: train NN from random starting policy
-        VarGroup nn_arch;
-        nn_arch.Add("type",          std::string("mlp"));
-        nn_arch.Add("hidden_layers", VarGroup::Int64Vec{64, 32, 2});
+            VarGroup rvi_cfg;
+            rvi_cfg.Add("id",      std::string("RVI_optimal"));
+            rvi_cfg.Add("rel_tol", 0.01);
+            rvi_cfg.Add("silent",  int64_t(1));
+            auto rvi = mdp->GetPolicy(rvi_cfg);
 
-        VarGroup dcl_cfg;
-        dcl_cfg.Add("N",           int64_t(10000));
-        dcl_cfg.Add("M",           int64_t(100));
-        dcl_cfg.Add("H",           int64_t(50));
-        dcl_cfg.Add("num_gens",    int64_t(1));
-        dcl_cfg.Add("silent",      true);
-        dcl_cfg.Add("nn_architecture", nn_arch);
+            // DCL: train NN from random starting policy
+            VarGroup nn_arch;
+            nn_arch.Add("type",          std::string("mlp"));
+            nn_arch.Add("hidden_layers", VarGroup::Int64Vec{64, 32, 2});
 
-        auto dcl = dp.GetDCL(mdp, random, dcl_cfg);
-        dcl.TrainPolicy();
-        auto nn = dcl.GetPolicies().back();
+            VarGroup dcl_cfg;
+            dcl_cfg.Add("N",           int64_t(10000));
+            dcl_cfg.Add("M",           int64_t(100));
+            dcl_cfg.Add("H",           int64_t(50));
+            dcl_cfg.Add("num_gens",    int64_t(1));
+            dcl_cfg.Add("silent",      true);
+            dcl_cfg.Add("nn_architecture", nn_arch);
 
-        // Concrete MDP for EvaluatePolicyRaw — created AFTER DCL
-        qm::MDP raw_mdp(cfg);
+            auto dcl = dp.GetDCL(mdp, random, dcl_cfg);
+            dcl.TrainPolicy();
+            auto nn = dcl.GetPolicies().back();
 
-        // ---- evaluate with EvaluatePolicyRaw ----
-        auto eval = [&](DynaPlex::Policy pol) {
-            return qm::EvaluatePolicyRaw(raw_mdp, pol,
-                /*n_traj=*/100, /*steps=*/500000, /*warmup=*/50000);
-        };
+            // Concrete MDP for evaluation — created AFTER DCL
+            qm::MDP raw_mdp(cfg);
 
-        auto r_random = eval(random);
-        auto r_fifo   = eval(fifo);
-        auto r_rvi    = eval(rvi);
-        auto r_nn     = eval(nn);
+            // ---- parallel evaluation ----
+            auto eval = [&](DynaPlex::Policy pol) {
+                return qm::EvaluatePolicyRawParallel(raw_mdp, pol,
+                    /*n_traj=*/100, /*steps=*/500000, /*warmup=*/50000);
+            };
 
-        // ---- theoretical value: rho^2 / Lambda (FIFO, binary cost, D=0) ----
-        double theory   = (rho * rho) / raw_mdp.uniformization_rate;
-        double fifo_err = (r_fifo.mean_cost_per_event - theory) / theory * 100.0;
-        double nn_ratio = (r_rvi.mean_cost_per_event > 1e-12)
-                        ? r_nn.mean_cost_per_event / r_rvi.mean_cost_per_event
-                        : 1.0;
+            auto r_random = eval(random);
+            auto r_fifo   = eval(fifo);
+            auto r_rvi    = eval(rvi);
+            auto r_nn     = eval(nn);
 
-        dp.System() << std::fixed
-                    << std::setw(5)  << std::setprecision(1) << rho
-                    << std::setw(11) << std::setprecision(6) << r_random.mean_cost_per_event
-                    << std::setw(11) << std::setprecision(6) << r_fifo.mean_cost_per_event
-                    << std::setw(11) << std::setprecision(6) << r_rvi.mean_cost_per_event
-                    << std::setw(11) << std::setprecision(6) << r_nn.mean_cost_per_event
-                    << std::setw(9)  << std::setprecision(4) << nn_ratio
-                    << std::setw(11) << std::setprecision(6) << theory
-                    << std::setw(8)  << std::setprecision(2) << fifo_err << "%"
-                    << "\n";
+            // Theory: rho^2 / (tick_rate * Lambda)
+            // With cost normalisation (cost_rate / tick_rate per tick), the formula
+            // ρ²/Λ (for tick_rate=1) scales to ρ²/(tick_rate * Λ) for general tick_rate.
+            double theory   = (rho * rho) / (tick_rate * raw_mdp.uniformization_rate);
+            double fifo_err = (theory > 1e-15)
+                            ? (r_fifo.mean_cost_per_event - theory) / theory * 100.0
+                            : 0.0;
+            double nn_ratio = (r_rvi.mean_cost_per_event > 1e-15)
+                            ? r_nn.mean_cost_per_event / r_rvi.mean_cost_per_event
+                            : 1.0;
+
+            dp.System() << std::fixed
+                        << std::setw(5)  << std::setprecision(1) << rho
+                        << std::setw(11) << std::setprecision(6) << r_random.mean_cost_per_event
+                        << std::setw(11) << std::setprecision(6) << r_fifo.mean_cost_per_event
+                        << std::setw(11) << std::setprecision(6) << r_rvi.mean_cost_per_event
+                        << std::setw(11) << std::setprecision(6) << r_nn.mean_cost_per_event
+                        << std::setw(9)  << std::setprecision(4) << nn_ratio
+                        << std::setw(11) << std::setprecision(6) << theory
+                        << std::setw(8)  << std::setprecision(2) << fifo_err << "%"
+                        << "\n";
+        }
     }
 
     dp.System() << "\n=== DONE ===\n";

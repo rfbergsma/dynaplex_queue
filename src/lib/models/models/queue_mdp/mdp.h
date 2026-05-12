@@ -860,6 +860,21 @@ namespace DynaPlex::Models {
 			int64_t warmup_steps   = 10000,
 			int64_t rng_seed       = 42);
 
+		/// Parallel version of the Policy overload above.
+		/// Splits n_trajectories across num_threads threads using DynaPlex::Parallel::parallel_compute.
+		/// Each thread owns one action Trajectory (heap-allocated, seeded), reused across its slice.
+		/// The per-trajectory simulation RNG is keyed on the global trajectory index, so results
+		/// are statistically equivalent to the serial version (same trajectories, different order).
+		/// num_threads = 0 (default) uses std::thread::hardware_concurrency().
+		RawEvalResult EvaluatePolicyRawParallel(
+			const MDP&              mdp,
+			const DynaPlex::Policy& policy,
+			int64_t n_trajectories = 200,
+			int64_t steps_per_traj = 100000,
+			int64_t warmup_steps   = 10000,
+			int64_t rng_seed       = 42,
+			int64_t num_threads    = 0);
+
 		/**
 		 * Prints a console heatmap of a policy's job-type assignment decisions.
 		 * X-axis: FIL_waiting[0], Y-axis: FIL_waiting[1].
