@@ -59,7 +59,7 @@ static void print_header(DynaPlex::DynaPlexProvider& dp)
 // Experiment 2 helpers — 2 job types, 1 pool of 2 servers
 // ============================================================
 
-// Config: rho=0.6, lambda1=lambda2=0.6, mu=1, D=7
+// Config: rho=0.6, lambda1=lambda2=0.6, mu=1, D=0 (cost on any wait)
 // c1=1 fixed; c2 and tick_rate are the parameters.
 static VarGroup si_config(double c2, double tick_rate)
 {
@@ -78,7 +78,7 @@ static VarGroup si_config(double c2, double tick_rate)
     cfg.Add("max_queue_depth", int64_t(1));
     cfg.Add("arrival_rates",   VarGroup::DoubleVec{0.6, 0.6});  // rho = 1.2/2 = 0.6
     cfg.Add("cost_rates",      VarGroup::DoubleVec{1.0, c2});   // real-time units
-    cfg.Add("due_times",       VarGroup::DoubleVec{7.0, 7.0});  // due date at 7
+    cfg.Add("due_times",       VarGroup::DoubleVec{0.0, 0.0});  // D=0: cost on any wait
     cfg.Add("server_type_0",   srv);
     return cfg;
 }
@@ -183,10 +183,10 @@ int main()
     // 2 job types, 1 pool of 2 fully-flexible servers, rho=0.6, D=7
     // c1=1 fixed; vary c2 in {1,2,5,10,20}; tick_rate=5 (test phase)
     // ================================================================
-    dp.System() << "\n\n=== Exp 2: Strategic Idleness (2 types, 2 servers, rho=0.6, D=7) ===\n";
-    dp.System() << "  c1=1 fixed, mu=1, rho=0.6 (lambda1=lambda2=0.6)\n";
+    dp.System() << "\n\n=== Exp 2: Strategic Idleness (2 types, 2 servers, rho=0.6, D=0) ===\n";
+    dp.System() << "  c1=1 fixed, mu=1, D=0, rho=0.6 (lambda1=lambda2=0.6)\n";
     dp.System() << "  Displayed metric: physical cost rate = mean_cost_per_event * Lambda\n";
-    dp.System() << "  NN: DCL from FIFO policy (N=20K, M=200, H=50, num_gens=3)\n";
+    dp.System() << "  NN: DCL from FIFO policy (N=20K, M=200, H=200, num_gens=5)\n";
     dp.System() << "  RVI: optimal solver (rel_tol=0.01, silent)\n";
 
     // State saved for heatmaps (tick_rate=5, c2=20)
@@ -229,10 +229,10 @@ int main()
             nn_arch2.Add("hidden_layers", VarGroup::Int64Vec{64, 32, 2});
 
             VarGroup dcl_cfg2;
-            dcl_cfg2.Add("N",               int64_t(20000));  // doubled from 10K
-            dcl_cfg2.Add("M",               int64_t(200));    // doubled from 100
-            dcl_cfg2.Add("H",               int64_t(50));
-            dcl_cfg2.Add("num_gens",        int64_t(3));
+            dcl_cfg2.Add("N",               int64_t(20000));
+            dcl_cfg2.Add("M",               int64_t(200));
+            dcl_cfg2.Add("H",               int64_t(200));   // long enough to see cost events
+            dcl_cfg2.Add("num_gens",        int64_t(5));     // more generations to refine
             dcl_cfg2.Add("silent",          true);
             dcl_cfg2.Add("nn_architecture", nn_arch2);
 
@@ -283,7 +283,7 @@ int main()
         constexpr int HEAT_MAX = 12;
         auto mdp_hm = dp.GetMDP(saved_cfg2);
 
-        dp.System() << "\n\n=== Heatmaps: tick_rate=5, c2=20, rho=0.6, D=7 ===\n";
+        dp.System() << "\n\n=== Heatmaps: tick_rate=5, c2=20, rho=0.6, D=0 ===\n";
         dp.System() << "(simulation-based; canonical: 1 server busy on type-0; 1 job of each type waiting)\n";
 
         dp.System() << "\n--- FIFO Policy ---\n";
