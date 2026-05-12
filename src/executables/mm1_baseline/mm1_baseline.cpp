@@ -230,8 +230,8 @@ int main()
 
             VarGroup dcl_cfg2;
             dcl_cfg2.Add("N",               int64_t(20000));
-            dcl_cfg2.Add("M",               int64_t(1600));  // high M key for asymmetric problems
-            dcl_cfg2.Add("H",               int64_t(100));   // shorter H → smaller Q values → faster training
+            dcl_cfg2.Add("M",               int64_t(400));  // high M key for asymmetric problems
+            dcl_cfg2.Add("H",               int64_t(300));   // shorter H → smaller Q values → faster training
             dcl_cfg2.Add("num_gens",        int64_t(3));
             dcl_cfg2.Add("silent",          true);
             dcl_cfg2.Add("nn_architecture", nn_arch2);
