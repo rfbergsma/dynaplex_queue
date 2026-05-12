@@ -18,7 +18,6 @@
 #include <iomanip>
 #include <cmath>
 #include "dynaplex/dynaplexprovider.h"
-#include "dynaplex/retrievestate.h"           // DynaPlex::Erasure::StateAdapter (heatmap)
 #include "../../../lib/models/models/queue_mdp/mdp.h"
 
 using namespace DynaPlex;
@@ -64,7 +63,7 @@ static void print_header(DynaPlex::DynaPlexProvider& dp)
 // Experiment 2 helpers — 2 job types, 1 pool of 2 servers
 // ============================================================
 
-// Config: rho=0.6, lambda1=lambda2=0.6, mu=1, D=0
+// Config: rho=0.6, lambda1=lambda2=0.6, mu=1, D=7
 // c1=1 fixed; c2 and tick_rate are the parameters.
 static VarGroup si_config(double c2, double tick_rate)
 {
@@ -83,134 +82,9 @@ static VarGroup si_config(double c2, double tick_rate)
     cfg.Add("max_queue_depth", int64_t(1));
     cfg.Add("arrival_rates",   VarGroup::DoubleVec{0.6, 0.6});  // rho = 1.2/2 = 0.6
     cfg.Add("cost_rates",      VarGroup::DoubleVec{1.0, c2});   // real-time units
-    cfg.Add("due_times",       VarGroup::DoubleVec{0.0, 0.0});
+    cfg.Add("due_times",       VarGroup::DoubleVec{7.0, 7.0});  // due date at 7
     cfg.Add("server_type_0",   srv);
     return cfg;
-}
-
-// Wraps a DynaPlex::Policy into std::function<int64_t(State&)>
-// for use with PrintEnumeratedHeatmap / build_heatmap_grid.
-// The Trajectory is heap-allocated, seeded once, and reused across calls.
-static std::function<int64_t(const qm::MDP::State&)>
-make_raw_policy_fn(const DynaPlex::Policy& pol, const qm::MDP& raw_mdp)
-{
-    auto traj = std::make_shared<DynaPlex::Trajectory>();
-    traj->RNGProvider.SeedEventStreams(false, 42);
-    traj->Category = DynaPlex::StateCategory::AwaitAction();
-    traj->Reset(
-        std::make_unique<DynaPlex::Erasure::StateAdapter<qm::MDP::State>>(
-            raw_mdp.int_hash, raw_mdp.GetInitialState()));
-    return [pol, traj](const qm::MDP::State& s) -> int64_t {
-        auto* a = static_cast<DynaPlex::Erasure::StateAdapter<qm::MDP::State>*>(
-            traj->GetState().get());
-        a->state = s;
-        traj->Category = DynaPlex::StateCategory::AwaitAction();
-        pol->SetAction(std::span<DynaPlex::Trajectory>(traj.get(), 1));
-        return traj->NextAction;
-    };
-}
-
-// Builds the heatmap grid by enumerating canonical AwaitAction states.
-// Canonical state: pool 0 has exactly 1 server busy on type 0;
-// both job types have a waiting job with FIL_0=f0, FIL_1=f1.
-// Returns grid[f0][f1]:  -2=no valid action,  -1=skip/idle (action=0),
-//                         0=serve type 0,       1=serve type 1.
-static std::vector<std::vector<int>>
-build_heatmap_grid(
-    const qm::MDP& mdp,
-    std::function<int64_t(const qm::MDP::State&)> fn,
-    int max_fil)
-{
-    std::vector<std::vector<int>> g(
-        (size_t)max_fil + 1, std::vector<int>((size_t)max_fil + 1, -2));
-    for (int f0 = 0; f0 <= max_fil; ++f0) {
-        for (int f1 = 0; f1 <= max_fil; ++f1) {
-            qm::MDP::State s;
-            s.queue_manager.initialize(mdp.n_jobs, mdp.tick_rate,
-                                       mdp.arrival_rates, mdp.max_queue_depth);
-            s.queue_manager.set_fil(0, (int64_t)f0);
-            s.queue_manager.set_fil(1, (int64_t)f1);
-            s.server_manager.initialize(&mdp.server_static_info, mdp.n_jobs);
-            s.server_manager.busy_on[0][0] = 1;    // 1 server busy on type 0
-            s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
-            s.server_manager.set_action_counter(0);
-            s.server_manager.update_total_service_rate();
-            s.next_fil_job_type = -1;
-            s.cat = DynaPlex::StateCategory::AwaitAction();
-            if (!s.server_manager.action_queue.empty()) {
-                int64_t act = fn(s);
-                g[f0][f1] = (act == 0) ? -1
-                            : (int)s.server_manager.action_queue[0].job_type;
-            }
-        }
-    }
-    return g;
-}
-
-// Prints one heatmap: first an ASCII grid (for quick inspection),
-// then a self-contained pgfplots \begin{axis}...\end{axis} block.
-// Wrap the axis in \begin{tikzpicture}...\end{tikzpicture} in the document.
-// Colormap definition to add to preamble or figure:
-//   \pgfplotsset{colormap={simap}{
-//     color(0)=(blue!60!white) color(1)=(orange!80!red) color(2)=(gray!50)}}
-// Encoding: meta 0 = serve type 0, 1 = serve type 1, 2 = skip/idle/no-action.
-static void print_heatmap(
-    const qm::MDP& mdp,
-    std::function<int64_t(const qm::MDP::State&)> fn,
-    const std::string& label,
-    int max_fil,
-    DynaPlex::DynaPlexProvider& dp)
-{
-    auto g = build_heatmap_grid(mdp, fn, max_fil);
-    int N  = max_fil + 1;
-
-    // ---- ASCII ----
-    dp.System() << "\n[" << label << "]  (FIL_1 across, FIL_0 down)\n";
-    dp.System() << "FIL_0\\FIL_1";
-    for (int f1 = 0; f1 <= max_fil; ++f1)
-        dp.System() << std::setw(3) << f1;
-    dp.System() << "\n";
-    for (int f0 = 0; f0 <= max_fil; ++f0) {
-        dp.System() << std::setw(10) << f0 << " :";
-        for (int f1 = 0; f1 <= max_fil; ++f1) {
-            int v = g[f0][f1];
-            if      (v == -2) dp.System() << "  *";
-            else if (v == -1) dp.System() << "  .";
-            else              dp.System() << "  " << v;
-        }
-        dp.System() << "\n";
-    }
-    dp.System() << "(0=serve type 0 [blue], 1=serve type 1 [orange], .=skip top, *=no action)\n";
-
-    // ---- LaTeX pgfplots (row-major: x=FIL_1 varies fastest, y=FIL_0 increases up) ----
-    dp.System() << "\n% ---- LaTeX heatmap: " << label << " ----\n";
-    dp.System() << "% Wrap each block in \\begin{tikzpicture}...\\end{tikzpicture}\n";
-    dp.System() << "% Preamble: \\pgfplotsset{colormap={simap}{\n";
-    dp.System() << "%   color(0)=(blue!60!white) color(1)=(orange!80!red) color(2)=(gray!50)}}\n";
-    dp.System() << "\\begin{axis}[\n";
-    dp.System() << "  title={" << label << "},\n";
-    dp.System() << "  xlabel={$W^{(1)}$}, ylabel={$W^{(0)}$},\n";
-    dp.System() << "  enlargelimits=false, axis on top,\n";
-    dp.System() << "  colormap name=simap,\n";
-    dp.System() << "  point meta min=0, point meta max=2,\n";
-    dp.System() << "  width=5.5cm, height=5.5cm,\n";
-    dp.System() << "  xtick={0,2,...," << max_fil << "},\n";
-    dp.System() << "  ytick={0,2,...," << max_fil << "}\n";
-    dp.System() << "]\n";
-    dp.System() << "\\addplot[\n";
-    dp.System() << "  matrix plot*, point meta=explicit,\n";
-    dp.System() << "  mesh/rows=" << N << ", mesh/cols=" << N << "\n";
-    dp.System() << "] coordinates {\n";
-    for (int f0 = 0; f0 <= max_fil; ++f0) {
-        for (int f1 = 0; f1 <= max_fil; ++f1) {
-            int v    = g[f0][f1];
-            int meta = (v == 0) ? 0 : (v == 1) ? 1 : 2;
-            dp.System() << "(" << f1 << "," << f0 << ") [" << meta << "] ";
-        }
-        dp.System() << "\n";
-    }
-    dp.System() << "};\n";
-    dp.System() << "\\end{axis}\n";
 }
 
 int main()
@@ -389,16 +263,18 @@ int main()
     if (have_saved2)
     {
         constexpr int HEAT_MAX = 12;
-        qm::MDP hm(saved_cfg2);
+        auto mdp_hm = dp.GetMDP(saved_cfg2);
 
-        auto fifo_fn = make_raw_policy_fn(saved_fifo_si, hm);
-        auto nn_fn   = make_raw_policy_fn(saved_nn_si,   hm);
+        dp.System() << "\n\n=== Heatmaps: tick_rate=5, c2=20, rho=0.6, D=7 ===\n";
+        dp.System() << "(simulation-based; canonical: 1 server busy on type-0; 1 job of each type waiting)\n";
 
-        dp.System() << "\n\n=== Heatmaps: tick_rate=5, c2=20, rho=0.6 ===\n";
-        dp.System() << "(canonical: 1 server busy on type-0; 1 job of each type waiting)\n";
+        dp.System() << "\n--- FIFO Policy ---\n";
+        qm::PrintPolicyHeatmap(mdp_hm, saved_fifo_si, HEAT_MAX,
+                               /*n_warmup=*/10000, /*n_samples=*/100000);
 
-        print_heatmap(hm, fifo_fn, "FIFO  (gamma=5, c2=20)", HEAT_MAX, dp);
-        print_heatmap(hm, nn_fn,   "NN    (gamma=5, c2=20)", HEAT_MAX, dp);
+        dp.System() << "\n--- NN Policy ---\n";
+        qm::PrintPolicyHeatmap(mdp_hm, saved_nn_si, HEAT_MAX,
+                               /*n_warmup=*/10000, /*n_samples=*/100000);
     }
 
     dp.System() << "\n=== DONE ===\n";
