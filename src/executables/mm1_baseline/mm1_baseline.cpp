@@ -81,7 +81,7 @@ static void run_config_experiment(
     // ---- load config & MDP ----
     auto path       = dp.FilePath({"mdp_config_examples", "queue_mdp"}, json_file);
     auto mdp_config = VarGroup::LoadFromFile(path);
-    mdp_config.Add("reward_type", reward_type);  // override JSON value
+    mdp_config.Set("reward_type", reward_type);  // override JSON value
     auto mdp        = dp.GetMDP(mdp_config);
 
     // ---- policies ----
