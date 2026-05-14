@@ -8,7 +8,7 @@
 {
     "id": "queue_mdp",
     "discount_factor": 1.0,
-    //other variables that are read by the constructor go here
+    "reward_type": 0,
     "k_servers": 3,
     "n_jobs": 3,
     "tick_rate": 1,
