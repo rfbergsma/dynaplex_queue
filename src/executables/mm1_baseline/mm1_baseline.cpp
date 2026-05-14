@@ -74,11 +74,14 @@ static void run_config_experiment(
     const std::string& json_file,
     bool   use_rel_tol,      // true  → RVI with rel_tol=0.01
     int64_t rvi_M_fixed,     // used only when use_rel_tol==false
-    int64_t N, int64_t H, int64_t M_dcl)
+    int64_t N, int64_t H, int64_t M_dcl,
+    int64_t reward_type = int64_t(0),  // 0=binary FIL lateness, 1=queue lateness
+    int64_t num_gens    = int64_t(1))
 {
     // ---- load config & MDP ----
     auto path       = dp.FilePath({"mdp_config_examples", "queue_mdp"}, json_file);
     auto mdp_config = VarGroup::LoadFromFile(path);
+    mdp_config.Add("reward_type", reward_type);  // override JSON value
     auto mdp        = dp.GetMDP(mdp_config);
 
     // ---- policies ----
@@ -102,7 +105,7 @@ static void run_config_experiment(
     dcl_cfg.Add("N",               N);
     dcl_cfg.Add("M",               M_dcl);
     dcl_cfg.Add("H",               H);
-    dcl_cfg.Add("num_gens",        int64_t(1));
+    dcl_cfg.Add("num_gens",        num_gens);
     dcl_cfg.Add("silent",          true);
     dcl_cfg.Add("nn_architecture", nn_arch);
 
@@ -280,7 +283,41 @@ int main()
 
     run_config_experiment(dp, "medium",
         "mdp_config_1.json",           /*use_rel_tol=*/false, /*rvi_M=*/28,
-        /*N=*/20000, /*H=*/100, /*M_dcl=*/1600);
+        /*N=*/20000, /*H=*/100, /*M_dcl=*/400);
+
+    // ----------------------------------------------------------
+    // Experiment 4: queue-lateness reward (reward_type=1), num_gens=3
+    // ----------------------------------------------------------
+    dp.System() << "\n\n=== Experiment 4: Queue-lateness reward (reward_type=1), num_gens=3 ===\n";
+    dp.System() << "  Same configs as Exp 2/3; reward_type=1 (cost proportional to FIL-D per tick)\n";
+    dp.System() << "  Hypothesis: richer cost signal + multi-gen bootstrapping improves medium NN.\n";
+    dp.System() << "  DCL: N=20K, M=1600, H=100, num_gens=3, arch={128,64,2}\n\n";
+
+    dp.System() << std::left
+                << std::setw(14) << "Config"
+                << std::right
+                << std::setw(12) << "FIFO"
+                << std::setw(12) << "RVI"
+                << std::setw(12) << "NN"
+                << std::setw(10) << "NN/RVI"
+                << std::setw(10) << "FIFO/RVI"
+                << std::setw(10) << "FIFO_gap"
+                << "\n" << std::string(80, '-') << "\n";
+
+    run_config_experiment(dp, "simple",
+        "mdp_config_simple.json",      /*use_rel_tol=*/true,  /*rvi_M=*/0,
+        /*N=*/int64_t(20000), /*H=*/int64_t(100), /*M_dcl=*/int64_t(1600),
+        /*reward_type=*/int64_t(1), /*num_gens=*/int64_t(3));
+
+    run_config_experiment(dp, "simple_asym",
+        "mdp_config_simple_asym.json", /*use_rel_tol=*/true,  /*rvi_M=*/0,
+        /*N=*/int64_t(20000), /*H=*/int64_t(100), /*M_dcl=*/int64_t(1600),
+        /*reward_type=*/int64_t(1), /*num_gens=*/int64_t(3));
+
+    run_config_experiment(dp, "medium",
+        "mdp_config_1.json",           /*use_rel_tol=*/false, /*rvi_M=*/28,
+        /*N=*/int64_t(20000), /*H=*/int64_t(100), /*M_dcl=*/int64_t(1600),
+        /*reward_type=*/int64_t(1), /*num_gens=*/int64_t(3));
 
     dp.System() << "\n=== DONE ===\n";
     return 0;
