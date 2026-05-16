@@ -1,0 +1,30 @@
+/**
+ * 2-server, 2-job fully-flexible system with asymmetric costs and deadlines.
+ * - Both servers can serve both job types (fully flexible).
+ * - Job type 1 costs 3x more (300 vs 100) and has a tighter deadline (D=3 vs D=6).
+ * - Equal arrival rates so the cost asymmetry is the sole reason to deviate from FIFO.
+ * - rho = (0.25+0.25) / (0.35+0.35) ~= 0.71
+ * Used by stochastic_fifo_test to verify that StochasticFIFO + DCL can learn to
+ * prefer type-1 jobs over type-0 jobs when queue lengths are similar.
+ */
+{
+    "id": "queue_mdp",
+    "discount_factor": 1.0,
+    "reward_type": 0,
+    "k_servers": 2,
+    "n_jobs": 2,
+    "tick_rate": 1.0,
+    "arrival_rates": [ 0.25, 0.25 ],
+    "cost_rates":    [ 100.0, 300.0 ],
+    "due_times":     [ 6.0, 3.0 ],
+    "server_type_0": {
+        "servers": 1,
+        "can_serve": [ 0, 1 ],
+        "service_rates": [ 0.35, 0.35 ]
+    },
+    "server_type_1": {
+        "servers": 1,
+        "can_serve": [ 0, 1 ],
+        "service_rates": [ 0.35, 0.35 ]
+    }
+}

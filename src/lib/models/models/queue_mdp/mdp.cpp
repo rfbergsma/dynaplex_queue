@@ -110,6 +110,7 @@ namespace DynaPlex::Models {
 					// regenerate actions because FIL changed
 					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
 					state.server_manager.set_action_counter(0);
+					state.stochastic_draws = event.stochastic_draws;
 
 					// go back to decision-making
 					state.cat = state.server_manager.action_queue.empty()
@@ -144,13 +145,15 @@ namespace DynaPlex::Models {
 					//state.queue_manager.complete_job(event_type.job_type, uniform_rate_next_fil); // job completed, remove from queue
 					
 					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+					state.server_manager.set_action_counter(0);
+					state.stochastic_draws = event.stochastic_draws;
 					if (!state.server_manager.action_queue.empty()) {
 						state.cat = StateCategory::AwaitAction();
 					}
 					else {
 						state.cat = StateCategory::AwaitEvent();
 					}
-				
+
 					#if QUEUE_MDP_DEBUG
 					std::cout << "[QMDP]   AFTER event handling\n";
 					DebugPrintFIL(state, "[QMDP]   AFTER event");
@@ -169,6 +172,8 @@ namespace DynaPlex::Models {
 				
 				
 					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+					state.server_manager.set_action_counter(0);
+					state.stochastic_draws = event.stochastic_draws;
 
 					// if there are pending actions, go to await action
 					if (!state.server_manager.action_queue.empty()) {
@@ -690,8 +695,14 @@ namespace DynaPlex::Models {
 			MDP::Event event;
 			event.event_sample = event_sample;
 			event.uniform_rate_next_fil = uniform_rate_next_fil;
+			// Draw one uniform per candidate slot for StochasticFIFOPolicy.
+			// Upper bound on candidates: k_servers * n_jobs.
+			int64_t max_candidates = k_servers * n_jobs;
+			event.stochastic_draws.resize((size_t)max_candidates);
+			for (auto& d : event.stochastic_draws)
+				d = rng.genUniform();
 			return event;
-		
+
 		}
 
 		MDP::Event_type MDP::GetEventType(const double event_sample, const State& state) const {
@@ -877,6 +888,9 @@ namespace DynaPlex::Models {
 				"First in first out policy, always assigns a job to a server.");
 			registry.Register<RVI_optimal>("RVI_optimal",
 				"Optimal average-cost policy via Relative Value Iteration.");
+			registry.Register<StochasticFIFOPolicy>("stochastic_FIFO",
+				"FIFO with probabilistic skipping: draws[acnt] < threshold -> skip (action=0), "
+				"else assign (action=1).  threshold=0.0 equals plain FIFO.");
 		}
 
 		DynaPlex::StateCategory MDP::GetStateCategory(const State& state) const

@@ -622,20 +622,25 @@ namespace DynaPlex::Models {
 
 			struct State {
 				//using this is recommended:
-				
+
 				// vector of first in line waiting times jobs length n jobs
 				//std::vector<int64_t> FIL_waiting;
-				
+
 				//servers servers();
-				
+
 				//initialize ServerDynamicState
 				ServerDynamicState server_manager;
 				multi_queue queue_manager;
 
 				int64_t next_fil_job_type = -1;  // which queue needs refresh
 
-				
+
 				std::string last_event_category;
+
+				// Ephemeral uniform draws for StochasticFIFOPolicy.
+				// Populated from Event.stochastic_draws at every AwaitAction entry.
+				// Not serialised — defaults to empty (policy falls back to action=1).
+				std::vector<double> stochastic_draws;
 
 				DynaPlex::StateCategory cat;
 				DynaPlex::VarGroup ToVarGroup() const;
@@ -695,6 +700,7 @@ namespace DynaPlex::Models {
 			struct Event {
 				double event_sample;
 				double uniform_rate_next_fil;
+				std::vector<double> stochastic_draws;  // one uniform draw per candidate slot
 			};
 
 			struct nextStateProbability {

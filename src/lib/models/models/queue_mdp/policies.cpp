@@ -125,5 +125,25 @@ namespace DynaPlex::Models {
 		{
 			return mdp->EvaluateRVIPolicy(sol, state);
 		}
+
+		StochasticFIFOPolicy::StochasticFIFOPolicy(
+			std::shared_ptr<const MDP> mdp, const VarGroup& cfg)
+			: mdp{ mdp }, threshold{ 0.0 }
+		{
+			if (cfg.HasKey("threshold"))
+				cfg.Get("threshold", threshold);
+		}
+
+		int64_t StochasticFIFOPolicy::GetAction(const MDP::State& state) const
+		{
+			int64_t acnt = state.server_manager.get_action_counter();
+			// If the draw for this candidate slot is below the threshold, skip it.
+			// Fall back to action=1 if draws vector is not yet populated (safe default).
+			if (acnt >= 0
+				&& acnt < (int64_t)state.stochastic_draws.size()
+				&& state.stochastic_draws[(size_t)acnt] < threshold)
+				return 0;  // probabilistic skip
+			return 1;      // assign (FIFO default)
+		}
 	}
 }

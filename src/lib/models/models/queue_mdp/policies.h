@@ -38,6 +38,20 @@ namespace DynaPlex::Models {
 			int64_t GetAction(const MDP::State& state) const;
 		};
 
+		/// FIFO with probabilistic skipping.
+		/// At each AwaitAction step, if stochastic_draws[action_counter] < threshold
+		/// the policy skips the current candidate (action=0); otherwise it assigns (action=1).
+		/// threshold=0.0 (default) is identical to plain FIFO.
+		/// Useful as a DCL base policy to inject action=0 training examples.
+		class StochasticFIFOPolicy
+		{
+			std::shared_ptr<const MDP> mdp;
+			double threshold;
+		public:
+			StochasticFIFOPolicy(std::shared_ptr<const MDP> mdp, const VarGroup& config);
+			int64_t GetAction(const MDP::State& state) const;
+		};
+
 	}
 }
 
