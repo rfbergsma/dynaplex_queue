@@ -268,10 +268,16 @@ namespace DynaPlex::Models {
 					return 0.0;
 				}
 
-				// action == 0: idle — reset counter and return to event.
-				// (No sequential scanning; next AwaitAction always starts from acnt=0.)
-				state.server_manager.set_action_counter(0);
-				state.cat = StateCategory::AwaitEvent();
+				// action == 0: skip this candidate, advance to next
+				int64_t next_cnt = acnt + 1;
+				if (next_cnt >= (int64_t)state.server_manager.action_queue.size()) {
+					// Exhausted all candidates: idle for this epoch
+					state.server_manager.set_action_counter(0);
+					state.cat = StateCategory::AwaitEvent();
+				} else {
+					state.server_manager.set_action_counter(next_cnt);
+					// cat stays AwaitAction — present next candidate
+				}
 				return 0.0;
 			}
 
@@ -365,9 +371,16 @@ namespace DynaPlex::Models {
 				
 				}
 				else {
-					// action == 0: idle — reset counter, go to AwaitEvent (no sequential scanning)
-					modified_state.server_manager.set_action_counter(0);
-					modified_state.cat = StateCategory::AwaitEvent();
+					// action == 0: skip this candidate, advance counter to next
+					int64_t next_cnt = action_counter + 1;
+					if (next_cnt >= (int64_t)modified_state.server_manager.action_queue.size()) {
+						// Exhausted all candidates: idle
+						modified_state.server_manager.set_action_counter(0);
+						modified_state.cat = StateCategory::AwaitEvent();
+					} else {
+						modified_state.server_manager.set_action_counter(next_cnt);
+						// cat stays AwaitAction — present next candidate
+					}
 					out.push_back({ std::move(modified_state), 1 });
 				}
 				return out;
