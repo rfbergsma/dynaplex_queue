@@ -260,29 +260,18 @@ namespace DynaPlex::Models {
 
 				Action current_action = state.server_manager.action_queue.at((size_t)acnt);
 
-				// This will either assign (action==1) or advance the counter (action==0)
-				state.server_manager.take_action(action);
-
 				if (action == 1) {
-					// Trigger FIL refresh for this job type; refresh happens in ModifyStateWithEvent
+					// Assign: trigger FIL refresh; ModifyStateWithEvent completes it
+					state.server_manager.take_action(1);
 					state.next_fil_job_type = current_action.job_type;
-
-					// Force immediate refresh step next
 					state.cat = StateCategory::AwaitEvent();
 					return 0.0;
 				}
 
-				// action == 0: continue scanning the action queue
-				if (state.server_manager.get_action_counter() >= (int64_t)state.server_manager.action_queue.size()) {
-					// finished scanning all candidates
-					state.server_manager.set_action_counter(0);
-					state.cat = StateCategory::AwaitEvent();
-				}
-				else {
-					// still candidates remaining
-					state.cat = StateCategory::AwaitAction();
-				}
-
+				// action == 0: idle — reset counter and return to event.
+				// (No sequential scanning; next AwaitAction always starts from acnt=0.)
+				state.server_manager.set_action_counter(0);
+				state.cat = StateCategory::AwaitEvent();
 				return 0.0;
 			}
 
@@ -376,13 +365,9 @@ namespace DynaPlex::Models {
 				
 				}
 				else {
-					// if action= 0, the transition is deterministic, simply move action counter up
-					modified_state.server_manager.take_action(0);
-
-					if (modified_state.server_manager.get_action_counter() >= (int64_t)modified_state.server_manager.action_queue.size()) {
-						// set to await event
-						modified_state.cat = StateCategory::AwaitEvent();
-					}
+					// action == 0: idle — reset counter, go to AwaitEvent (no sequential scanning)
+					modified_state.server_manager.set_action_counter(0);
+					modified_state.cat = StateCategory::AwaitEvent();
 					out.push_back({ std::move(modified_state), 1 });
 				}
 				return out;

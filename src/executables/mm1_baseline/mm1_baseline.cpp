@@ -75,8 +75,10 @@ static void run_config_experiment(
     bool   use_rel_tol,      // true  → RVI with rel_tol=0.01
     int64_t rvi_M_fixed,     // used only when use_rel_tol==false
     int64_t N, int64_t H, int64_t M_dcl,
-    int64_t reward_type = int64_t(0),  // 0=binary FIL lateness, 1=queue lateness
-    int64_t num_gens    = int64_t(1))
+    int64_t reward_type       = int64_t(0),  // 0=binary FIL lateness, 1=queue lateness
+    int64_t num_gens          = int64_t(1),
+    bool    print_heatmap     = false,       // 2-job configs only
+    int64_t early_stop        = int64_t(0))  // 0=disabled; >0 sets early_stopping_patience
 {
     // ---- load config & MDP ----
     auto path       = dp.FilePath({"mdp_config_examples", "queue_mdp"}, json_file);
@@ -108,6 +110,11 @@ static void run_config_experiment(
     dcl_cfg.Add("num_gens",        num_gens);
     dcl_cfg.Add("silent",          true);
     dcl_cfg.Add("nn_architecture", nn_arch);
+    if (early_stop > 0) {
+        VarGroup nn_training;
+        nn_training.Add("early_stopping_patience", early_stop);
+        dcl_cfg.Add("nn_training", nn_training);
+    }
 
     auto dcl = dp.GetDCL(mdp, fifo, dcl_cfg);
     dcl.TrainPolicy();
@@ -141,6 +148,20 @@ static void run_config_experiment(
                 << std::setprecision(1)
                 << std::setw(9)  << fifo_gap << "%"
                 << "\n";
+
+    // ---- optional: print policy heatmaps (2-job configs only) ----
+    if (print_heatmap) {
+        dp.System() << "\n  [" << label << "] FIFO policy heatmap"
+                    << " (FIL_0=row, FIL_1=col; 0=serve type0, 1=serve type1, .=skip):\n";
+        qm::PrintPolicyHeatmap(mdp, fifo, /*max_fil=*/12);
+
+        dp.System() << "\n  [" << label << "] RVI optimal policy heatmap:\n";
+        qm::PrintPolicyHeatmap(mdp, rvi, /*max_fil=*/12);
+
+        dp.System() << "\n  [" << label << "] NN policy heatmap:\n";
+        qm::PrintPolicyHeatmap(mdp, nn, /*max_fil=*/12);
+        dp.System() << "\n";
+    }
 }
 
 // ============================================================
@@ -152,9 +173,16 @@ int main()
     auto& dp = DynaPlexProvider::Get();
     const double mu = 1.0;
 
+    // ---- Run-control flags: set to false to skip sections ----
+    const bool run_exp1 = true;   // M/M/1 validation (fast)
+    const bool run_exp2 = true;   // 2-server 2-job configs + heatmaps
+    const bool run_exp3 = true;   // 3-server 3-job medium config
+    const bool run_exp4 = false;  // reward_type=1, num_gens=3 (slow)
+
     // ----------------------------------------------------------
     // Experiment 1: M/M/1 validation
     // ----------------------------------------------------------
+  if (run_exp1) {
     dp.System() << "\n=== Experiment 1: M/M/1 validation ===\n";
     dp.System() << "  reward_type=0 (binary cost 1{wait>0}), D=0, mu=1\n";
     dp.System() << "  Metric: cost per arrival = (mean_cost_per_event * Lambda) / lambda\n";
@@ -232,10 +260,12 @@ int main()
                         << "\n";
         }
     }
+  } // end run_exp1
 
     // ----------------------------------------------------------
     // Experiment 2: two servers, two job types
     // ----------------------------------------------------------
+  if (run_exp2) {
     dp.System() << "\n\n=== Experiment 2: Two servers, two job types ===\n";
     dp.System() << "  simple     : k=2, n=2, fully flexible, symmetric  (c=[100,100], D=[5,5])\n";
     dp.System() << "  simple_asym: k=2, n=2, fully flexible, asymmetric (c=[100,300], D=[6,3])\n";
@@ -255,15 +285,21 @@ int main()
 
     run_config_experiment(dp, "simple",
         "mdp_config_simple.json",      /*use_rel_tol=*/true,  /*rvi_M=*/0,
-        /*N=*/20000, /*H=*/100, /*M_dcl=*/1600);
+        /*N=*/20000, /*H=*/100, /*M_dcl=*/1600,
+        /*reward_type=*/int64_t(0), /*num_gens=*/int64_t(1), /*print_heatmap=*/true,
+        /*early_stop=*/int64_t(3));
 
     run_config_experiment(dp, "simple_asym",
         "mdp_config_simple_asym.json", /*use_rel_tol=*/true,  /*rvi_M=*/0,
-        /*N=*/20000, /*H=*/100, /*M_dcl=*/1600);
+        /*N=*/20000, /*H=*/100, /*M_dcl=*/1600,
+        /*reward_type=*/int64_t(0), /*num_gens=*/int64_t(1), /*print_heatmap=*/true,
+        /*early_stop=*/int64_t(3));
+  } // end run_exp2
 
     // ----------------------------------------------------------
     // Experiment 3: three servers, three job types, partial flexibility
     // ----------------------------------------------------------
+  if (run_exp3) {
     dp.System() << "\n\n=== Experiment 3: Three servers, three job types, partial flexibility ===\n";
     dp.System() << "  medium: k=3, n=3, circular skill sets ({0,1},{1,2},{2,0})\n";
     dp.System() << "          c=[100,100,100], D=[6,6,6], rho~0.71\n";
@@ -283,11 +319,15 @@ int main()
 
     run_config_experiment(dp, "medium",
         "mdp_config_1.json",           /*use_rel_tol=*/false, /*rvi_M=*/28,
-        /*N=*/20000, /*H=*/100, /*M_dcl=*/400);
+        /*N=*/20000, /*H=*/100, /*M_dcl=*/400,
+        /*reward_type=*/int64_t(0), /*num_gens=*/int64_t(1), /*print_heatmap=*/false,
+        /*early_stop=*/int64_t(3));
+  } // end run_exp3
 
     // ----------------------------------------------------------
     // Experiment 4: queue-lateness reward (reward_type=1), num_gens=3
     // ----------------------------------------------------------
+  if (run_exp4) {
     dp.System() << "\n\n=== Experiment 4: Queue-lateness reward (reward_type=1), num_gens=3 ===\n";
     dp.System() << "  Same configs as Exp 2/3; reward_type=1 (cost proportional to FIL-D per tick)\n";
     dp.System() << "  Hypothesis: richer cost signal + multi-gen bootstrapping improves medium NN.\n";
@@ -318,6 +358,7 @@ int main()
         "mdp_config_1.json",           /*use_rel_tol=*/false, /*rvi_M=*/28,
         /*N=*/int64_t(20000), /*H=*/int64_t(100), /*M_dcl=*/int64_t(1600),
         /*reward_type=*/int64_t(1), /*num_gens=*/int64_t(3));
+  } // end run_exp4
 
     dp.System() << "\n=== DONE ===\n";
     return 0;
