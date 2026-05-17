@@ -1,0 +1,38 @@
+/**
+ * 2-server, 2-job system: specialist + generalist, asymmetric load and costs.
+ *
+ * - Server 0: specialist — can only serve job type 0.
+ * - Server 1: generalist — can serve both job types.
+ *
+ * Design intent: create a meaningful FIFO/RVI gap via routing tension.
+ *   - Job 1 can only be served by server 1 (rho_1 ~ 0.70 on that server).
+ *   - Job 1 is also more expensive (300 vs 100) with a tighter deadline (D=3 vs D=6).
+ *   - FIFO will occasionally send server 1 to job 0 even when job 1 is waiting,
+ *     because FIL_0 > FIL_1 is possible.  The optimal policy strongly prefers
+ *     to reserve server 1 for job 1.
+ *
+ * Approximate utilisation:
+ *   rho_1 (server 1 dedicated) = 0.7 / 1.0 = 0.70
+ *   rho_0 (server 0 alone)     = 0.5 / 1.0 = 0.50  (server 1 takes overflow)
+ */
+{
+    "id": "queue_mdp",
+    "discount_factor": 1.0,
+    "reward_type": 0,
+    "k_servers": 2,
+    "n_jobs": 2,
+    "tick_rate": 1.0,
+    "arrival_rates": [ 0.5, 0.7 ],
+    "cost_rates":    [ 100.0, 300.0 ],
+    "due_times":     [ 6.0, 3.0 ],
+    "server_type_0": {
+        "servers": 1,
+        "can_serve": [ 0 ],
+        "service_rates": [ 1.0 ]
+    },
+    "server_type_1": {
+        "servers": 1,
+        "can_serve": [ 0, 1 ],
+        "service_rates": [ 1.0, 1.0 ]
+    }
+}
