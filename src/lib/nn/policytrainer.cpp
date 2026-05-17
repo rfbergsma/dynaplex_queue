@@ -248,7 +248,11 @@ namespace DynaPlex::NN {
             {"gen",generation},
             {"nn_architecture", nn_architecture},
             {"num_inputs", mdp->NumFlatFeatures()},
-            {"num_outputs", mdp->NumValidActions()}
+            {"num_outputs", mdp->NumValidActions()},
+            // training_loss = loss at the epoch where best_validation_loss was achieved
+            // (i.e. the checkpoint that was saved). Gap = val - train is the overfitting signal.
+            {"saved_training_loss",   (double)training_loss},
+            {"saved_validation_loss", (double)best_validation_loss}
         };
 
         TrainedPolicyProvider::SavePolicy(policy, PathToPolicy(nn_architecture, generation));

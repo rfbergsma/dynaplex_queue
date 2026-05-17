@@ -205,9 +205,28 @@ static void run_one_config(
                             << "\n";
             }
 
-            // Wrap NN with epsilon-greedy so generation g+1 has a stochastic base
-            if (g < n_gens)
-                current_base = make_epsilon_greedy(nn_g, eg_epsilon);
+            // Decide base for next generation.
+            // If the saved checkpoint shows a large train/val gap the NN overfit
+            // (low-variance training data from a near-optimal base).  In that case
+            // skip the EG wrap and pass the raw NN — adding random skips on top of
+            // an overfit model would only make the next generation's data worse.
+            if (g < n_gens) {
+                double t_loss = 0.0, v_loss = 0.0;
+                auto cfg = nn_g.GetConfig();
+                cfg.Get("saved_training_loss",   t_loss);
+                cfg.Get("saved_validation_loss", v_loss);
+                double overfit_gap = v_loss - t_loss;
+
+                if (overfit_gap > 0.01) {
+                    dp.System() << "  [overfit guard] gen " << g
+                                << "  gap=" << std::fixed << std::setprecision(4)
+                                << overfit_gap
+                                << "  → skipping EG wrap, passing raw NN\n";
+                    current_base = nn_g;
+                } else {
+                    current_base = make_epsilon_greedy(nn_g, eg_epsilon);
+                }
+            }
         }
     };
 
