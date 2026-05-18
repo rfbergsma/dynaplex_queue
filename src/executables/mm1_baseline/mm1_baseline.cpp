@@ -565,7 +565,7 @@ int main()
     // ----------------------------------------------------------
   if (run_exp2) {
     dp.System() << "\n\n=== Experiment 2: Asymmetric costs (two servers, fully flexible) ===\n";
-    dp.System() << "  Config: simple_asym  (k=2, n=2, c=[100,300], D=[6,3])\n";
+    dp.System() << "  Config: asym_cost_2s  (k=2, n=2, equal arrivals=[0.25,0.25], c=[100,300], D=[6,3])\n";
     dp.System() << "  Both servers can serve both job types.\n";
     dp.System() << "  tick_rate=3  H=300  N=20K  M=400  num_gens=3  eg_eps=0.10\n";
     dp.System() << "  Base: FIFO (1 gen reference) + StochFIFO(0.30) x 3 gens\n";
@@ -573,11 +573,11 @@ int main()
     dp.System() << "  between gens the NN is wrapped with EpsilonGreedy(0.10) (stochastic NN).\n";
 
     auto path2 = dp.FilePath({"mdp_config_examples", "queue_mdp"},
-                              "mdp_config_simple_asym.json");
+                              "mdp_config_asym_cost_2s.json");
     auto cfg2  = VarGroup::LoadFromFile(path2);
 
     run_stoch_fifo_experiment(dp,
-        "simple_asym  [k=2, n=2, fully flexible, c=[100,300], D=[6,3]]",
+        "asym_cost_2s  [k=2, n=2, fully flexible, lam=[0.25,0.25], c=[100,300], D=[6,3]]",
         cfg2,
         /*N=*/       int64_t(20000),
         /*M=*/       int64_t(400),
