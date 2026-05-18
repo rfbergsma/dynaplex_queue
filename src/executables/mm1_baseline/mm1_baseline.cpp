@@ -458,10 +458,11 @@ int main()
     const double mu = 1.0;
 
     // ---- Run-control flags ----
-    const bool run_exp1 = true;
-    const bool run_exp2 = true;
-    const bool run_exp3 = true;
-    const bool run_exp4 = false;  // queue-lateness reward, num_gens=3 (slow)
+    const bool run_exp1      = true;
+    const bool run_exp2      = true;
+    const bool run_exp3_grid = true;   // fast FIFO/RVI gap scan (no NN training)
+    const bool run_exp3      = true;   // full DCL training with chosen config
+    const bool run_exp4      = false;  // queue-lateness reward, num_gens=3 (slow)
 
     // Shared NN architecture for Experiments 2 and 3
     VarGroup nn_arch;
@@ -592,6 +593,87 @@ int main()
         /*eg_eps=*/  0.10,
         /*heatmaps=*/true);
   } // end run_exp2
+
+    // ----------------------------------------------------------
+    // Experiment 3 grid search: find (lam1, D1) with largest
+    // FIFO/RVI gap for the specialist-generalist structure.
+    // Fixed: lam0=0.6, D0=6, c=[100,300], mu=[1,1], tick_rate=3
+    // No NN training — just FIFO vs RVI for each cell.
+    // ----------------------------------------------------------
+  if (run_exp3_grid) {
+    dp.System() << "\n\n=== Experiment 3 grid search: specialist+generalist ===\n";
+    dp.System() << "  Server 0: specialist (type 0 only)  Server 1: generalist (both)\n";
+    dp.System() << "  Fixed: lam0=0.6  D0=6.0  c=[100,300]  mu=[1,1]  tick_rate=3\n";
+    dp.System() << "  Cells show FIFO/RVI gap (%) — pick the largest for full training.\n\n";
+
+    const double   grid_lam0 = 0.6;
+    const double   grid_D0   = 6.0;
+    const double   grid_tr   = 3.0;
+    const std::vector<double> lam1_vals = {0.4, 0.6, 0.8};
+    const std::vector<double> D1_vals   = {0.3, 0.7, 1.5};
+
+    // Evaluation config — fewer periods for speed
+    VarGroup grid_eval;
+    grid_eval.Add("number_of_trajectories", int64_t(50));
+    grid_eval.Add("periods_per_trajectory",  int64_t(200000));
+
+    // Table header
+    dp.System() << std::left << std::setw(12) << "  lam1 \\ D1";
+    for (double d1 : D1_vals)
+        dp.System() << std::right << std::fixed << std::setprecision(1)
+                    << std::setw(12) << ("D1=" + std::to_string(d1).substr(0,3));
+    dp.System() << "\n  " << std::string(12 + 12*(int)D1_vals.size(), '-') << "\n";
+
+    for (double lam1 : lam1_vals) {
+        dp.System() << "  lam1=" << std::fixed << std::setprecision(1) << lam1 << "   |";
+
+        for (double D1 : D1_vals) {
+            // Build specialist-generalist config for this cell
+            VarGroup srv0g, srv1g;
+            srv0g.Add("servers",       int64_t(1));
+            srv0g.Add("can_serve",     VarGroup::Int64Vec{0});
+            srv0g.Add("service_rates", VarGroup::DoubleVec{1.0});
+            srv1g.Add("servers",       int64_t(1));
+            srv1g.Add("can_serve",     VarGroup::Int64Vec{0, 1});
+            srv1g.Add("service_rates", VarGroup::DoubleVec{1.0, 1.0});
+
+            VarGroup gcfg;
+            gcfg.Add("id",              std::string("queue_mdp"));
+            gcfg.Add("discount_factor", 1.0);
+            gcfg.Add("k_servers",       int64_t(2));
+            gcfg.Add("n_jobs",          int64_t(2));
+            gcfg.Add("tick_rate",       grid_tr);
+            gcfg.Add("reward_type",     int64_t(0));
+            gcfg.Add("arrival_rates",   VarGroup::DoubleVec{grid_lam0, lam1});
+            gcfg.Add("cost_rates",      VarGroup::DoubleVec{100.0, 300.0});
+            gcfg.Add("due_times",       VarGroup::DoubleVec{grid_D0, D1});
+            gcfg.Add("server_type_0",   srv0g);
+            gcfg.Add("server_type_1",   srv1g);
+
+            auto gmdp = dp.GetMDP(gcfg);
+            auto gcomp = dp.GetPolicyComparer(gmdp, grid_eval);
+
+            auto gfifo = gmdp->GetPolicy("FIFO policy");
+            VarGroup grvi_cfg;
+            grvi_cfg.Add("id",      std::string("RVI_optimal"));
+            grvi_cfg.Add("silent",  int64_t(1));
+            grvi_cfg.Add("rel_tol", 0.01);
+            auto grvi = gmdp->GetPolicy(grvi_cfg);
+
+            auto gres = gcomp.Compare({gfifo, grvi});
+            double gfifo_mean = 0.0, grvi_mean = 0.0;
+            gres[0].Get("mean", gfifo_mean);
+            gres[1].Get("mean", grvi_mean);
+            double gap_pct = (grvi_mean > 1e-15)
+                           ? (gfifo_mean / grvi_mean - 1.0) * 100.0 : 0.0;
+
+            dp.System() << std::fixed << std::setprecision(1)
+                        << std::setw(10) << gap_pct << "%  ";
+        }
+        dp.System() << "\n";
+    }
+    dp.System() << "\n";
+  } // end run_exp3_grid
 
     // ----------------------------------------------------------
     // Experiment 3: two servers, heterogeneous skill sets
