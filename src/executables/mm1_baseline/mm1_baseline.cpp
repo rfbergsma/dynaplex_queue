@@ -564,10 +564,11 @@ int main()
     // physical cost rates and should be tick-rate invariant.
     // ----------------------------------------------------------
   if (run_exp2) {
-    dp.System() << "\n\n=== Experiment 2: Specialist + Generalist with Symmetric Costs ===\n";
+    dp.System() << "\n\n=== Experiment 2: Specialist + Generalist with Modest Cost Asymmetry ===\n";
     dp.System() << "  Config: exp2_specialist_gen  (k=2, n=2, specialist[type0] + generalist[both])\n";
-    dp.System() << "  Symmetric costs=[100,100] and deadlines=[6,6], but unequal arrivals=[0.20,0.30].\n";
-    dp.System() << "  Type 1 arrives 50% more → overloads generalist. Expected FIFO gap: ~20%.\n";
+    dp.System() << "  Modest cost asymmetry: costs=[100,150] (1.5x), arrivals=[0.20,0.30], deadlines=[6,6].\n";
+    dp.System() << "  Type 1 arrives 50% more AND costs 50% more → should be prioritized over FIFO's FIL order.\n";
+    dp.System() << "  Expected FIFO gap: ~15%.\n";
     dp.System() << "  tick_rate=3  H=300  N=20K  M=400  num_gens=3  eg_eps=0.10\n";
     dp.System() << "  Base: FIFO (1 gen reference) + StochFIFO(0.30) x 3 gens\n";
     dp.System() << "  StochFIFO skips each candidate with P=0.30 (exploration);\n";
@@ -578,7 +579,7 @@ int main()
     auto cfg2  = VarGroup::LoadFromFile(path2);
 
     run_stoch_fifo_experiment(dp,
-        "exp2_specialist_gen  [srv0=type0_only, srv1=both, lam=[0.20,0.30], c=[100,100], D=[6,6]]",
+        "exp2_specialist_gen  [srv0=type0_only, srv1=both, lam=[0.20,0.30], c=[100,150], D=[6,6]]",
         cfg2,
         /*N=*/       int64_t(20000),
         /*M=*/       int64_t(400),

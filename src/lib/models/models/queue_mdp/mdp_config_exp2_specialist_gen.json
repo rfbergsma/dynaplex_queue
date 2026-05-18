@@ -1,15 +1,17 @@
 /**
- * Experiment 2: Specialist + Generalist with Symmetric Costs/Deadlines
+ * Experiment 2: Specialist + Generalist with Modest Cost Asymmetry
  *
  * Clean pedagogical example: specialist-generalist skill structure creates
- * routing complexity, while symmetric costs/deadlines keep the problem focused.
+ * routing complexity, with modest cost asymmetry (1.5x) to incentivize
+ * optimal routing. Cleaner than Experiment 3's 3x cost ratio.
  *
  * - Server 0 (specialist): serves type 0 only
  * - Server 1 (generalist): serves both types
  * - Type 1 arrives 50% more frequently → overloads generalist server
- * - Equal costs and deadlines (clean differentiation from MM/1)
- * - Optimal policy load-balances type 0 to specialist, type 1 to generalist
- * - FIFO fails to load-balance → ~20% gap
+ * - Type 1 costs 1.5x more (modest asymmetry) → should be prioritized
+ * - Equal deadlines (focus on cost-driven routing, not deadline pressure)
+ * - Optimal policy: prioritize type 1, load-balance type 0
+ * - FIFO follows FIL order regardless of cost → ~15% gap expected
  */
 {
     "id": "queue_mdp",
@@ -19,7 +21,7 @@
     "n_jobs": 2,
     "tick_rate": 1.0,
     "arrival_rates": [ 0.20, 0.30 ],
-    "cost_rates":    [ 100.0, 100.0 ],
+    "cost_rates":    [ 100.0, 150.0 ],
     "due_times":     [ 6.0, 6.0 ],
     "server_type_0": {
         "servers": 1,
