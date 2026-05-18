@@ -564,22 +564,21 @@ int main()
     // physical cost rates and should be tick-rate invariant.
     // ----------------------------------------------------------
   if (run_exp2) {
-    dp.System() << "\n\n=== Experiment 2: Specialist + Generalist with Modest Cost Asymmetry ===\n";
-    dp.System() << "  Config: exp2_specialist_gen  (k=2, n=2, specialist[type0] + generalist[both])\n";
-    dp.System() << "  Modest cost asymmetry: costs=[100,150] (1.5x), arrivals=[0.20,0.30], deadlines=[6,6].\n";
-    dp.System() << "  Type 1 arrives 50% more AND costs 50% more → should be prioritized over FIFO's FIL order.\n";
-    dp.System() << "  Expected FIFO gap: ~15%.\n";
+    dp.System() << "\n\n=== Experiment 2: Asymmetric Costs (two servers, fully flexible) ===\n";
+    dp.System() << "  Config: asym_cost_2s  (k=2, n=2, fully flexible, lam=[0.25,0.25], c=[100,300], D=[6,3])\n";
+    dp.System() << "  Equal arrivals but type 1 costs 3x more with tighter deadline.\n";
+    dp.System() << "  FIFO ignores costs → large gap. StochFIFO+EG reliably solves to near-optimality.\n";
     dp.System() << "  tick_rate=3  H=300  N=20K  M=400  num_gens=3  eg_eps=0.10\n";
     dp.System() << "  Base: FIFO (1 gen reference) + StochFIFO(0.30) x 3 gens\n";
     dp.System() << "  StochFIFO skips each candidate with P=0.30 (exploration);\n";
     dp.System() << "  between gens the NN is wrapped with EpsilonGreedy(0.10) (stochastic NN).\n";
 
     auto path2 = dp.FilePath({"mdp_config_examples", "queue_mdp"},
-                              "mdp_config_exp2_specialist_gen.json");
+                              "mdp_config_asym_cost_2s.json");
     auto cfg2  = VarGroup::LoadFromFile(path2);
 
     run_stoch_fifo_experiment(dp,
-        "exp2_specialist_gen  [srv0=type0_only, srv1=both, lam=[0.20,0.30], c=[100,150], D=[6,6]]",
+        "asym_cost_2s  [k=2, n=2, fully flexible, lam=[0.25,0.25], c=[100,300], D=[6,3]]",
         cfg2,
         /*N=*/       int64_t(20000),
         /*M=*/       int64_t(400),
