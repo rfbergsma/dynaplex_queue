@@ -185,8 +185,8 @@ int main()
   if (run_exp1) {
     dp.System() << "\n=== Experiment 1: M/M/1 validation ===\n";
     dp.System() << "  reward_type=0 (binary cost 1{wait>0}), D=0, mu=1\n";
-    dp.System() << "  Metric: cost per arrival = (mean_cost_per_event * Lambda) / lambda\n";
-    dp.System() << "  Theory: rho  (= P(customer waits) for M/M/1, tick_rate-invariant)\n";
+    dp.System() << "  Metric: physical cost rate = mean_cost_per_event * Lambda  (tick_rate-invariant)\n";
+    dp.System() << "  Theory: rho^2  (= lambda * P(customer waits) for M/M/1)\n";
     dp.System() << "  DCL: N=10K, M=400, H=50, num_gens=1, arch={64,32,2}\n";
 
     for (double tick_rate : {1.0, 2.0, 10.0})
@@ -238,12 +238,12 @@ int main()
             auto r_nn     = eval(nn);
 
             const double Lambda = raw_mdp.uniformization_rate;
-            double rate_random = r_random.mean_cost_per_event * Lambda / lam;
-            double rate_fifo   = r_fifo.mean_cost_per_event   * Lambda / lam;
-            double rate_rvi    = r_rvi.mean_cost_per_event    * Lambda / lam;
-            double rate_nn     = r_nn.mean_cost_per_event     * Lambda / lam;
+            double rate_random = r_random.mean_cost_per_event * Lambda;
+            double rate_fifo   = r_fifo.mean_cost_per_event   * Lambda;
+            double rate_rvi    = r_rvi.mean_cost_per_event    * Lambda;
+            double rate_nn     = r_nn.mean_cost_per_event     * Lambda;
 
-            double theory   = rho;
+            double theory   = rho * rho;
             double fifo_err = (theory > 1e-15)
                             ? (rate_fifo - theory) / theory * 100.0 : 0.0;
             double nn_ratio = (rate_rvi > 1e-15) ? rate_nn / rate_rvi : 1.0;

@@ -212,7 +212,7 @@ static void run_one_config(
             // an overfit model would only make the next generation's data worse.
             if (g < n_gens) {
                 double t_loss = 0.0, v_loss = 0.0;
-                auto cfg = nn_g.GetConfig();
+                auto cfg = nn_g->GetConfig();
                 cfg.Get("saved_training_loss",   t_loss);
                 cfg.Get("saved_validation_loss", v_loss);
                 double overfit_gap = v_loss - t_loss;
