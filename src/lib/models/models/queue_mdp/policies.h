@@ -52,6 +52,21 @@ namespace DynaPlex::Models {
 			int64_t GetAction(const MDP::State& state) const;
 		};
 
+		/// c-mu scheduling policy.
+		/// At each AwaitAction step, checks whether any remaining candidate in the action
+		/// queue for the SAME server has a strictly higher c*µ value than the current
+		/// candidate.  If yes, skips the current candidate (action=0) so the higher-priority
+		/// job type is presented next.  Otherwise assigns immediately (action=1).
+		/// Ties are broken in FIFO order (the MDP's SortActionsFIFO pre-sorts by FIL).
+		/// This provides a much better training base than FIFO for asymmetric-cost problems.
+		class CmuPolicy
+		{
+			std::shared_ptr<const MDP> mdp;
+		public:
+			CmuPolicy(std::shared_ptr<const MDP> mdp, const VarGroup& config);
+			int64_t GetAction(const MDP::State& state) const;
+		};
+
 	}
 }
 

@@ -1,28 +1,73 @@
 // mm1_baseline.cpp
 //
-// Three experiments for the paper:
+// Experiments for the paper:
 //
 //   Experiment 1 (sec:mm1)  — M/M/1 validation.
 //     Single job type, single server, D=0, mu=1.
 //     Metric: physical cost rate = mean_cost_per_event * Lambda  (tick_rate-invariant).
-//     Theory: rho^2 / Lambda.  Compared: Random / FIFO / RVI / NN.
+//     Theory: rho^2.  Compared: Random / FIFO / RVI / NN.
 //
-//   Experiment 2 (sec:exp2) — Two servers, two job types.
-//     Configs: simple (symmetric) and simple_asym (asymmetric costs + deadlines).
-//     Metric: mean cost per epoch (PolicyComparer, 100 traj x 500K periods).
+//   Experiment 2 (sec:exp2) — Two servers, two job types, asymmetric costs.
+//     Fully flexible (both servers serve both types), c=[100,300], D=[6,3].
+//     Base: FIFO (1 gen reference) + StochFIFO(0.30) x 3 gens.
+//     EpsilonGreedyWrapper wraps the NN between generations (stochastic NN policy).
+//     tick_rate=3; values * Lambda = physical cost rate.
 //
-//   Experiment 3 (sec:exp3) — Three servers, three job types, partial flexibility.
-//     Config: medium (circular skill sets).
-//     Same metric / evaluation as Exp 2.
+//   Experiment 3 (sec:exp3) — Two servers, heterogeneous skill sets.
+//     Server 0: specialist (type 0 only).  Server 1: generalist (types 0+1).
+//     lam=[0.80, 0.60], c=[100,300], D=[5,3].
+//     Same training setup as Experiment 2.
 
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+#include <sstream>
+#include <vector>
+#include <memory>
+#include <span>
 #include "dynaplex/dynaplexprovider.h"
+#include "dynaplex/policy.h"
 #include "../../../lib/models/models/queue_mdp/mdp.h"
 
 using namespace DynaPlex;
 namespace qm = DynaPlex::Models::queue_mdp;
+
+// ============================================================
+// EpsilonGreedyWrapper
+//
+// Wraps any Policy with epsilon-greedy exploration:
+//   - With probability epsilon: forces action = 0 (skip).
+//   - Otherwise: delegates to the inner policy.
+// Used between DCL generations to prevent the NN from becoming
+// fully deterministic and killing data diversity.
+// ============================================================
+class EpsilonGreedyWrapper : public DynaPlex::PolicyInterface
+{
+    DynaPlex::Policy   inner_;
+    double             epsilon_;
+    DynaPlex::VarGroup config_;
+public:
+    EpsilonGreedyWrapper(DynaPlex::Policy inner, double epsilon)
+        : inner_(std::move(inner)), epsilon_(epsilon)
+    {
+        config_.Add("id",      std::string("epsilon_greedy_wrapper"));
+        config_.Add("epsilon", epsilon_);
+    }
+    std::string TypeIdentifier() const override { return "epsilon_greedy_wrapper"; }
+    const DynaPlex::VarGroup& GetConfig() const override { return config_; }
+    void SetAction(std::span<DynaPlex::Trajectory> trajectories) const override
+    {
+        inner_->SetAction(trajectories);
+        for (auto& traj : trajectories)
+            if (traj.RNGProvider.GetPolicyRNG().genUniform() < epsilon_)
+                traj.NextAction = 0;
+    }
+};
+
+static DynaPlex::Policy make_epsilon_greedy(DynaPlex::Policy p, double eps)
+{
+    return std::make_shared<EpsilonGreedyWrapper>(std::move(p), eps);
+}
 
 // ============================================================
 // Experiment 1 helpers
@@ -50,7 +95,7 @@ static VarGroup mm1_config(double lam, double mu, double tick_rate)
     return cfg;
 }
 
-static void print_header(DynaPlex::DynaPlexProvider& dp)
+static void print_header_exp1(DynaPlex::DynaPlexProvider& dp)
 {
     dp.System() << std::left
                 << std::setw(5)  << "rho"
@@ -65,40 +110,283 @@ static void print_header(DynaPlex::DynaPlexProvider& dp)
 }
 
 // ============================================================
-// Experiment 2 / 3 helper — runs one named config end-to-end
+// Shared DCL config builder
+// (always num_gens=1 per call; the caller loops for multi-gen)
 // ============================================================
+static VarGroup make_dcl_cfg(int64_t N, int64_t M, int64_t H,
+                              const VarGroup& nn_arch,
+                              int64_t early_stopping_patience = 3)
+{
+    VarGroup nn_training;
+    nn_training.Add("early_stopping_patience", early_stopping_patience);
 
+    VarGroup dcl;
+    dcl.Add("N",               N);
+    dcl.Add("M",               M);
+    dcl.Add("H",               H);
+    dcl.Add("num_gens",        int64_t(1));
+    dcl.Add("silent",          false);
+    dcl.Add("nn_architecture", nn_arch);
+    dcl.Add("nn_training",     nn_training);
+    return dcl;
+}
+
+// ============================================================
+// Experiment 3 config: specialist (type 0) + generalist (types 0+1)
+// lam=[0.80, 0.60], c=[100, 300], D=[5, 3], tick_rate overridden externally.
+// Total load = 1.40 / capacity 2.0 = rho_total = 0.70.
+// Routing tension: type 1 can ONLY use server 1; optimal policy
+// reserves server 1 for type 1 when type 1 is waiting.
+// ============================================================
+static VarGroup make_specialist_generalist_config()
+{
+    // Server 0: specialist — serves only job type 0
+    VarGroup srv0;
+    srv0.Add("servers",       int64_t(1));
+    srv0.Add("can_serve",     VarGroup::Int64Vec{0});
+    srv0.Add("service_rates", VarGroup::DoubleVec{1.0});
+
+    // Server 1: generalist — serves both job types
+    VarGroup srv1;
+    srv1.Add("servers",       int64_t(1));
+    srv1.Add("can_serve",     VarGroup::Int64Vec{0, 1});
+    srv1.Add("service_rates", VarGroup::DoubleVec{1.0, 1.0});
+
+    VarGroup cfg;
+    cfg.Add("id",              std::string("queue_mdp"));
+    cfg.Add("discount_factor", 1.0);
+    cfg.Add("k_servers",       int64_t(2));
+    cfg.Add("n_jobs",          int64_t(2));
+    cfg.Add("tick_rate",       1.0);          // overridden by tick_rate loop
+    cfg.Add("reward_type",     int64_t(0));
+    cfg.Add("arrival_rates",   VarGroup::DoubleVec{0.85, 0.70});
+    cfg.Add("cost_rates",      VarGroup::DoubleVec{100.0, 300.0});
+    cfg.Add("due_times",       VarGroup::DoubleVec{2.0, 1.0});
+    cfg.Add("server_type_0",   srv0);
+    cfg.Add("server_type_1",   srv1);
+    return cfg;
+}
+
+// ============================================================
+// run_stoch_fifo_experiment
+//
+// Runs Experiments 2 and 3, looping over tick_rates.
+// For each tick_rate:
+//   - Overrides tick_rate in mdp_config_base and scales H = base_H * tick_rate.
+//   - Obtains Lambda from the raw MDP (uniformization_rate).
+//   - Evaluates FIFO and RVI; prints heatmaps on the FIRST tick_rate only.
+//   - Reports all absolute costs as  value * Lambda  (physical cost rate per
+//     unit real time — tick-rate invariant, so values repeat across tick rates).
+//   - Trains DCL from FIFO base (1 gen reference) and each StochFIFO base
+//     (num_gens gens), wrapping the NN with EpsilonGreedyWrapper between gens.
+//   - Prints final NN heatmap after each variant's last generation (first
+//     tick_rate only).
+// ============================================================
+static void run_stoch_fifo_experiment(
+    DynaPlex::DynaPlexProvider& dp,
+    const std::string&          section_label,
+    VarGroup                    mdp_config_base,   // tick_rate overridden per iteration
+    int64_t N, int64_t M, int64_t base_H,         // H = base_H * tick_rate
+    int64_t num_gens,
+    bool    use_rel_tol,
+    int64_t rvi_M_fixed,
+    const VarGroup&             nn_arch,
+    const std::vector<double>&  stoch_epsilons,
+    const std::vector<double>&  tick_rates,        // e.g. {1.0, 3.0}
+    double                      eg_epsilon     = 0.10,
+    bool                        print_heatmaps = true)
+{
+    // Print outer section header once
+    dp.System() << "\n" << section_label << "\n"
+                << std::string(section_label.size(), '-') << "\n";
+
+    for (size_t ti = 0; ti < tick_rates.size(); ++ti)
+    {
+        const double tr        = tick_rates[ti];
+        const bool   first_tr  = (ti == 0);
+        const int64_t H        = int64_t(base_H * tr);
+
+        // Override tick_rate in config
+        VarGroup mdp_config = mdp_config_base;
+        mdp_config.Set("tick_rate", tr);
+
+        // Get Lambda from the raw (non-type-erased) MDP
+        qm::MDP raw_mdp(mdp_config);
+        const double Lambda = raw_mdp.uniformization_rate;
+
+        auto mdp = dp.GetMDP(mdp_config);
+
+        VarGroup eval_cfg;
+        eval_cfg.Add("number_of_trajectories", int64_t(100));
+        eval_cfg.Add("periods_per_trajectory",  int64_t(500000));
+        auto comparer = dp.GetPolicyComparer(mdp, eval_cfg);
+
+        // --- Benchmarks ---
+        auto fifo = mdp->GetPolicy("FIFO policy");
+
+        VarGroup rvi_cfg;
+        if (use_rel_tol)
+            rvi_cfg = VarGroup{{"id",     std::string("RVI_optimal")},
+                               {"rel_tol", 0.01},
+                               {"silent",  int64_t(1)}};
+        else
+            rvi_cfg = VarGroup{{"id",    std::string("RVI_optimal")},
+                               {"M",      rvi_M_fixed},
+                               {"silent", int64_t(1)}};
+        auto rvi = mdp->GetPolicy(rvi_cfg);
+
+        auto bench = comparer.Compare({fifo, rvi});
+        double fifo_mean = 0.0, rvi_mean = 0.0;
+        bench[0].Get("mean", fifo_mean);
+        bench[1].Get("mean", rvi_mean);
+
+        // Physical cost rates (per unit real time)
+        const double fifo_phys = fifo_mean * Lambda;
+        const double rvi_phys  = rvi_mean  * Lambda;
+        const double norm      = rvi_mean;   // normalise ratios by raw RVI (Lambda cancels)
+
+        // --- Tick-rate sub-header ---
+        dp.System() << "\n  [tick_rate=" << std::fixed << std::setprecision(0) << tr
+                    << "  Lambda=" << std::setprecision(3) << Lambda
+                    << "  H=" << H << "]\n";
+        dp.System() << "  FIFO*Λ = " << std::fixed << std::setprecision(4) << fifo_phys
+                    << "  |  RVI*Λ = " << rvi_phys
+                    << "  |  FIFO/RVI = " << fifo_mean / rvi_mean
+                    << "  (" << std::setprecision(1)
+                    << (fifo_mean / rvi_mean - 1.0) * 100.0 << "% gap)"
+                    << "  |  eg_eps=" << std::setprecision(2) << eg_epsilon << "\n\n";
+
+        // --- Heatmaps for FIFO and RVI (first tick_rate only) ---
+        if (print_heatmaps && first_tr) {
+            dp.System() << "  FIFO policy  (FIL_0=row, FIL_1=col; 0=skip, 1=serve type0, 2=serve type1):\n";
+            qm::PrintPolicyHeatmap(mdp, fifo, 12);
+            dp.System() << "\n  RVI optimal policy:\n";
+            qm::PrintPolicyHeatmap(mdp, rvi, 12);
+            dp.System() << "\n";
+        }
+
+        // --- Table header ---
+        dp.System() << std::left
+            << std::setw(28) << "Base policy"
+            << std::setw(11) << "Base/RVI"
+            << std::setw(5)  << "Gen"
+            << std::setw(12) << "NN*Lambda"
+            << std::setw(10) << "NN/RVI"
+            << "\n" << std::string(66, '-') << "\n";
+
+        // --- Training loop ---
+        auto train_and_print = [&](const std::string&      base_name,
+                                    double                  base_direct_mean,
+                                    int64_t                 n_gens,
+                                    const DynaPlex::Policy& base_policy)
+        {
+            DynaPlex::Policy current_base = base_policy;
+
+            for (int64_t g = 1; g <= n_gens; ++g) {
+                auto dcl = dp.GetDCL(mdp, current_base,
+                                      make_dcl_cfg(N, M, H, nn_arch));
+                dcl.TrainPolicy();
+                auto nn_g = dcl.GetPolicies()[(size_t)1];
+
+                double nn_mean = 0.0;
+                comparer.Compare({nn_g})[0].Get("mean", nn_mean);
+                const double nn_phys = nn_mean * Lambda;
+
+                if (g == 1)
+                    dp.System() << std::left  << std::setw(28) << base_name
+                                << std::fixed << std::setprecision(4)
+                                << std::setw(11) << base_direct_mean / norm
+                                << std::setw(5)  << g
+                                << std::setw(12) << nn_phys
+                                << std::setw(10) << nn_mean / norm << "\n";
+                else
+                    dp.System() << std::left
+                                << std::setw(28) << "" << std::setw(11) << ""
+                                << std::fixed << std::setprecision(4)
+                                << std::setw(5)  << g
+                                << std::setw(12) << nn_phys
+                                << std::setw(10) << nn_mean / norm << "\n";
+
+                if (g < n_gens) {
+                    // Overfitting guard: skip EG wrap if val-train gap > 0.01
+                    double t_loss = 0.0, v_loss = 0.0;
+                    auto cfg = nn_g->GetConfig();
+                    cfg.Get("saved_training_loss",   t_loss);
+                    cfg.Get("saved_validation_loss", v_loss);
+                    double gap = v_loss - t_loss;
+                    if (gap > 0.01) {
+                        dp.System() << "  [overfit guard] gen " << g
+                                    << "  gap=" << std::fixed << std::setprecision(4)
+                                    << gap << "  -> passing raw NN\n";
+                        current_base = nn_g;
+                    } else {
+                        current_base = make_epsilon_greedy(nn_g, eg_epsilon);
+                    }
+                } else if (g == n_gens && print_heatmaps && first_tr) {
+                    // NN heatmap: first tick_rate only, after final generation
+                    dp.System() << "\n  NN policy heatmap [" << base_name
+                                << ", gen " << g << "]:\n";
+                    qm::PrintPolicyHeatmap(mdp, nn_g, 12);
+                    dp.System() << "\n";
+                }
+            }
+        };
+
+        // FIFO base: 1 generation (reference point only)
+        train_and_print("FIFO (eps=0.00)", fifo_mean, /*n_gens=*/1, fifo);
+
+        // Stochastic FIFO variants: num_gens generations each
+        for (double eps : stoch_epsilons) {
+            VarGroup stoch_cfg;
+            stoch_cfg.Add("id",        std::string("stochastic_FIFO"));
+            stoch_cfg.Add("threshold", eps);
+            auto stoch = mdp->GetPolicy(stoch_cfg);
+
+            double base_mean = 0.0;
+            comparer.Compare({stoch})[0].Get("mean", base_mean);
+
+            std::ostringstream lbl;
+            lbl << "StochFIFO(eps="
+                << std::fixed << std::setprecision(2) << eps << ")";
+            train_and_print(lbl.str(), base_mean, num_gens, stoch);
+        }
+
+    } // end tick_rate loop
+
+    dp.System() << "\n";
+}
+
+// ============================================================
+// run_config_experiment  (retained for Experiment 4, disabled by default)
+// ============================================================
 static void run_config_experiment(
     DynaPlex::DynaPlexProvider& dp,
     const std::string& label,
     const std::string& json_file,
-    bool   use_rel_tol,      // true  → RVI with rel_tol=0.01
-    int64_t rvi_M_fixed,     // used only when use_rel_tol==false
+    bool   use_rel_tol,
+    int64_t rvi_M_fixed,
     int64_t N, int64_t H, int64_t M_dcl,
-    int64_t reward_type       = int64_t(0),  // 0=binary FIL lateness, 1=queue lateness
+    int64_t reward_type       = int64_t(0),
     int64_t num_gens          = int64_t(1),
-    bool    print_heatmap     = false,       // 2-job configs only
-    int64_t early_stop        = int64_t(0))  // 0=disabled; >0 sets early_stopping_patience
+    bool    print_heatmap     = false,
+    int64_t early_stop        = int64_t(0))
 {
-    // ---- load config & MDP ----
     auto path       = dp.FilePath({"mdp_config_examples", "queue_mdp"}, json_file);
     auto mdp_config = VarGroup::LoadFromFile(path);
-    mdp_config.Set("reward_type", reward_type);  // override JSON value
+    mdp_config.Set("reward_type", reward_type);
     auto mdp        = dp.GetMDP(mdp_config);
 
-    // ---- policies ----
     auto fifo = mdp->GetPolicy("FIFO policy");
 
     VarGroup rvi_cfg;
     if (use_rel_tol)
-        rvi_cfg = VarGroup{ {"id", std::string("RVI_optimal")}, {"rel_tol", 0.01},
-                            {"silent", int64_t(1)} };
+        rvi_cfg = VarGroup{{"id", std::string("RVI_optimal")}, {"rel_tol", 0.01},
+                           {"silent", int64_t(1)}};
     else
-        rvi_cfg = VarGroup{ {"id", std::string("RVI_optimal")}, {"M", rvi_M_fixed},
-                            {"silent", int64_t(1)} };
+        rvi_cfg = VarGroup{{"id", std::string("RVI_optimal")}, {"M", rvi_M_fixed},
+                           {"silent", int64_t(1)}};
     auto rvi = mdp->GetPolicy(rvi_cfg);
 
-    // ---- DCL ----
     VarGroup nn_arch;
     nn_arch.Add("type",          std::string("mlp"));
     nn_arch.Add("hidden_layers", VarGroup::Int64Vec{128, 64, 2});
@@ -120,7 +408,6 @@ static void run_config_experiment(
     dcl.TrainPolicy();
     auto nn = dcl.GetPolicies().back();
 
-    // ---- evaluate (PolicyComparer) ----
     VarGroup eval_cfg;
     eval_cfg.Add("number_of_trajectories", int64_t(100));
     eval_cfg.Add("periods_per_trajectory",  int64_t(500000));
@@ -149,17 +436,14 @@ static void run_config_experiment(
                 << std::setw(9)  << fifo_gap << "%"
                 << "\n";
 
-    // ---- optional: print policy heatmaps (2-job configs only) ----
     if (print_heatmap) {
         dp.System() << "\n  [" << label << "] FIFO policy heatmap"
-                    << " (FIL_0=row, FIL_1=col; 0=serve type0, 1=serve type1, .=skip):\n";
+                    << " (FIL_0=row, FIL_1=col; 0=skip, 1=type0, 2=type1):\n";
         qm::PrintPolicyHeatmap(mdp, fifo, /*max_fil=*/12);
-
         dp.System() << "\n  [" << label << "] RVI optimal policy heatmap:\n";
-        qm::PrintPolicyHeatmap(mdp, rvi, /*max_fil=*/12);
-
+        qm::PrintPolicyHeatmap(mdp, rvi,  /*max_fil=*/12);
         dp.System() << "\n  [" << label << "] NN policy heatmap:\n";
-        qm::PrintPolicyHeatmap(mdp, nn, /*max_fil=*/12);
+        qm::PrintPolicyHeatmap(mdp, nn,   /*max_fil=*/12);
         dp.System() << "\n";
     }
 }
@@ -173,11 +457,22 @@ int main()
     auto& dp = DynaPlexProvider::Get();
     const double mu = 1.0;
 
-    // ---- Run-control flags: set to false to skip sections ----
-    const bool run_exp1 = true;   // M/M/1 validation (fast)
-    const bool run_exp2 = true;   // 2-server 2-job configs + heatmaps
-    const bool run_exp3 = true;   // 3-server 3-job medium config
-    const bool run_exp4 = false;  // reward_type=1, num_gens=3 (slow)
+    // ---- Run-control flags ----
+    const bool run_exp1 = true;
+    const bool run_exp2 = true;
+    const bool run_exp3 = true;
+    const bool run_exp4 = false;  // queue-lateness reward, num_gens=3 (slow)
+
+    // Shared NN architecture for Experiments 2 and 3
+    VarGroup nn_arch;
+    nn_arch.Add("type",          std::string("mlp"));
+    nn_arch.Add("hidden_layers", VarGroup::Int64Vec{128, 64, 2});
+
+    // tick_rate=3 for Experiments 2 and 3.
+    // At tick_rate=3 the trajectory length H=300 gives enough routing decisions per
+    // sample for stable multi-generation training.  (tick_rate=1 with H=100 produces
+    // too few routing events per trajectory, leading to Gen 3 instability.)
+    const std::vector<double> tick_rates_exp = {3.0};
 
     // ----------------------------------------------------------
     // Experiment 1: M/M/1 validation
@@ -189,11 +484,15 @@ int main()
     dp.System() << "  Theory: rho^2  (= lambda * P(customer waits) for M/M/1)\n";
     dp.System() << "  DCL: N=10K, M=400, H=50, num_gens=1, arch={64,32,2}\n";
 
+    VarGroup nn_arch_small;
+    nn_arch_small.Add("type",          std::string("mlp"));
+    nn_arch_small.Add("hidden_layers", VarGroup::Int64Vec{64, 32, 2});
+
     for (double tick_rate : {1.0, 2.0, 10.0})
     {
         dp.System() << "\n--- tick_rate = " << std::fixed << std::setprecision(0)
                     << tick_rate << " ---\n\n";
-        print_header(dp);
+        print_header_exp1(dp);
 
         for (double rho : {0.2, 0.4, 0.6, 0.8})
         {
@@ -210,17 +509,13 @@ int main()
             rvi_cfg.Add("silent",  int64_t(1));
             auto rvi = mdp->GetPolicy(rvi_cfg);
 
-            VarGroup nn_arch;
-            nn_arch.Add("type",          std::string("mlp"));
-            nn_arch.Add("hidden_layers", VarGroup::Int64Vec{64, 32, 2});
-
             VarGroup dcl_cfg;
             dcl_cfg.Add("N",               int64_t(10000));
             dcl_cfg.Add("M",               int64_t(400));
             dcl_cfg.Add("H",               int64_t(50));
             dcl_cfg.Add("num_gens",        int64_t(1));
             dcl_cfg.Add("silent",          true);
-            dcl_cfg.Add("nn_architecture", nn_arch);
+            dcl_cfg.Add("nn_architecture", nn_arch_small);
 
             auto dcl = dp.GetDCL(mdp, fifo, dcl_cfg);
             dcl.TrainPolicy();
@@ -263,74 +558,81 @@ int main()
   } // end run_exp1
 
     // ----------------------------------------------------------
-    // Experiment 2: two servers, two job types
+    // Experiment 2: two servers, two job types, asymmetric costs
+    // Fully flexible — both servers can serve both job types.
+    // Reported for tick_rates = {1, 3}; values * Lambda are
+    // physical cost rates and should be tick-rate invariant.
     // ----------------------------------------------------------
   if (run_exp2) {
-    dp.System() << "\n\n=== Experiment 2: Two servers, two job types ===\n";
-    dp.System() << "  simple     : k=2, n=2, fully flexible, symmetric  (c=[100,100], D=[5,5])\n";
-    dp.System() << "  simple_asym: k=2, n=2, fully flexible, asymmetric (c=[100,300], D=[6,3])\n";
-    dp.System() << "  Metric: mean cost per epoch (PolicyComparer, 100 traj x 500K periods)\n";
-    dp.System() << "  DCL: N=20K, M=1600, H=100, num_gens=1, arch={128,64,2}\n\n";
+    dp.System() << "\n\n=== Experiment 2: Asymmetric costs (two servers, fully flexible) ===\n";
+    dp.System() << "  Config: simple_asym  (k=2, n=2, c=[100,300], D=[6,3])\n";
+    dp.System() << "  Both servers can serve both job types.\n";
+    dp.System() << "  tick_rate=3  H=300  N=20K  M=400  num_gens=3  eg_eps=0.10\n";
+    dp.System() << "  Base: FIFO (1 gen reference) + StochFIFO(0.30) x 3 gens\n";
+    dp.System() << "  StochFIFO skips each candidate with P=0.30 (exploration);\n";
+    dp.System() << "  between gens the NN is wrapped with EpsilonGreedy(0.10) (stochastic NN).\n";
 
-    dp.System() << std::left
-                << std::setw(14) << "Config"
-                << std::right
-                << std::setw(12) << "FIFO"
-                << std::setw(12) << "RVI"
-                << std::setw(12) << "NN"
-                << std::setw(10) << "NN/RVI"
-                << std::setw(10) << "FIFO/RVI"
-                << std::setw(10) << "FIFO_gap"
-                << "\n" << std::string(80, '-') << "\n";
+    auto path2 = dp.FilePath({"mdp_config_examples", "queue_mdp"},
+                              "mdp_config_simple_asym.json");
+    auto cfg2  = VarGroup::LoadFromFile(path2);
 
-    run_config_experiment(dp, "simple",
-        "mdp_config_simple.json",      /*use_rel_tol=*/true,  /*rvi_M=*/0,
-        /*N=*/20000, /*H=*/100, /*M_dcl=*/1600,
-        /*reward_type=*/int64_t(0), /*num_gens=*/int64_t(1), /*print_heatmap=*/true,
-        /*early_stop=*/int64_t(3));
-
-    run_config_experiment(dp, "simple_asym",
-        "mdp_config_simple_asym.json", /*use_rel_tol=*/true,  /*rvi_M=*/0,
-        /*N=*/20000, /*H=*/100, /*M_dcl=*/1600,
-        /*reward_type=*/int64_t(0), /*num_gens=*/int64_t(1), /*print_heatmap=*/true,
-        /*early_stop=*/int64_t(3));
+    run_stoch_fifo_experiment(dp,
+        "simple_asym  [k=2, n=2, fully flexible, c=[100,300], D=[6,3]]",
+        cfg2,
+        /*N=*/       int64_t(20000),
+        /*M=*/       int64_t(400),
+        /*base_H=*/  int64_t(100),
+        /*num_gens=*/int64_t(3),
+        /*rel_tol=*/ true,
+        /*rvi_M=*/   int64_t(0),
+        nn_arch,
+        /*epsilons=*/std::vector<double>{0.30},
+        tick_rates_exp,
+        /*eg_eps=*/  0.10,
+        /*heatmaps=*/true);
   } // end run_exp2
 
     // ----------------------------------------------------------
-    // Experiment 3: three servers, three job types, partial flexibility
+    // Experiment 3: two servers, heterogeneous skill sets
+    // Server 0 is a specialist (type 0 only); server 1 is a
+    // generalist (types 0+1).  lam=[0.80,0.60] raises load so
+    // that FIFO's failure to reserve server 1 for type 1 is
+    // costly.  Same tick_rate sweep as Experiment 2.
     // ----------------------------------------------------------
   if (run_exp3) {
-    dp.System() << "\n\n=== Experiment 3: Three servers, three job types, partial flexibility ===\n";
-    dp.System() << "  medium: k=3, n=3, circular skill sets ({0,1},{1,2},{2,0})\n";
-    dp.System() << "          c=[100,100,100], D=[6,6,6], rho~0.71\n";
-    dp.System() << "  RVI: fixed truncation M=28 (state space too large for auto rel_tol)\n";
-    dp.System() << "  DCL: N=20K, M=1600, H=100, num_gens=1, arch={128,64,2}\n\n";
+    dp.System() << "\n\n=== Experiment 3: Heterogeneous skill sets (specialist + generalist) ===\n";
+    dp.System() << "  Server 0: specialist — serves only job type 0.\n";
+    dp.System() << "  Server 1: generalist — serves both job types.\n";
+    dp.System() << "  lam=[0.85, 0.70], c=[100, 300], D=[2, 1]  (rho_total=0.775)\n";
+    dp.System() << "  Tight deadlines (D*tick_rate = 6 and 3 ticks) combined with high\n";
+    dp.System() << "  utilisation create frequent routing conflicts: FIFO assigns server 1\n";
+    dp.System() << "  to type 0 when FIL_0 > FIL_1, repeatedly pushing type 1 past its deadline.\n";
+    dp.System() << "  tick_rate=3  H=300  N=20K  M=400  num_gens=3  eg_eps=0.10\n";
+    dp.System() << "  Base: FIFO (1 gen reference) + StochFIFO(0.30) x 3 gens\n";
 
-    dp.System() << std::left
-                << std::setw(14) << "Config"
-                << std::right
-                << std::setw(12) << "FIFO"
-                << std::setw(12) << "RVI"
-                << std::setw(12) << "NN"
-                << std::setw(10) << "NN/RVI"
-                << std::setw(10) << "FIFO/RVI"
-                << std::setw(10) << "FIFO_gap"
-                << "\n" << std::string(80, '-') << "\n";
-
-    run_config_experiment(dp, "medium",
-        "mdp_config_1.json",           /*use_rel_tol=*/false, /*rvi_M=*/28,
-        /*N=*/20000, /*H=*/100, /*M_dcl=*/400,
-        /*reward_type=*/int64_t(0), /*num_gens=*/int64_t(1), /*print_heatmap=*/false,
-        /*early_stop=*/int64_t(3));
+    run_stoch_fifo_experiment(dp,
+        "specialist_gen  [srv0=type0_only, srv1=both, lam=[0.85,0.70], c=[100,300], D=[2,1]]",
+        make_specialist_generalist_config(),
+        /*N=*/       int64_t(20000),
+        /*M=*/       int64_t(400),
+        /*base_H=*/  int64_t(100),
+        /*num_gens=*/int64_t(3),
+        /*rel_tol=*/ true,
+        /*rvi_M=*/   int64_t(0),
+        nn_arch,
+        /*epsilons=*/std::vector<double>{0.30},
+        tick_rates_exp,
+        /*eg_eps=*/  0.10,
+        /*heatmaps=*/true);
   } // end run_exp3
 
     // ----------------------------------------------------------
     // Experiment 4: queue-lateness reward (reward_type=1), num_gens=3
+    // Disabled by default — slow; re-enable to compare reward types.
     // ----------------------------------------------------------
   if (run_exp4) {
     dp.System() << "\n\n=== Experiment 4: Queue-lateness reward (reward_type=1), num_gens=3 ===\n";
     dp.System() << "  Same configs as Exp 2/3; reward_type=1 (cost proportional to FIL-D per tick)\n";
-    dp.System() << "  Hypothesis: richer cost signal + multi-gen bootstrapping improves medium NN.\n";
     dp.System() << "  DCL: N=20K, M=1600, H=100, num_gens=3, arch={128,64,2}\n\n";
 
     dp.System() << std::left
@@ -344,19 +646,10 @@ int main()
                 << std::setw(10) << "FIFO_gap"
                 << "\n" << std::string(80, '-') << "\n";
 
-    run_config_experiment(dp, "simple",
-        "mdp_config_simple.json",      /*use_rel_tol=*/true,  /*rvi_M=*/0,
-        /*N=*/int64_t(20000), /*H=*/int64_t(100), /*M_dcl=*/int64_t(1600),
-        /*reward_type=*/int64_t(1), /*num_gens=*/int64_t(3));
-
     run_config_experiment(dp, "simple_asym",
-        "mdp_config_simple_asym.json", /*use_rel_tol=*/true,  /*rvi_M=*/0,
-        /*N=*/int64_t(20000), /*H=*/int64_t(100), /*M_dcl=*/int64_t(1600),
-        /*reward_type=*/int64_t(1), /*num_gens=*/int64_t(3));
-
-    run_config_experiment(dp, "medium",
-        "mdp_config_1.json",           /*use_rel_tol=*/false, /*rvi_M=*/28,
-        /*N=*/int64_t(20000), /*H=*/int64_t(100), /*M_dcl=*/int64_t(1600),
+        "mdp_config_simple_asym.json",
+        /*rel_tol=*/true,  /*rvi_M=*/int64_t(0),
+        /*N=*/int64_t(20000), /*H=*/int64_t(100), /*M=*/int64_t(1600),
         /*reward_type=*/int64_t(1), /*num_gens=*/int64_t(3));
   } // end run_exp4
 

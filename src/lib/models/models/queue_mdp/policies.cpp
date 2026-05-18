@@ -145,5 +145,53 @@ namespace DynaPlex::Models {
 				return 0;  // probabilistic skip
 			return 1;      // assign (FIFO default)
 		}
+
+		// -----------------------------------------------------------------
+		// CmuPolicy
+		// -----------------------------------------------------------------
+		CmuPolicy::CmuPolicy(std::shared_ptr<const MDP> mdp, const VarGroup& config)
+			: mdp{ mdp }
+		{
+		}
+
+		int64_t CmuPolicy::GetAction(const MDP::State& state) const
+		{
+			const auto& queue = state.server_manager.action_queue;
+			const int64_t cnt = state.server_manager.get_action_counter();
+
+			// Safety: if counter is out of range, fall back to assign.
+			if (cnt < 0 || cnt >= (int64_t)queue.size())
+				return 1;
+
+			const auto& current = queue[(size_t)cnt];
+			const int64_t k_cur = current.server_index;
+			const int64_t j_cur = current.job_type;
+
+			// Helper: compute c*µ for a given (server k, job type j) pair.
+			// Returns 0.0 if the server cannot serve that job type.
+			auto cmu_of = [&](int64_t k, int64_t j) -> double {
+				int idx = MDP::ServerDynamicState::canServeIndex(
+					mdp->server_static_info, k, j);
+				if (idx < 0) return 0.0;
+				const double mu = mdp->server_static_info[(size_t)k].mu_kj[(size_t)idx];
+				const double c  = (j >= 0 && (size_t)j < mdp->cost_rates.size())
+					? mdp->cost_rates[(size_t)j] : 0.0;
+				return c * mu;
+			};
+
+			const double cmu_cur = cmu_of(k_cur, j_cur);
+
+			// Scan the remaining (not-yet-presented) candidates in the queue.
+			// If any candidate for the SAME SERVER has strictly higher c*µ, skip
+			// the current one so the better option will be presented next.
+			for (int64_t i = cnt + 1; i < (int64_t)queue.size(); ++i) {
+				const auto& cand = queue[(size_t)i];
+				if (cand.server_index == k_cur && cmu_of(k_cur, cand.job_type) > cmu_cur)
+					return 0;  // skip: a higher-priority job type for this server follows
+			}
+
+			// No better option for this server follows → assign the current candidate.
+			return 1;
+		}
 	}
 }

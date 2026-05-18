@@ -891,6 +891,10 @@ namespace DynaPlex::Models {
 			registry.Register<StochasticFIFOPolicy>("stochastic_FIFO",
 				"FIFO with probabilistic skipping: draws[acnt] < threshold -> skip (action=0), "
 				"else assign (action=1).  threshold=0.0 equals plain FIFO.");
+			registry.Register<CmuPolicy>("cmu",
+				"c-mu scheduling policy: assigns the highest c*mu job type for the current server. "
+				"Skips a candidate if a remaining candidate for the same server has strictly higher c*mu. "
+				"Ties broken by FIL (FIFO order).");
 		}
 
 		DynaPlex::StateCategory MDP::GetStateCategory(const State& state) const
