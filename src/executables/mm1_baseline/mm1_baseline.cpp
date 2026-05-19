@@ -125,7 +125,7 @@ static VarGroup make_dcl_cfg(int64_t N, int64_t M, int64_t H,
     dcl.Add("M",               M);
     dcl.Add("H",               H);
     dcl.Add("num_gens",        int64_t(1));
-    dcl.Add("silent",          false);
+    dcl.Add("silent",          true);
     dcl.Add("nn_architecture", nn_arch);
     dcl.Add("nn_training",     nn_training);
     return dcl;
