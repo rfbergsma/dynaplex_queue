@@ -133,8 +133,12 @@ static VarGroup make_dcl_cfg(int64_t N, int64_t M, int64_t H,
 
 // ============================================================
 // Experiment 3 config: specialist (type 0) + generalist (types 0+1)
-// lam=[0.80, 0.60], c=[100, 300], D=[5, 3], tick_rate overridden externally.
-// Total load = 1.40 / capacity 2.0 = rho_total = 0.70.
+// lam=[0.80, 0.20], c=[100, 300], D=[18tk, 1tk], tick_rate overridden externally.
+// Total load = 1.00 / capacity 2.0 = rho_total = 0.50.
+// lam0=0.8 chosen from grid search: high type 0 load forces overflow onto
+// server 1, creating routing conflict → ~25.5% FIFO gap.
+// lam1=0.2: type 1 has spare capacity on server 1 that FIFO wastes on type 0.
+// D1=1 tick: type 1 already late after 1 tick → maximum routing pressure.
 // Routing tension: type 1 can ONLY use server 1; optimal policy
 // reserves server 1 for type 1 when type 1 is waiting.
 // ============================================================
@@ -153,7 +157,7 @@ static VarGroup make_specialist_generalist_config()
     srv1.Add("service_rates", VarGroup::DoubleVec{1.0, 1.0});
 
     // D0 = 18 ticks, D1 = 1 tick  (at tick_rate=3: physical = 6.0 and 0.333)
-    // lam0=0.6, lam1=0.4 chosen from grid search as giving ~11% FIFO gap.
+    // lam0=0.8, lam1=0.2 selected from grid: gives ~25.5% FIFO gap.
     // D1=1 tick means FIL=1 already incurs cost → maximum routing pressure.
     const double tick_rate_for_D = 3.0;
     VarGroup cfg;
@@ -163,7 +167,7 @@ static VarGroup make_specialist_generalist_config()
     cfg.Add("n_jobs",          int64_t(2));
     cfg.Add("tick_rate",       1.0);          // overridden by tick_rate loop
     cfg.Add("reward_type",     int64_t(0));
-    cfg.Add("arrival_rates",   VarGroup::DoubleVec{0.6, 0.4});
+    cfg.Add("arrival_rates",   VarGroup::DoubleVec{0.8, 0.2});
     cfg.Add("cost_rates",      VarGroup::DoubleVec{100.0, 300.0});
     cfg.Add("due_times",       VarGroup::DoubleVec{18.0 / tick_rate_for_D,
                                                     1.0 / tick_rate_for_D});
@@ -702,14 +706,16 @@ int main()
     dp.System() << "\n\n=== Experiment 3: Heterogeneous skill sets (specialist + generalist) ===\n";
     dp.System() << "  Server 0: specialist — serves only job type 0.\n";
     dp.System() << "  Server 1: generalist — serves both job types.\n";
-    dp.System() << "  lam=[0.6, 0.4], c=[100, 300], D=[18tk, 1tk]  (physical D=[6.0, 0.33] at tick_rate=3)\n";
+    dp.System() << "  lam=[0.8, 0.2], c=[100, 300], D=[18tk, 1tk]  (physical D=[6.0, 0.33] at tick_rate=3)\n";
+    dp.System() << "  lam0=0.8: server 0 at 80% load, frequent overflow to server 1 creates routing conflict.\n";
+    dp.System() << "  lam1=0.2: server 1 has spare capacity that FIFO wastes on type 0 overflow.\n";
     dp.System() << "  D1=1 tick: type 1 already late after 1 tick → maximum routing pressure.\n";
-    dp.System() << "  Config selected from grid search (lam1=0.4, D1=1tk gave ~11% FIFO gap).\n";
+    dp.System() << "  Config selected from grid search (lam0=0.8, lam1=0.2 gave ~25.5% FIFO gap).\n";
     dp.System() << "  tick_rate=3  H=300  N=20K  M=400  num_gens=3  eg_eps=0.10\n";
     dp.System() << "  Base: FIFO (1 gen reference) + StochFIFO(0.30) x 3 gens\n";
 
     run_stoch_fifo_experiment(dp,
-        "specialist_gen  [srv0=type0_only, srv1=both, lam=[0.6,0.4], c=[100,300], D=[18tk,1tk]]",
+        "specialist_gen  [srv0=type0_only, srv1=both, lam=[0.8,0.2], c=[100,300], D=[18tk,1tk]]",
         make_specialist_generalist_config(),
         /*N=*/       int64_t(20000),
         /*M=*/       int64_t(400),
