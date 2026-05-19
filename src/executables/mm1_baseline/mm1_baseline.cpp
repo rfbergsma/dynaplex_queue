@@ -605,14 +605,16 @@ int main()
   if (run_exp3_grid) {
     dp.System() << "\n\n=== Experiment 3 grid search: specialist+generalist ===\n";
     dp.System() << "  Server 0: specialist (type 0 only)  Server 1: generalist (both)\n";
-    dp.System() << "  Fixed: lam0=0.6  D0=6.0  c=[100,300]  mu=[1,1]  tick_rate=3\n";
+    dp.System() << "  Fixed: lam0=0.6  D0_ticks=18  c=[100,300]  mu=[1,1]  tick_rate=3\n";
+    dp.System() << "  D1 specified in TICK units (integers); physical = D1_ticks/tick_rate.\n";
+    dp.System() << "  FIL increments by 1 per tick; cost when FIL > D1_ticks.\n";
     dp.System() << "  Cells show FIFO/RVI gap (%) — pick the largest for full training.\n\n";
 
-    const double   grid_lam0 = 0.6;
-    const double   grid_D0   = 6.0;
-    const double   grid_tr   = 3.0;
-    const std::vector<double> lam1_vals = {0.4, 0.6, 0.8};
-    const std::vector<double> D1_vals   = {0.3, 0.7, 1.5};
+    const double   grid_lam0    = 0.6;
+    const int64_t  grid_D0ticks = 18;    // D0 physical = 18/3 = 6.0
+    const double   grid_tr      = 3.0;
+    const std::vector<double>  lam1_vals   = {0.4, 0.6, 0.8};
+    const std::vector<int64_t> D1ticks_vals = {1, 2, 4};   // physical = 0.33, 0.67, 1.33
 
     // Evaluation config — fewer periods for speed
     VarGroup grid_eval;
@@ -620,16 +622,17 @@ int main()
     grid_eval.Add("periods_per_trajectory",  int64_t(200000));
 
     // Table header
-    dp.System() << std::left << std::setw(12) << "  lam1 \\ D1";
-    for (double d1 : D1_vals)
-        dp.System() << std::right << std::fixed << std::setprecision(1)
-                    << std::setw(12) << ("D1=" + std::to_string(d1).substr(0,3));
-    dp.System() << "\n  " << std::string(12 + 12*(int)D1_vals.size(), '-') << "\n";
+    dp.System() << std::left << std::setw(14) << "  lam1 \\ D1t";
+    for (int64_t d1t : D1ticks_vals)
+        dp.System() << std::right << std::setw(12)
+                    << ("D1=" + std::to_string(d1t) + "tk");
+    dp.System() << "\n  " << std::string(14 + 12*(int)D1ticks_vals.size(), '-') << "\n";
 
     for (double lam1 : lam1_vals) {
-        dp.System() << "  lam1=" << std::fixed << std::setprecision(1) << lam1 << "   |";
+        dp.System() << "  lam1=" << std::fixed << std::setprecision(1) << lam1 << "     |";
 
-        for (double D1 : D1_vals) {
+        for (int64_t D1ticks : D1ticks_vals) {
+            const double D1 = (double)D1ticks / grid_tr;  // convert ticks → physical time
             // Build specialist-generalist config for this cell
             VarGroup srv0g, srv1g;
             srv0g.Add("servers",       int64_t(1));
@@ -646,9 +649,10 @@ int main()
             gcfg.Add("n_jobs",          int64_t(2));
             gcfg.Add("tick_rate",       grid_tr);
             gcfg.Add("reward_type",     int64_t(0));
+            const double D0 = (double)grid_D0ticks / grid_tr;
             gcfg.Add("arrival_rates",   VarGroup::DoubleVec{grid_lam0, lam1});
             gcfg.Add("cost_rates",      VarGroup::DoubleVec{100.0, 300.0});
-            gcfg.Add("due_times",       VarGroup::DoubleVec{grid_D0, D1});
+            gcfg.Add("due_times",       VarGroup::DoubleVec{D0, D1});
             gcfg.Add("server_type_0",   srv0g);
             gcfg.Add("server_type_1",   srv1g);
 
