@@ -317,16 +317,30 @@ static void run_stoch_fifo_experiment(
                                 << std::setw(10) << nn_mean / norm << "\n";
 
                 if (g < n_gens) {
-                    // Overfitting guard: skip EG wrap if val-train gap > 0.01
+                    // Guard 1 (overfit): skip EG wrap if val-train gap > 0.01
+                    //   → high gap means deterministic base; adding EG noise would help
+                    //   exploration, but the NN has overfit so data quality is poor anyway.
+                    // Guard 2 (near-optimal): skip EG wrap if NN/RVI < 1.05
+                    //   → the NN already uses strategic idleness; adding random skips
+                    //   over-represents action=0, causing the next gen to collapse to
+                    //   always-idle behaviour (NN/RVI >> 1).  Pass the raw NN instead.
                     double t_loss = 0.0, v_loss = 0.0;
-                    auto cfg = nn_g->GetConfig();
-                    cfg.Get("saved_training_loss",   t_loss);
-                    cfg.Get("saved_validation_loss", v_loss);
-                    double gap = v_loss - t_loss;
-                    if (gap > 0.01) {
+                    auto nn_cfg = nn_g->GetConfig();
+                    nn_cfg.Get("saved_training_loss",   t_loss);
+                    nn_cfg.Get("saved_validation_loss", v_loss);
+                    const double overfit_gap   = v_loss - t_loss;
+                    const double nn_ratio_g    = nn_mean / norm;
+
+                    if (overfit_gap > 0.01) {
                         dp.System() << "  [overfit guard] gen " << g
                                     << "  gap=" << std::fixed << std::setprecision(4)
-                                    << gap << "  -> passing raw NN\n";
+                                    << overfit_gap << "  -> passing raw NN\n";
+                        current_base = nn_g;
+                    } else if (nn_ratio_g < 1.05) {
+                        dp.System() << "  [near-optimal guard] gen " << g
+                                    << "  NN/RVI=" << std::fixed << std::setprecision(4)
+                                    << nn_ratio_g
+                                    << "  -> passing raw NN (EG would over-represent skip)\n";
                         current_base = nn_g;
                     } else {
                         current_base = make_epsilon_greedy(nn_g, eg_epsilon);
