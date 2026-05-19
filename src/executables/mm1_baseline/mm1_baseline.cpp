@@ -464,10 +464,12 @@ int main()
     const bool run_exp3      = true;   // full DCL training with chosen config
     const bool run_exp4      = false;  // queue-lateness reward, num_gens=3 (slow)
 
-    // Shared NN architecture for Experiments 2 and 3
+    // Shared NN architecture for Experiments 2 and 3.
+    // {64,32,2} matches stochastic_fifo_test and reliably converges.
+    // {128,64,2} collapses to 50% accuracy and learns nothing.
     VarGroup nn_arch;
     nn_arch.Add("type",          std::string("mlp"));
-    nn_arch.Add("hidden_layers", VarGroup::Int64Vec{128, 64, 2});
+    nn_arch.Add("hidden_layers", VarGroup::Int64Vec{64, 32, 2});
 
     // tick_rate=3 for Experiments 2 and 3.
     // At tick_rate=3 the trajectory length H=300 gives enough routing decisions per
