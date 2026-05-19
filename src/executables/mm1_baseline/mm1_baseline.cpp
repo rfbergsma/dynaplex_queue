@@ -465,7 +465,7 @@ int main()
     // ---- Run-control flags ----
     const bool run_exp1      = true;
     const bool run_exp2      = true;
-    const bool run_exp3_grid = false;  // fast FIFO/RVI gap scan (no NN training)
+    const bool run_exp3_grid = true;   // fast FIFO/RVI gap scan (no NN training)
     const bool run_exp3      = true;   // full DCL training with chosen config
     const bool run_exp4      = false;  // queue-lateness reward, num_gens=3 (slow)
 
@@ -610,16 +610,16 @@ int main()
   if (run_exp3_grid) {
     dp.System() << "\n\n=== Experiment 3 grid search: specialist+generalist ===\n";
     dp.System() << "  Server 0: specialist (type 0 only)  Server 1: generalist (both)\n";
-    dp.System() << "  Fixed: lam0=0.6  D0_ticks=18  c=[100,300]  mu=[1,1]  tick_rate=3\n";
-    dp.System() << "  D1 specified in TICK units (integers); physical = D1_ticks/tick_rate.\n";
-    dp.System() << "  FIL increments by 1 per tick; cost when FIL > D1_ticks.\n";
-    dp.System() << "  Cells show FIFO/RVI gap (%) — pick the largest for full training.\n\n";
+    dp.System() << "  Fixed: D1_ticks=1  D0_ticks=18  c=[100,300]  mu=[1,1]  tick_rate=3\n";
+    dp.System() << "  D1=1 tick is the most demanding; from the D1 scan, D1 barely affects gap.\n";
+    dp.System() << "  Rows=lam0 (type 0 load on generalist).  Cols=lam1 (type 1 load).\n";
+    dp.System() << "  Cells show FIFO/RVI gap (%) — pick config with largest gap for full training.\n\n";
 
-    const double   grid_lam0    = 0.6;
     const int64_t  grid_D0ticks = 18;    // D0 physical = 18/3 = 6.0
+    const int64_t  grid_D1ticks = 1;     // D1 = 1 tick (FIL=1 already late → max pressure)
     const double   grid_tr      = 3.0;
-    const std::vector<double>  lam1_vals   = {0.4, 0.6, 0.8};
-    const std::vector<int64_t> D1ticks_vals = {1, 2, 4};   // physical = 0.33, 0.67, 1.33
+    const std::vector<double> lam0_vals = {0.4, 0.6, 0.8, 0.9};
+    const std::vector<double> lam1_vals = {0.2, 0.4, 0.6};
 
     // Evaluation config — fewer periods for speed
     VarGroup grid_eval;
@@ -627,18 +627,23 @@ int main()
     grid_eval.Add("periods_per_trajectory",  int64_t(200000));
 
     // Table header
-    dp.System() << std::left << std::setw(14) << "  lam1 \\ D1t";
-    for (int64_t d1t : D1ticks_vals)
-        dp.System() << std::right << std::setw(12)
-                    << ("D1=" + std::to_string(d1t) + "tk");
-    dp.System() << "\n  " << std::string(14 + 12*(int)D1ticks_vals.size(), '-') << "\n";
-
+    dp.System() << "  " << std::left << std::setw(14) << "lam0 \\ lam1";
     for (double lam1 : lam1_vals) {
-        dp.System() << "  lam1=" << std::fixed << std::setprecision(1) << lam1 << "     |";
+        std::ostringstream col_hdr;
+        col_hdr << "lam1=" << std::fixed << std::setprecision(1) << lam1;
+        dp.System() << std::right << std::setw(13) << col_hdr.str();
+    }
+    dp.System() << "\n  " << std::string(14 + 13*(int)lam1_vals.size(), '-') << "\n";
 
-        for (int64_t D1ticks : D1ticks_vals) {
-            const double D1 = (double)D1ticks / grid_tr;  // convert ticks → physical time
-            // Build specialist-generalist config for this cell
+    for (double lam0 : lam0_vals) {
+        std::ostringstream row_lbl;
+        row_lbl << "lam0=" << std::fixed << std::setprecision(1) << lam0;
+        dp.System() << "  " << std::left << std::setw(14) << row_lbl.str();
+
+        for (double lam1 : lam1_vals) {
+            const double D0 = (double)grid_D0ticks / grid_tr;   // physical time
+            const double D1 = (double)grid_D1ticks / grid_tr;
+
             VarGroup srv0g, srv1g;
             srv0g.Add("servers",       int64_t(1));
             srv0g.Add("can_serve",     VarGroup::Int64Vec{0});
@@ -654,14 +659,13 @@ int main()
             gcfg.Add("n_jobs",          int64_t(2));
             gcfg.Add("tick_rate",       grid_tr);
             gcfg.Add("reward_type",     int64_t(0));
-            const double D0 = (double)grid_D0ticks / grid_tr;
-            gcfg.Add("arrival_rates",   VarGroup::DoubleVec{grid_lam0, lam1});
+            gcfg.Add("arrival_rates",   VarGroup::DoubleVec{lam0, lam1});
             gcfg.Add("cost_rates",      VarGroup::DoubleVec{100.0, 300.0});
             gcfg.Add("due_times",       VarGroup::DoubleVec{D0, D1});
             gcfg.Add("server_type_0",   srv0g);
             gcfg.Add("server_type_1",   srv1g);
 
-            auto gmdp = dp.GetMDP(gcfg);
+            auto gmdp  = dp.GetMDP(gcfg);
             auto gcomp = dp.GetPolicyComparer(gmdp, grid_eval);
 
             auto gfifo = gmdp->GetPolicy("FIFO policy");
@@ -678,8 +682,9 @@ int main()
             double gap_pct = (grvi_mean > 1e-15)
                            ? (gfifo_mean / grvi_mean - 1.0) * 100.0 : 0.0;
 
-            dp.System() << std::fixed << std::setprecision(1)
-                        << std::setw(10) << gap_pct << "%  ";
+            std::ostringstream cell;
+            cell << std::fixed << std::setprecision(1) << gap_pct << "%";
+            dp.System() << std::right << std::setw(13) << cell.str();
         }
         dp.System() << "\n";
     }
