@@ -254,6 +254,21 @@ double MDP::EvaluateRVIGap(const RVISolution& sol, const State& state) const {
 	return it->second;
 }
 
+// ---- EvaluateRVIQValues: {Q(s,0), Q(s,1)} for a live state ----
+std::pair<double,double> MDP::EvaluateRVIQValues(const RVISolution& sol, const State& state) const {
+	const std::pair<double,double> missing = { -1.0, -1.0 };
+	if (state.cat != DynaPlex::StateCategory::AwaitAction()) return missing;
+
+	StateEncoder enc(*this, sol.M);
+	State clamped = state;
+	clamped.queue_manager.clamp_fil(sol.M);
+
+	uint64_t key = enc.encode(clamped);
+	auto it = sol.q_map.find(key);
+	if (it == sol.q_map.end()) return missing;
+	return it->second;
+}
+
 // ---- runRVI(double rel_tol): auto-select M via heuristic + convergence check ----
 MDP::RVISolution MDP::runRVI(double rel_tol, bool silent) const {
 	// Traffic-intensity heuristic for initial M

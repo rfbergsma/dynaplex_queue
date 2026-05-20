@@ -754,6 +754,9 @@ namespace DynaPlex::Models {
 			// Returns |Q(s,0)-Q(s,1)| for the canonical encoding of 'state'.
 			// Returns -1.0 if the state is not in the gap map (e.g. not AwaitAction).
 			double  EvaluateRVIGap   (const RVISolution& sol, const State& state) const;
+			// Returns {Q(s,0), Q(s,1)} for the canonical encoding of 'state'.
+			// Returns {-1,-1} if the state is not in q_map (e.g. not AwaitAction).
+			std::pair<double,double> EvaluateRVIQValues(const RVISolution& sol, const State& state) const;
 
 			// ----------------------------------------------------------------
 			// Continuous-time event-driven simulator

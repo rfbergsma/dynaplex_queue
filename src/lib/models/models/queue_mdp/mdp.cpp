@@ -1548,8 +1548,6 @@ namespace DynaPlex::Models {
 			const MDP::RVISolution& sol,
 			int                     max_fil)
 		{
-			StateEncoder enc(mdp, sol.M);
-
 			std::cout << "\n  RVI Q-value table"
 			          << "  (canonical: pool0 busy on type0, pool1 idle)\n";
 			std::cout << "  delta = Q[skip] - Q[assign]"
@@ -1582,25 +1580,17 @@ namespace DynaPlex::Models {
 
 					if (s.server_manager.action_queue.empty()) continue;
 
-					// Clamp and encode
-					s.queue_manager.clamp_fil(sol.M);
-					uint64_t key = enc.encode(s);
-
-					// FIFO-top candidate job type
+					// FIFO-top candidate job type (before clamping, for display)
 					int top_type = (int)s.server_manager.action_queue[0].job_type;
 
-					// Optimal action from action_map (1=fallback if not found)
-					int64_t opt_act = 1;
-					auto it_a = sol.action_map.find(key);
-					if (it_a != sol.action_map.end()) opt_act = it_a->second;
+					// Optimal action (EvaluateRVIPolicy handles clamping + encoding)
+					int64_t opt_act = mdp.EvaluateRVIPolicy(sol, s);
 
-					// Q-values from q_map
-					auto it_q = sol.q_map.find(key);
-					if (it_q == sol.q_map.end()) continue;  // skip unrecorded states
+					// Q-values (EvaluateRVIQValues handles clamping + encoding)
+					auto [q_skip, q_assign] = mdp.EvaluateRVIQValues(sol, s);
+					if (q_skip < 0.0 && q_assign < 0.0) continue;  // not in q_map
 
-					double q_skip   = it_q->second.first;   // Q(s, action=0)
-					double q_assign = it_q->second.second;  // Q(s, action=1)
-					double delta    = q_skip - q_assign;
+					double delta = q_skip - q_assign;
 
 					std::cout << std::fixed << std::setprecision(6)
 					          << std::setw(5)  << f0
