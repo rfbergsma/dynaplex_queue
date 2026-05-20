@@ -1390,12 +1390,17 @@ namespace DynaPlex::Models {
 						if (f0 >= 0 && f1 >= 0 && f0 <= max_fil && f1 <= max_fil
 							&& grid[f0][f1] == -2)
 						{
-							// Canonical filter: exactly 1 server busy across all pools
+							// Canonical filter: pool 0 has exactly 1 server busy on its
+							// first job type, all other pools idle.  The weaker "busy==1"
+							// check fires on structurally different states in heterogeneous
+							// configs (e.g. specialist+generalist: pool 0 idle / pool 1
+							// busy on type 0), causing the first-visit guard to fill cells
+							// with the wrong policy before the true canonical state is seen.
 							int busy = 0;
 							for (const auto& row : sp.server_manager.busy_on)
 								for (int64_t b : row) busy += (int)b;
 
-							if (busy == 1) {
+							if (busy == 1 && sp.server_manager.busy_on[0][0] == 1) {
 								policy->SetAction(single);   // sets traj.NextAction
 								int64_t action = traj.NextAction;
 								if (action == 1) {
@@ -1524,6 +1529,92 @@ namespace DynaPlex::Models {
 			std::cout << "  Below diagonal (FIL_0>FIL_1): FIFO serves type 0  -> expect '0'\n";
 			std::cout << "  Above diagonal (FIL_1>FIL_0): FIFO serves type 1  -> expect '1'\n";
 			std::cout << "  Deviations from FIFO pattern = RVI overrides (type-0 priority)\n";
+		}
+
+		// -----------------------------------------------------------------------
+		// PrintRVIQValueTable
+		// For every canonical (FIL_0, FIL_1) state, prints Q(s,0) and Q(s,1) from
+		// the converged RVI solution so the caller can verify that the action in the
+		// action_map is consistent with the Q-values and inspect surprising cells.
+		//
+		// Canonical state: pool 0 busy on type 0, pool 1 idle (same as heatmaps).
+		// Columns:
+		//   f0  f1  top  act  Q[skip]   Q[assign]  delta=Q[skip]-Q[assign]
+		// delta > 0  -> assign is cheaper (action=1 optimal)
+		// delta < 0  -> skip   is cheaper (action=0 optimal)
+		// -----------------------------------------------------------------------
+		void PrintRVIQValueTable(
+			const MDP&              mdp,
+			const MDP::RVISolution& sol,
+			int                     max_fil)
+		{
+			StateEncoder enc(mdp, sol.M);
+
+			std::cout << "\n  RVI Q-value table"
+			          << "  (canonical: pool0 busy on type0, pool1 idle)\n";
+			std::cout << "  delta = Q[skip] - Q[assign]"
+			          << "  (delta>0 -> assign cheaper, delta<0 -> skip cheaper)\n\n";
+			std::cout << std::setw(5)  << "f0"
+			          << std::setw(5)  << "f1"
+			          << std::setw(6)  << "top"
+			          << std::setw(6)  << "act"
+			          << std::setw(14) << "Q[skip]"
+			          << std::setw(14) << "Q[assign]"
+			          << std::setw(14) << "delta"
+			          << "\n"
+			          << std::string(64, '-') << "\n";
+
+			for (int f0 = 0; f0 <= max_fil; ++f0) {
+				for (int f1 = 0; f1 <= max_fil; ++f1) {
+					// Build canonical AwaitAction state (same as PrintEnumeratedHeatmap)
+					MDP::State s;
+					s.queue_manager.initialize(
+						mdp.n_jobs, mdp.tick_rate, mdp.arrival_rates, mdp.max_queue_depth);
+					s.queue_manager.set_fil(0, (int64_t)f0);
+					s.queue_manager.set_fil(1, (int64_t)f1);
+					s.server_manager.initialize(&mdp.server_static_info, mdp.n_jobs);
+					s.server_manager.busy_on[0][0] = 1;
+					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
+					s.server_manager.set_action_counter(0);
+					s.server_manager.update_total_service_rate();
+					s.next_fil_job_type = -1;
+					s.cat = DynaPlex::StateCategory::AwaitAction();
+
+					if (s.server_manager.action_queue.empty()) continue;
+
+					// Clamp and encode
+					s.queue_manager.clamp_fil(sol.M);
+					uint64_t key = enc.encode(s);
+
+					// FIFO-top candidate job type
+					int top_type = (int)s.server_manager.action_queue[0].job_type;
+
+					// Optimal action from action_map (1=fallback if not found)
+					int64_t opt_act = 1;
+					auto it_a = sol.action_map.find(key);
+					if (it_a != sol.action_map.end()) opt_act = it_a->second;
+
+					// Q-values from q_map
+					auto it_q = sol.q_map.find(key);
+					if (it_q == sol.q_map.end()) continue;  // skip unrecorded states
+
+					double q_skip   = it_q->second.first;   // Q(s, action=0)
+					double q_assign = it_q->second.second;  // Q(s, action=1)
+					double delta    = q_skip - q_assign;
+
+					std::cout << std::fixed << std::setprecision(6)
+					          << std::setw(5)  << f0
+					          << std::setw(5)  << f1
+					          << std::setw(6)  << ("t" + std::to_string(top_type))
+					          << std::setw(6)  << opt_act
+					          << std::setw(14) << q_skip
+					          << std::setw(14) << q_assign
+					          << std::setw(14) << delta
+					          << "\n";
+				}
+			}
+			std::cout << "\nNote: act=1 should have delta>0; act=0 should have delta<0.\n"
+			          << "      Any row violating this is a consistency bug in the action_map.\n";
 		}
 
 		// -----------------------------------------------------------------------

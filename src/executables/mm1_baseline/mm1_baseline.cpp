@@ -284,6 +284,13 @@ static void run_stoch_fifo_experiment(
                 : raw_mdp.runRVI((int)rvi_M_fixed, 10000, /*silent=*/true);
             qm::PrintEnumeratedGapHeatmap(raw_mdp, rvi_sol, 12);
             dp.System() << "\n";
+
+            // --- Q-value table: verify action_map consistency and inspect ---
+            // surprsing cells (e.g. "0" below diagonal that should be skip).
+            dp.System() << "  RVI Q-value table (delta=Q[skip]-Q[assign];"
+                        << " delta>0 -> assign cheaper):\n";
+            qm::PrintRVIQValueTable(raw_mdp, rvi_sol, 12);
+            dp.System() << "\n";
         }
 
         // --- Table header ---

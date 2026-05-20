@@ -230,8 +230,10 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 		// Store the action-value gap |Q(s,0) - Q(s,1)| whenever both actions
 		// are reachable.  A near-zero gap flags a potential numerical near-tie.
 		if (q[0] < std::numeric_limits<double>::infinity() &&
-		    q[1] < std::numeric_limits<double>::infinity())
+		    q[1] < std::numeric_limits<double>::infinity()) {
 			sol.gap_map[key] = std::abs(q[0] - q[1]);
+			sol.q_map[key]   = { q[0], q[1] };
+		}
 	}
 
 	return sol;

@@ -742,6 +742,11 @@ namespace DynaPlex::Models {
 				// Action-value gap |Q(s,0) - Q(s,1)| for every AwaitAction state.
 				// Large gap = confident decision; near-zero gap = near-tie (potential noise).
 				std::unordered_map<uint64_t, double> gap_map;
+				// Raw Q-values: q_map[key] = {Q(s,0), Q(s,1)}.
+				// Q(s,0) = expected h-cost if we skip the top candidate.
+				// Q(s,1) = expected h-cost if we assign the top candidate.
+				// Stored for every AwaitAction state where both actions are reachable.
+				std::unordered_map<uint64_t, std::pair<double,double>> q_map;
 			};
 			RVISolution runRVI(int M, int max_iter = 10000, bool silent = false) const;  // solve at fixed M
 			RVISolution runRVI(double rel_tol = 1e-4, bool silent = false) const;       // auto-select M via heuristic + convergence check
@@ -935,6 +940,23 @@ namespace DynaPlex::Models {
 			const MDP&              mdp,
 			const MDP::RVISolution& sol,
 			int                     max_fil = 15);
+
+		/**
+		 * Diagnostic Q-value table for an RVI solution.
+		 *
+		 * For every canonical (FIL_0, FIL_1) state prints, per row:
+		 *   FIL_0  FIL_1  top(FIFO candidate)  opt_action  Q[skip]  Q[assign]  delta=Q[skip]-Q[assign]
+		 *
+		 * delta > 0  ->  assign is cheaper  (action=1 optimal)
+		 * delta < 0  ->  skip   is cheaper  (action=0 optimal)
+		 *
+		 * Use this to verify that the action map is consistent with the Q values
+		 * and to inspect cells that look counterintuitive in the policy heatmap.
+		 */
+		void PrintRVIQValueTable(
+			const MDP&              mdp,
+			const MDP::RVISolution& sol,
+			int                     max_fil = 12);
 
 	}  // namespace queue_mdp
 }  // namespace DynaPlex::Models
