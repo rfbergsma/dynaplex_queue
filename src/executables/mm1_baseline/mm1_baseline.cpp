@@ -272,6 +272,18 @@ static void run_stoch_fifo_experiment(
             dp.System() << "\n  RVI optimal policy:\n";
             qm::PrintPolicyHeatmap(mdp, rvi, 12);
             dp.System() << "\n";
+
+            // --- RVI gap (confidence) heatmap ---
+            // Re-runs RVI silently to obtain the RVISolution with gap_map populated.
+            // Each cell shows floor(log10|Q(s,0)-Q(s,1)|); large negative values
+            // (e.g. -5, -6) flag near-ties caused by binary-reward flat gradients.
+            dp.System() << "  RVI action-value gap  floor(log10|Q(s,0)-Q(s,1)|)"
+                        << "  (near-zero gap -> large negative = numerical near-tie):\n";
+            auto rvi_sol = use_rel_tol
+                ? raw_mdp.runRVI(0.01, /*silent=*/true)
+                : raw_mdp.runRVI((int)rvi_M_fixed, 10000, /*silent=*/true);
+            qm::PrintEnumeratedGapHeatmap(raw_mdp, rvi_sol, 12);
+            dp.System() << "\n";
         }
 
         // --- Table header ---

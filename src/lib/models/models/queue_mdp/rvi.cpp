@@ -205,26 +205,51 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 		}
 	}
 
-	// ---- Build action map from converged h ----
+	// ---- Build action map and gap map from converged h ----
 	RVISolution sol;
 	sol.g_star = g_star;
 	sol.M = M;
 
 	for (size_t i = 0; i < states.size(); ++i) {
 		if (states[i].cat != DynaPlex::StateCategory::AwaitAction()) continue;
-		double best_val = std::numeric_limits<double>::infinity();
-		int64_t best_a = 0;
+
+		// Compute Q(s, a) for both actions.
+		double q[2] = { std::numeric_limits<double>::infinity(),
+		                std::numeric_limits<double>::infinity() };
 		for (int a = 0; a < 2; ++a) {
 			if (transitions[i][a].empty()) continue;
-			double val = 0.0;
+			q[a] = 0.0;
 			for (const auto& t : transitions[i][a])
-				val += t.probability * h[t.next_state_idx];
-			if (val < best_val) { best_val = val; best_a = a; }
+				q[a] += t.probability * h[t.next_state_idx];
 		}
-		sol.action_map[encoder.encode(states[i])] = best_a;
+
+		int64_t best_a = (q[0] <= q[1]) ? 0 : 1;
+		uint64_t key = encoder.encode(states[i]);
+		sol.action_map[key] = best_a;
+
+		// Store the action-value gap |Q(s,0) - Q(s,1)| whenever both actions
+		// are reachable.  A near-zero gap flags a potential numerical near-tie.
+		if (q[0] < std::numeric_limits<double>::infinity() &&
+		    q[1] < std::numeric_limits<double>::infinity())
+			sol.gap_map[key] = std::abs(q[0] - q[1]);
 	}
 
 	return sol;
+}
+
+// ---- EvaluateRVIGap: |Q(s,0)-Q(s,1)| for a live state ----
+double MDP::EvaluateRVIGap(const RVISolution& sol, const State& state) const {
+	if (state.cat != DynaPlex::StateCategory::AwaitAction()) return -1.0;
+
+	// Identical clamping and encoding to EvaluateRVIPolicy.
+	StateEncoder enc(*this, sol.M);
+	State clamped = state;
+	clamped.queue_manager.clamp_fil(sol.M);
+
+	uint64_t key = enc.encode(clamped);
+	auto it = sol.gap_map.find(key);
+	if (it == sol.gap_map.end()) return -1.0;
+	return it->second;
 }
 
 // ---- runRVI(double rel_tol): auto-select M via heuristic + convergence check ----

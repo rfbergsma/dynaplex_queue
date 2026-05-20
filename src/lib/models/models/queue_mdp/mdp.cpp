@@ -1526,6 +1526,87 @@ namespace DynaPlex::Models {
 			std::cout << "  Deviations from FIFO pattern = RVI overrides (type-0 priority)\n";
 		}
 
+		// -----------------------------------------------------------------------
+		// PrintEnumeratedGapHeatmap
+		// For every (FIL_0, FIL_1) canonical state, prints the action-value gap
+		//   gap(s) = |Q(s,a=0) - Q(s,a=1)|
+		// stored in sol.gap_map.  Each cell shows floor(log10(gap)) so the range
+		// of the table spans ~6 decades in two characters per cell:
+		//   -6 .. -1 : near-tie  (decision unreliable, potential numerical noise)
+		//    0 ..  2  : decisive  (one action is clearly better)
+		//    ?        : gap not available (state not in map)
+		// -----------------------------------------------------------------------
+		void PrintEnumeratedGapHeatmap(
+			const MDP&              mdp,
+			const MDP::RVISolution& sol,
+			int                     max_fil)
+		{
+			// gap_grid[f0][f1] stores the gap value (-1.0 = not available)
+			std::vector<std::vector<double>> gap_grid(
+				max_fil + 1, std::vector<double>(max_fil + 1, -1.0));
+
+			for (int f0 = 0; f0 <= max_fil; ++f0) {
+				for (int f1 = 0; f1 <= max_fil; ++f1) {
+					// Build the same canonical state as PrintEnumeratedHeatmap
+					MDP::State s;
+					s.queue_manager.initialize(
+						mdp.n_jobs, mdp.tick_rate, mdp.arrival_rates, mdp.max_queue_depth);
+					s.queue_manager.set_fil(0, (int64_t)f0);
+					s.queue_manager.set_fil(1, (int64_t)f1);
+					s.server_manager.initialize(&mdp.server_static_info, mdp.n_jobs);
+					s.server_manager.busy_on[0][0] = 1;
+					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
+					s.server_manager.set_action_counter(0);
+					s.server_manager.update_total_service_rate();
+					s.next_fil_job_type = -1;
+					s.cat = DynaPlex::StateCategory::AwaitAction();
+
+					if (s.server_manager.action_queue.empty()) continue;
+
+					gap_grid[f0][f1] = mdp.EvaluateRVIGap(sol, s);
+				}
+			}
+
+			// Compute max gap for reference
+			double max_gap = 0.0;
+			for (auto& row : gap_grid)
+				for (double g : row)
+					if (g > max_gap) max_gap = g;
+
+			// Print header
+			std::cout << "\n  Action-value gap heatmap  |Q(s,0)-Q(s,1)|"
+			          << "  (cell = floor(log10(gap)), '?' = not available)\n";
+			std::cout << "  Max gap = " << std::scientific << std::setprecision(3)
+			          << max_gap << "\n";
+			std::cout << "\n      FIL_1:";
+			for (int f1 = 0; f1 <= max_fil; ++f1)
+				std::cout << std::setw(3) << f1;
+			std::cout << "\nFIL_0\n";
+
+			for (int f0 = 0; f0 <= max_fil; ++f0) {
+				std::cout << std::setw(7) << f0 << " :";
+				for (int f1 = 0; f1 <= max_fil; ++f1) {
+					double g = gap_grid[f0][f1];
+					if (g < 0.0) {
+						std::cout << "  ?";
+					} else if (g == 0.0) {
+						std::cout << " -∞";
+					} else {
+						int lg = (int)std::floor(std::log10(g));
+						// Clamp to [-9, +9] for display
+						if (lg < -9) lg = -9;
+						if (lg >  9) lg =  9;
+						std::cout << std::setw(3) << lg;
+					}
+				}
+				std::cout << "\n";
+			}
+			std::cout << "\nLegend: cell = floor(log10(|Q(s,0)-Q(s,1)|))\n"
+			          << "  Large negative (e.g. -5): near-tie, decision may be noise\n"
+			          << "  Close to 0 or positive  : decisive, decision is robust\n"
+			          << "  ?                       : gap not stored (state outside BFS)\n";
+		}
+
 		void Register(DynaPlex::Registry& registry)
 		{
 			DynaPlex::Erasure::MDPRegistrar<MDP>::RegisterModel("queue_mdp", "mdp for analyzing queueing models", registry);

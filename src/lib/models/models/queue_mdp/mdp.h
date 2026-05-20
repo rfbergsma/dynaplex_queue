@@ -739,10 +739,16 @@ namespace DynaPlex::Models {
 				double g_star;  // optimal average cost per time unit
 				int M;          // truncation level used
 				std::unordered_map<uint64_t, int64_t> action_map;  // encoded state key -> optimal action
+				// Action-value gap |Q(s,0) - Q(s,1)| for every AwaitAction state.
+				// Large gap = confident decision; near-zero gap = near-tie (potential noise).
+				std::unordered_map<uint64_t, double> gap_map;
 			};
 			RVISolution runRVI(int M, int max_iter = 10000, bool silent = false) const;  // solve at fixed M
 			RVISolution runRVI(double rel_tol = 1e-4, bool silent = false) const;       // auto-select M via heuristic + convergence check
 			int64_t EvaluateRVIPolicy(const RVISolution& sol, const State& state) const;
+			// Returns |Q(s,0)-Q(s,1)| for the canonical encoding of 'state'.
+			// Returns -1.0 if the state is not in the gap map (e.g. not AwaitAction).
+			double  EvaluateRVIGap   (const RVISolution& sol, const State& state) const;
 
 			// ----------------------------------------------------------------
 			// Continuous-time event-driven simulator
@@ -911,6 +917,24 @@ namespace DynaPlex::Models {
 			const MDP& mdp,
 			std::function<int64_t(const MDP::State&)> policy_fn,
 			int max_fil = 15);
+
+		/**
+		 * Confidence (Q-gap) heatmap for an RVI solution.
+		 * Each cell (FIL_0=f0, FIL_1=f1) shows floor(log10(|Q(s,0)-Q(s,1)|)).
+		 *
+		 * Large negative values (e.g. -5, -6) flag near-ties where the optimal
+		 * action is numerically indeterminate — a diagnostic for the binary-reward
+		 * instability described in rvi_analysis.tex Section 7.
+		 * Values near 0 or positive indicate decisive, robust decisions.
+		 *
+		 * @param mdp     Concrete queue_mdp::MDP instance
+		 * @param sol     Converged RVISolution (must have gap_map populated)
+		 * @param max_fil Grid spans [0, max_fil] x [0, max_fil]
+		 */
+		void PrintEnumeratedGapHeatmap(
+			const MDP&              mdp,
+			const MDP::RVISolution& sol,
+			int                     max_fil = 15);
 
 	}  // namespace queue_mdp
 }  // namespace DynaPlex::Models
