@@ -25,6 +25,7 @@
 #include <vector>
 #include <memory>
 #include <span>
+#include <filesystem>
 #include "dynaplex/dynaplexprovider.h"
 #include "dynaplex/policy.h"
 #include "../../../lib/models/models/queue_mdp/mdp.h"
@@ -329,7 +330,9 @@ static void run_stoch_fifo_experiment(
 
             // --- Export Q-value table to CSV for external visualisation ---
             if (!csv_stem.empty()) {
-                const std::string csv_path = csv_stem + "_rvi_qvalues.csv";
+                const std::string csv_path =
+                    dp.FilePath({"csv_results"}, csv_stem + "_rvi_qvalues.csv");
+                dp.System() << "  [CSV] Writing to: " << csv_path << "\n";
                 qm::ExportRVIQValuesToCSV(raw_mdp, rvi_sol, 12, csv_path);
             }
         }
@@ -539,6 +542,9 @@ int main()
 {
     auto& dp = DynaPlexProvider::Get();
     const double mu = 1.0;
+
+    dp.System() << "  [IO] cwd:     " << std::filesystem::current_path().string() << "\n";
+    dp.System() << "  [IO] IO root: " << dp.FilePath({"csv_results"}, "probe") << "\n";
 
     // ---- Run-control flags ----
     const bool run_exp1      = true;
