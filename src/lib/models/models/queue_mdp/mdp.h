@@ -961,6 +961,36 @@ namespace DynaPlex::Models {
 			const MDP::RVISolution& sol,
 			int                     max_fil = 12);
 
+		/**
+		 * Exports the RVI Q-value table to a CSV file for external visualisation.
+		 *
+		 * One row per canonical (FIL_0, FIL_1) state; states outside the BFS are skipped.
+		 * Canonical state: pool 0 busy on type 0, pool 1 idle (same as heatmaps).
+		 *
+		 * Columns: f0, f1, top_type, opt_action, opt_serves,
+		 *          q_serve_0, q_serve_1, delta, past_dl_0, past_dl_1
+		 *
+		 *   q_serve_j  = Q-value of serving type j immediately (type-indexed, not
+		 *                queue-order-indexed).  Obtained by combining lookups at
+		 *                action_counter=0 and action_counter=1; the StateEncoder
+		 *                encodes action_counter so both entries live in q_map.
+		 *   delta      = q_serve_1 − q_serve_0  (consistent sign regardless of FIFO top)
+		 *                positive → type 0 cheaper → BLUE; negative → type 1 cheaper → ORANGE
+		 *   opt_serves = which type the optimal policy serves (= top_type if opt_action=1,
+		 *                else 1−top_type)
+		 *   past_dl_n  = 1 if f_n > due_times[n] (deadline exceeded for type n)
+		 *
+		 * @param mdp       Concrete queue_mdp::MDP instance
+		 * @param sol       Converged RVISolution (must have q_map and action_map)
+		 * @param max_fil   Grid spans [0, max_fil] x [0, max_fil]
+		 * @param csv_path  Output file path (relative or absolute)
+		 */
+		void ExportRVIQValuesToCSV(
+			const MDP&              mdp,
+			const MDP::RVISolution& sol,
+			int                     max_fil,
+			const std::string&      csv_path);
+
 	}  // namespace queue_mdp
 }  // namespace DynaPlex::Models
 

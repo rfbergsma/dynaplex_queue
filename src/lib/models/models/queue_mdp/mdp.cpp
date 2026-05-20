@@ -9,6 +9,8 @@
 #include <functional>
 #include <span>
 #include <thread>
+#include <fstream>
+#include <filesystem>
 
 
 namespace DynaPlex::Models {
@@ -1605,6 +1607,131 @@ namespace DynaPlex::Models {
 			}
 			std::cout << "\nNote: act=1 should have delta>0; act=0 should have delta<0.\n"
 			          << "      Any row violating this is a consistency bug in the action_map.\n";
+		}
+
+		// -----------------------------------------------------------------------
+		// ExportRVIQValuesToCSV
+		// Writes one row per (FIL_0, FIL_1) canonical state to a CSV file so that
+		// external tools (e.g. Python / matplotlib) can produce custom visualisations.
+		//
+		// Columns:
+		//   f0            – FIL of head-of-queue job for type 0
+		//   f1            – FIL of head-of-queue job for type 1
+		//   top_type      – job type at position 0 in the FIFO action queue (0 or 1)
+		//   opt_action    – RVI optimal action (0=skip top, 1=assign top)
+		//   q_skip        – Q(s, a=0)  value from RVI
+		//   q_assign      – Q(s, a=1)  value from RVI
+		//   delta         – q_skip − q_assign  (positive → assign cheaper → BLUE)
+		//   past_dl_0     – 1 if f0 > due_times[0] (type-0 deadline exceeded)
+		//   past_dl_1     – 1 if f1 > due_times[1] (type-1 deadline exceeded)
+		//
+		// States where both Q-values are absent (outside BFS) are skipped.
+		// Canonical state: pool 0 busy on type 0, pool 1 idle (same as heatmaps).
+		// -----------------------------------------------------------------------
+		void ExportRVIQValuesToCSV(
+			const MDP&              mdp,
+			const MDP::RVISolution& sol,
+			int                     max_fil,
+			const std::string&      csv_path)
+		{
+			std::ofstream f(csv_path);
+			if (!f.is_open()) {
+				std::cerr << "ExportRVIQValuesToCSV: cannot open '" << csv_path << "'\n";
+				return;
+			}
+
+			// CSV header.
+			// q_serve_0 / q_serve_1 are type-indexed (not queue-order-indexed):
+			//   q_serve_j = Q(state, serve type j immediately)
+			//
+			// How they are obtained:
+			//   The StateEncoder encodes action_counter, so the q_map holds separate
+			//   entries for action_counter=0 (FIFO top is the candidate) and
+			//   action_counter=1 (second FIFO candidate is the only one left).
+			//   For top_type=0  (FIL_0 >= FIL_1):
+			//     q_serve_0 = q_assign at ac=0   (serve top directly)
+			//     q_serve_1 = q_assign at ac=1   (serve second after one skip)
+			//   For top_type=1  (FIL_1 > FIL_0):
+			//     q_serve_1 = q_assign at ac=0
+			//     q_serve_0 = q_assign at ac=1
+			//   Fallback: if ac=1 lookup is absent, q_skip from ac=0 is used
+			//   (equal to Q(ac=1, optimal) by the Bellman identity when skipping).
+			//
+			// delta = q_serve_1 - q_serve_0  (consistent sign regardless of FIFO top)
+			//   delta > 0  ->  type 0 cheaper  ->  serve type 0  (blue in heatmap)
+			//   delta < 0  ->  type 1 cheaper  ->  serve type 1  (orange)
+			//
+			// opt_serves: type that the optimal policy actually serves (0 or 1)
+			//   = top_type  if opt_action=1 (assign top)
+			//   = 1-top_type if opt_action=0 (skip top, serve other)
+			f << "f0,f1,top_type,opt_action,opt_serves,"
+			  << "q_serve_0,q_serve_1,delta,"
+			  << "past_dl_0,past_dl_1\n";
+
+			for (int f0 = 0; f0 <= max_fil; ++f0) {
+				for (int f1 = 0; f1 <= max_fil; ++f1) {
+					// --- Canonical state at action_counter=0 ---
+					MDP::State s;
+					s.queue_manager.initialize(
+						mdp.n_jobs, mdp.tick_rate, mdp.arrival_rates, mdp.max_queue_depth);
+					s.queue_manager.set_fil(0, (int64_t)f0);
+					s.queue_manager.set_fil(1, (int64_t)f1);
+					s.server_manager.initialize(&mdp.server_static_info, mdp.n_jobs);
+					s.server_manager.busy_on[0][0] = 1;
+					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
+					s.server_manager.set_action_counter(0);
+					s.server_manager.update_total_service_rate();
+					s.next_fil_job_type = -1;
+					s.cat = DynaPlex::StateCategory::AwaitAction();
+
+					if (s.server_manager.action_queue.empty()) continue;
+
+					int top_type    = (int)s.server_manager.action_queue[0].job_type;
+					int64_t opt_act = mdp.EvaluateRVIPolicy(sol, s);
+
+					// Q-values at action_counter=0: {Q(a=0 skip), Q(a=1 assign top)}
+					auto [q_skip_ac0, q_assign_ac0] = mdp.EvaluateRVIQValues(sol, s);
+					if (q_skip_ac0 < 0.0 && q_assign_ac0 < 0.0) continue;  // outside BFS
+
+					// --- Same state but action_counter=1 (second candidate now active) ---
+					// q_assign here = exact Q(serve the other type immediately)
+					MDP::State s1 = s;
+					s1.server_manager.set_action_counter(1);
+					auto [q_skip_ac1, q_assign_ac1] = mdp.EvaluateRVIQValues(sol, s1);
+					// Fallback: if ac=1 is absent use q_skip_ac0  (Bellman identity:
+					// Q(s, skip) = Q(s1, optimal) = min(q_skip_ac1, q_assign_ac1))
+					const double q_serve_other = (q_assign_ac1 >= 0.0)
+					                           ? q_assign_ac1
+					                           : q_skip_ac0;
+
+					// Map to type-indexed Q-values
+					const double q_serve_0 = (top_type == 0) ? q_assign_ac0 : q_serve_other;
+					const double q_serve_1 = (top_type == 0) ? q_serve_other : q_assign_ac0;
+
+					// Consistent delta: positive = type 0 cheaper = blue
+					const double delta = q_serve_1 - q_serve_0;
+
+					// Which type actually gets served by the optimal action
+					const int opt_serves = (opt_act == 1) ? top_type : (1 - top_type);
+
+					const int past_dl_0 = (f0 > (int64_t)mdp.due_times[0]) ? 1 : 0;
+					const int past_dl_1 = (f1 > (int64_t)mdp.due_times[1]) ? 1 : 0;
+
+					f << f0 << "," << f1 << ","
+					  << top_type << "," << opt_act << "," << opt_serves << ","
+					  << std::fixed << std::setprecision(6)
+					  << q_serve_0 << "," << q_serve_1 << "," << delta << ","
+					  << past_dl_0 << "," << past_dl_1 << "\n";
+				}
+			}
+
+			// Resolve absolute path for a helpful console message
+			std::error_code ec;
+			auto abs = std::filesystem::absolute(csv_path, ec);
+			std::cout << "  [CSV] Q-value table written to: "
+			          << (ec ? csv_path : abs.string())
+			          << "  (g*=" << std::fixed << std::setprecision(4) << sol.g_star
+			          << ", M=" << sol.M << ")\n";
 		}
 
 		// -----------------------------------------------------------------------

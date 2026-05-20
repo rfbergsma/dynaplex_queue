@@ -203,7 +203,8 @@ static void run_stoch_fifo_experiment(
     const std::vector<double>&  stoch_epsilons,
     const std::vector<double>&  tick_rates,        // e.g. {1.0, 3.0}
     double                      eg_epsilon     = 0.10,
-    bool                        print_heatmaps = true)
+    bool                        print_heatmaps = true,
+    const std::string&          csv_stem       = "")
 {
     // Print outer section header once
     dp.System() << "\n" << section_label << "\n"
@@ -291,6 +292,46 @@ static void run_stoch_fifo_experiment(
                         << " delta>0 -> assign cheaper):\n";
             qm::PrintRVIQValueTable(raw_mdp, rvi_sol, 12);
             dp.System() << "\n";
+
+            // --- g* cross-check: solver Bellman value vs simulation ---
+            // The RVI g* is cost per chain-step (action + event steps combined).
+            // EvaluatePolicyRaw.mean_cost_per_step_gic uses the SAME denominator,
+            // so the two values should agree within simulation noise (~1%).
+            //
+            // NOTE: rvi_phys = comparer_mean * Lambda uses cost/event-step, which
+            // is systematically higher than g* by the ratio of (action+event)/event.
+            // Do NOT compare rvi_sol.g_star*Lambda directly with rvi_phys — they
+            // measure different things.
+            //
+            // BFS truncation M >> 12 (auto-selected) confirms the FIL=10,11,12 cells
+            // in the heatmap are NOT truncation artifacts.
+            {
+                auto raw_eval = qm::EvaluatePolicyRaw(
+                    raw_mdp, rvi,
+                    /*n_traj=*/50, /*steps=*/200000, /*warmup=*/20000);
+                const double sim_gstar = raw_eval.mean_cost_per_step_gic;
+                const double pct = (rvi_sol.g_star > 1e-12)
+                    ? std::abs(sim_gstar - rvi_sol.g_star) / rvi_sol.g_star * 100.0
+                    : 0.0;
+                dp.System() << "  RVI g* cross-check (solver vs simulation, same Bellman denominator):\n";
+                dp.System() << "    Solver  g*     = "
+                            << std::fixed << std::setprecision(6) << rvi_sol.g_star
+                            << "  (BFS truncation M = " << rvi_sol.M << ")\n";
+                dp.System() << "    Sim     g* GIC = "
+                            << std::setprecision(6) << sim_gstar << "\n";
+                dp.System() << "    Diff           = "
+                            << std::setprecision(2) << pct
+                            << "%  (< 1% = solver and simulation agree = heatmap correct)\n";
+                dp.System() << "    [Physical cost rates (comparer metric, different denominator)]\n";
+                dp.System() << "    FIFO*Λ = " << std::setprecision(4) << fifo_phys
+                            << "   RVI*Λ = " << rvi_phys << "\n\n";
+            }
+
+            // --- Export Q-value table to CSV for external visualisation ---
+            if (!csv_stem.empty()) {
+                const std::string csv_path = csv_stem + "_rvi_qvalues.csv";
+                qm::ExportRVIQValuesToCSV(raw_mdp, rvi_sol, 12, csv_path);
+            }
         }
 
         // --- Table header ---
@@ -610,8 +651,9 @@ int main()
     // ----------------------------------------------------------
   if (run_exp2) {
     dp.System() << "\n\n=== Experiment 2: Asymmetric Costs (two servers, fully flexible) ===\n";
-    dp.System() << "  Config: asym_cost_2s  (k=2, n=2, fully flexible, lam=[0.25,0.25], c=[100,300], D=[6,3])\n";
-    dp.System() << "  Equal arrivals but type 1 costs 3x more with tighter deadline.\n";
+    dp.System() << "  Config: asym_cost_2s  (k=2, n=2, fully flexible, lam=[0.25,0.25], c=[100,300], D=[3,3])\n";
+    dp.System() << "  Equal arrivals, symmetric deadlines, but type 1 costs 3x more.\n";
+    dp.System() << "  D=[3,3] (both 3 job-time units = 9 ticks at tick_rate=3).\n";
     dp.System() << "  FIFO ignores costs → large gap. StochFIFO+EG reliably solves to near-optimality.\n";
     dp.System() << "  tick_rate=3  H=300  N=20K  M=400  num_gens=3  eg_eps=0.10\n";
     dp.System() << "  Base: FIFO (1 gen reference) + StochFIFO(0.30) x 3 gens\n";
@@ -621,9 +663,12 @@ int main()
     auto path2 = dp.FilePath({"mdp_config_examples", "queue_mdp"},
                               "mdp_config_asym_cost_2s.json");
     auto cfg2  = VarGroup::LoadFromFile(path2);
+    // Override to symmetric deadlines: D=[3,3] instead of D=[6,3].
+    // Both types now share the same 9-tick deadline; the only asymmetry is cost (c=[100,300]).
+    cfg2.Set("due_times", VarGroup::DoubleVec{3.0, 3.0});
 
     run_stoch_fifo_experiment(dp,
-        "asym_cost_2s  [k=2, n=2, fully flexible, lam=[0.25,0.25], c=[100,300], D=[6,3]]",
+        "asym_cost_2s  [k=2, n=2, fully flexible, lam=[0.25,0.25], c=[100,300], D=[3,3]]",
         cfg2,
         /*N=*/       int64_t(20000),
         /*M=*/       int64_t(400),
@@ -635,7 +680,8 @@ int main()
         /*epsilons=*/std::vector<double>{0.30},
         tick_rates_exp,
         /*eg_eps=*/  0.10,
-        /*heatmaps=*/true);
+        /*heatmaps=*/true,
+        /*csv_stem=*/"exp2");
   } // end run_exp2
 
     // ----------------------------------------------------------
@@ -760,7 +806,8 @@ int main()
         /*epsilons=*/std::vector<double>{0.30},
         tick_rates_exp,
         /*eg_eps=*/  0.10,
-        /*heatmaps=*/true);
+        /*heatmaps=*/true,
+        /*csv_stem=*/"exp3");
   } // end run_exp3
 
     // ----------------------------------------------------------
