@@ -333,7 +333,13 @@ static void run_stoch_fifo_experiment(
                 const std::string csv_path =
                     dp.FilePath({"csv_results"}, csv_stem + "_rvi_qvalues.csv");
                 dp.System() << "  [CSV] Writing to: " << csv_path << "\n";
-                qm::ExportRVIQValuesToCSV(raw_mdp, rvi_sol, 12, csv_path);
+                // Extend grid past the largest deadline so the deadline region
+                // is visible in the heatmap (e.g. Exp 3 has D0=18 ticks).
+                int max_fil_csv = 12;
+                for (size_t n = 0; n < raw_mdp.due_times.size(); ++n)
+                    max_fil_csv = std::max(max_fil_csv,
+                                           (int)raw_mdp.due_times[n] + 6);
+                qm::ExportRVIQValuesToCSV(raw_mdp, rvi_sol, max_fil_csv, csv_path);
             }
         }
 

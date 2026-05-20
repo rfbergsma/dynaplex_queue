@@ -88,8 +88,14 @@ def deadline_lines(df: pd.DataFrame):
 
     past_dl_n == 0 when FIL_n <= due_time_n, so the deadline boundary
     sits at  max(f_n | past_dl_n == 0) + 0.5.
+
+    Returns None if the deadline is never exceeded within this grid
+    (i.e. past_dl_n is always 0 — the deadline lies beyond max_fil).
     """
     def _dl(fil_col, flag_col):
+        if df[flag_col].max() == 0:
+            # Deadline is beyond the grid — no line to draw
+            return None
         rows = df[df[flag_col] == 0]
         return float(rows[fil_col].max()) + 0.5 if not rows.empty else None
 
