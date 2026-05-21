@@ -157,10 +157,10 @@ static VarGroup make_specialist_generalist_config()
     srv1.Add("can_serve",     VarGroup::Int64Vec{0, 1});
     srv1.Add("service_rates", VarGroup::DoubleVec{1.0, 1.0});
 
-    // D0 = 18 ticks, D1 = 1 tick  (at tick_rate=3: physical = 6.0 and 0.333)
-    // lam0=0.8, lam1=0.2 selected from grid: gives ~25.5% FIFO gap.
-    // D1=1 tick means FIL=1 already incurs cost → maximum routing pressure.
-    const double tick_rate_for_D = 3.0;
+    // D=[3,3] in physical time = 9 ticks each at tick_rate=3.
+    // Symmetric deadlines match Exp 2's scale; routing conflict preserved by
+    // server specialisation (type 1 can only use server 1) and 3x cost ratio.
+    // lam0=0.8, lam1=0.2 selected from grid search.
     VarGroup cfg;
     cfg.Add("id",              std::string("queue_mdp"));
     cfg.Add("discount_factor", 1.0);
@@ -170,8 +170,7 @@ static VarGroup make_specialist_generalist_config()
     cfg.Add("reward_type",     int64_t(0));
     cfg.Add("arrival_rates",   VarGroup::DoubleVec{0.8, 0.2});
     cfg.Add("cost_rates",      VarGroup::DoubleVec{100.0, 300.0});
-    cfg.Add("due_times",       VarGroup::DoubleVec{18.0 / tick_rate_for_D,
-                                                    1.0 / tick_rate_for_D});
+    cfg.Add("due_times",       VarGroup::DoubleVec{3.0, 3.0});
     cfg.Add("server_type_0",   srv0);
     cfg.Add("server_type_1",   srv1);
     return cfg;
@@ -705,13 +704,13 @@ int main()
   if (run_exp3_grid) {
     dp.System() << "\n\n=== Experiment 3 grid search: specialist+generalist ===\n";
     dp.System() << "  Server 0: specialist (type 0 only)  Server 1: generalist (both)\n";
-    dp.System() << "  Fixed: D1_ticks=1  D0_ticks=18  c=[100,300]  mu=[1,1]  tick_rate=3\n";
-    dp.System() << "  D1=1 tick is the most demanding; from the D1 scan, D1 barely affects gap.\n";
+    dp.System() << "  Fixed: D=[9,9] ticks (=3.0 physical each at tick_rate=3)  c=[100,300]  mu=[1,1]\n";
+    dp.System() << "  Symmetric deadlines; routing conflict driven by server specialisation + 3x cost.\n";
     dp.System() << "  Rows=lam0 (type 0 load on generalist).  Cols=lam1 (type 1 load).\n";
     dp.System() << "  Cells show FIFO/RVI gap (%) — pick config with largest gap for full training.\n\n";
 
-    const int64_t  grid_D0ticks = 18;    // D0 physical = 18/3 = 6.0
-    const int64_t  grid_D1ticks = 1;     // D1 = 1 tick (FIL=1 already late → max pressure)
+    const int64_t  grid_D0ticks = 9;     // D=[3,3] physical → 9 ticks each at tick_rate=3
+    const int64_t  grid_D1ticks = 9;     // symmetric deadlines, matches Exp 2 scale
     const double   grid_tr      = 3.0;
     const std::vector<double> lam0_vals = {0.4, 0.6, 0.8, 0.9};
     const std::vector<double> lam1_vals = {0.2, 0.4, 0.6};
@@ -797,16 +796,16 @@ int main()
     dp.System() << "\n\n=== Experiment 3: Heterogeneous skill sets (specialist + generalist) ===\n";
     dp.System() << "  Server 0: specialist — serves only job type 0.\n";
     dp.System() << "  Server 1: generalist — serves both job types.\n";
-    dp.System() << "  lam=[0.8, 0.2], c=[100, 300], D=[18tk, 1tk]  (physical D=[6.0, 0.33] at tick_rate=3)\n";
+    dp.System() << "  lam=[0.8, 0.2], c=[100, 300], D=[3,3] physical (=9 ticks at tick_rate=3)\n";
     dp.System() << "  lam0=0.8: server 0 at 80% load, frequent overflow to server 1 creates routing conflict.\n";
     dp.System() << "  lam1=0.2: server 1 has spare capacity that FIFO wastes on type 0 overflow.\n";
-    dp.System() << "  D1=1 tick: type 1 already late after 1 tick → maximum routing pressure.\n";
-    dp.System() << "  Config selected from grid search (lam0=0.8, lam1=0.2 gave ~25.5% FIFO gap).\n";
+    dp.System() << "  Symmetric deadlines: routing tension driven by specialisation + 3x cost ratio.\n";
+    dp.System() << "  Config selected from grid search (lam0=0.8, lam1=0.2).\n";
     dp.System() << "  tick_rate=3  H=300  N=20K  M=400  num_gens=3  eg_eps=0.10\n";
     dp.System() << "  Base: FIFO (1 gen reference) + StochFIFO(0.30) x 3 gens\n";
 
     run_stoch_fifo_experiment(dp,
-        "specialist_gen  [srv0=type0_only, srv1=both, lam=[0.8,0.2], c=[100,300], D=[18tk,1tk]]",
+        "specialist_gen  [srv0=type0_only, srv1=both, lam=[0.8,0.2], c=[100,300], D=[3,3]]",
         make_specialist_generalist_config(),
         /*N=*/       int64_t(20000),
         /*M=*/       int64_t(400),

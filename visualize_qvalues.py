@@ -237,8 +237,7 @@ def visualise(csv_path: str, save: bool):
     fig1, axes = plt.subplots(1, 3, figsize=(17, 5.5),
                               gridspec_kw={"wspace": 0.32})
     fig1.suptitle(
-        f"Scheduling policy comparison — {stem.upper()}   "
-        f"(λ=[0.25,0.25], c=[100,300], D=[3,3])",
+        f"Scheduling policy comparison — {stem.upper()}",
         fontsize=12, fontweight="bold",
     )
 
