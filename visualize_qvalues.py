@@ -40,6 +40,32 @@ import matplotlib.patches as mpatches
 from matplotlib.colors import LinearSegmentedColormap
 
 # ---------------------------------------------------------------------------
+# LaTeX font rendering
+# ---------------------------------------------------------------------------
+# USE_LATEX = True  : render all text through pdflatex → fonts match the paper
+#                     exactly; requires a working LaTeX installation.
+# USE_LATEX = False : matplotlib built-in fonts — faster, no LaTeX needed,
+#                     good for quick interactive inspection.
+USE_LATEX = True
+
+if USE_LATEX:
+    matplotlib.rcParams.update({
+        "text.usetex":    True,
+        "pgf.texsystem":  "pdflatex",
+        "font.family":    "serif",
+        "font.size":      9,
+        "axes.labelsize": 9,
+        "axes.titlesize": 10,
+        "legend.fontsize":8,
+        "xtick.labelsize":8,
+        "ytick.labelsize":8,
+        "pgf.preamble":   r"\usepackage{amsmath}",
+    })
+    SAVE_EXT = ".pdf"
+else:
+    SAVE_EXT = ".png"
+
+# ---------------------------------------------------------------------------
 # Colour constants (match LaTeX heatmap palette)
 # ---------------------------------------------------------------------------
 BLUE   = "#4472C4"   # type 0
@@ -272,10 +298,12 @@ def visualise(csv_path: str, save: bool):
     # ── Save or show ──────────────────────────────────────────────────────────
     if save:
         out_dir = os.path.dirname(os.path.abspath(csv_path))
-        out1 = os.path.join(out_dir, f"{stem}_policy_comparison.png")
-        out2 = os.path.join(out_dir, f"{stem}_qvalue_surfaces.png")
-        fig1.savefig(out1, dpi=150, bbox_inches="tight")
-        fig2.savefig(out2, dpi=150, bbox_inches="tight")
+        out1 = os.path.join(out_dir, f"{stem}_policy_comparison{SAVE_EXT}")
+        out2 = os.path.join(out_dir, f"{stem}_qvalue_surfaces{SAVE_EXT}")
+        # PDF is vector; omit dpi for PDF (irrelevant), keep for PNG fallback
+        save_kw = {"bbox_inches": "tight"} if SAVE_EXT == ".pdf" else {"bbox_inches": "tight", "dpi": 150}
+        fig1.savefig(out1, **save_kw)
+        fig2.savefig(out2, **save_kw)
         plt.close("all")
         print(f"  Saved: {out1}")
         print(f"  Saved: {out2}")
