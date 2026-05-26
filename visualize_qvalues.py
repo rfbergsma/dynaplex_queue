@@ -46,7 +46,7 @@ from matplotlib.colors import LinearSegmentedColormap
 #                     exactly; requires a working LaTeX installation.
 # USE_LATEX = False : matplotlib built-in fonts — faster, no LaTeX needed,
 #                     good for quick interactive inspection.
-USE_LATEX = True
+USE_LATEX = False
 
 if USE_LATEX:
     matplotlib.rcParams.update({
@@ -63,7 +63,7 @@ if USE_LATEX:
     })
     SAVE_EXT = ".pdf"
 else:
-    SAVE_EXT = ".png"
+    SAVE_EXT = ".pdf"
 
 # ---------------------------------------------------------------------------
 # Colour constants (match LaTeX heatmap palette)
@@ -259,11 +259,15 @@ def visualise(csv_path: str, save: bool):
     print(f"  delta in [{df['delta'].min():.2f}, {df['delta'].max():.2f}]  "
           f"near-tie cells: {(df['delta'].abs() < NEAR_TIE_THRESH).sum()}")
 
+    # Pretty-print stem: "exp2" -> "Experiment 2", "exp3" -> "Experiment 3"
+    import re
+    display_stem = re.sub(r"(?i)^exp(\d+)$", r"Experiment \1", stem)
+
     # ── Figure 1: FIFO | RVI | delta ─────────────────────────────────────────
     fig1, axes = plt.subplots(1, 3, figsize=(17, 5.5),
-                              gridspec_kw={"wspace": 0.32})
+                              layout="constrained")
     fig1.suptitle(
-        f"Scheduling policy comparison — {stem.upper()}",
+        f"Policy Comparison — {display_stem}",
         fontsize=12, fontweight="bold",
     )
 
@@ -274,15 +278,13 @@ def visualise(csv_path: str, save: bool):
                       "RVI optimal policy",
                       dl0, dl1)
     im_d = plot_delta_panel(axes[2], df, grid_delta, dl0, dl1)
-    fig1.colorbar(im_d, ax=axes[2], shrink=0.82, label="Δ (cost units)")
-
-    fig1.tight_layout(rect=[0, 0, 1, 0.95])
+    fig1.colorbar(im_d, ax=axes[2], shrink=0.82, label=r"$\Delta$ (cost units)")
 
     # ── Figure 2: Q-value surfaces ────────────────────────────────────────────
     fig2, axes2 = plt.subplots(1, 2, figsize=(12, 5.5),
-                               gridspec_kw={"wspace": 0.32})
+                               layout="constrained")
     fig2.suptitle(
-        f"Q-value surfaces — {stem.upper()}",
+        f"Q-value surfaces — {display_stem}",
         fontsize=12, fontweight="bold",
     )
 
@@ -292,8 +294,6 @@ def visualise(csv_path: str, save: bool):
     plot_qvalue_surface(axes2[1], fig2, grid_q1,
                         "Q(serve type 1)   [q_serve_1]",
                         "Oranges_r", dl0, dl1)
-
-    fig2.tight_layout(rect=[0, 0, 1, 0.95])
 
     # ── Save or show ──────────────────────────────────────────────────────────
     if save:

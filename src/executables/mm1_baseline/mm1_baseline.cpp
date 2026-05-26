@@ -15,7 +15,8 @@
 //
 //   Experiment 3 (sec:exp3) — Two servers, heterogeneous skill sets.
 //     Server 0: specialist (type 0 only).  Server 1: generalist (types 0+1).
-//     lam=[0.80, 0.60], c=[100,300], D=[5,3].
+//     lam=[0.80, 0.20], c=[100,300], D=[1,1] physical (3 ticks at tick_rate=3).
+//     Tight symmetric deadlines amplify the routing conflict.
 //     Same training setup as Experiment 2.
 
 #include <iostream>
@@ -134,14 +135,15 @@ static VarGroup make_dcl_cfg(int64_t N, int64_t M, int64_t H,
 
 // ============================================================
 // Experiment 3 config: specialist (type 0) + generalist (types 0+1)
-// lam=[0.80, 0.20], c=[100, 300], D=[18tk, 1tk], tick_rate overridden externally.
+// lam=[0.80, 0.20], c=[100, 300], D=[1,1] physical (=3 ticks at tick_rate=3).
 // Total load = 1.00 / capacity 2.0 = rho_total = 0.50.
-// lam0=0.8 chosen from grid search: high type 0 load forces overflow onto
-// server 1, creating routing conflict → ~25.5% FIFO gap.
-// lam1=0.2: type 1 has spare capacity on server 1 that FIFO wastes on type 0.
-// D1=1 tick: type 1 already late after 1 tick → maximum routing pressure.
+// D=[1,1]: tight symmetric deadlines — a job waiting even 1 time unit will
+//   nearly always miss its deadline, creating strong routing urgency.
+//   FIFO's cost-blindness becomes very expensive: it can assign the generalist
+//   to type 0 overflow just as a type 1 job with an imminent deadline arrives.
 // Routing tension: type 1 can ONLY use server 1; optimal policy
-// reserves server 1 for type 1 when type 1 is waiting.
+//   reserves server 1 for type 1 when type 1 is waiting.
+// lam0=0.8, lam1=0.2 selected from grid search (run_exp3_grid).
 // ============================================================
 static VarGroup make_specialist_generalist_config()
 {
@@ -157,9 +159,10 @@ static VarGroup make_specialist_generalist_config()
     srv1.Add("can_serve",     VarGroup::Int64Vec{0, 1});
     srv1.Add("service_rates", VarGroup::DoubleVec{1.0, 1.0});
 
-    // D=[3,3] in physical time = 9 ticks each at tick_rate=3.
-    // Symmetric deadlines match Exp 2's scale; routing conflict preserved by
-    // server specialisation (type 1 can only use server 1) and 3x cost ratio.
+    // D=[1,1] in physical time = 3 ticks each at tick_rate=3.
+    // Tight symmetric deadlines: routing conflict acute because both types
+    // hit their deadline quickly when waiting; 3x cost ratio amplifies the
+    // cost of assigning the generalist to the wrong type.
     // lam0=0.8, lam1=0.2 selected from grid search.
     VarGroup cfg;
     cfg.Add("id",              std::string("queue_mdp"));
@@ -170,7 +173,7 @@ static VarGroup make_specialist_generalist_config()
     cfg.Add("reward_type",     int64_t(0));
     cfg.Add("arrival_rates",   VarGroup::DoubleVec{0.8, 0.2});
     cfg.Add("cost_rates",      VarGroup::DoubleVec{100.0, 300.0});
-    cfg.Add("due_times",       VarGroup::DoubleVec{3.0, 3.0});
+    cfg.Add("due_times",       VarGroup::DoubleVec{1.0, 1.0});
     cfg.Add("server_type_0",   srv0);
     cfg.Add("server_type_1",   srv1);
     return cfg;
@@ -704,13 +707,13 @@ int main()
   if (run_exp3_grid) {
     dp.System() << "\n\n=== Experiment 3 grid search: specialist+generalist ===\n";
     dp.System() << "  Server 0: specialist (type 0 only)  Server 1: generalist (both)\n";
-    dp.System() << "  Fixed: D=[9,9] ticks (=3.0 physical each at tick_rate=3)  c=[100,300]  mu=[1,1]\n";
-    dp.System() << "  Symmetric deadlines; routing conflict driven by server specialisation + 3x cost.\n";
+    dp.System() << "  Fixed: D=[3,3] ticks (=1.0 physical each at tick_rate=3)  c=[100,300]  mu=[1,1]\n";
+    dp.System() << "  Tight symmetric deadlines; routing conflict driven by server specialisation + 3x cost.\n";
     dp.System() << "  Rows=lam0 (type 0 load on generalist).  Cols=lam1 (type 1 load).\n";
     dp.System() << "  Cells show FIFO/RVI gap (%) — pick config with largest gap for full training.\n\n";
 
-    const int64_t  grid_D0ticks = 9;     // D=[3,3] physical → 9 ticks each at tick_rate=3
-    const int64_t  grid_D1ticks = 9;     // symmetric deadlines, matches Exp 2 scale
+    const int64_t  grid_D0ticks = 3;     // D=[1,1] physical → 3 ticks each at tick_rate=3
+    const int64_t  grid_D1ticks = 3;     // tight symmetric deadlines
     const double   grid_tr      = 3.0;
     const std::vector<double> lam0_vals = {0.4, 0.6, 0.8, 0.9};
     const std::vector<double> lam1_vals = {0.2, 0.4, 0.6};
@@ -796,16 +799,17 @@ int main()
     dp.System() << "\n\n=== Experiment 3: Heterogeneous skill sets (specialist + generalist) ===\n";
     dp.System() << "  Server 0: specialist — serves only job type 0.\n";
     dp.System() << "  Server 1: generalist — serves both job types.\n";
-    dp.System() << "  lam=[0.8, 0.2], c=[100, 300], D=[3,3] physical (=9 ticks at tick_rate=3)\n";
+    dp.System() << "  lam=[0.8, 0.2], c=[100, 300], D=[1,1] physical (=3 ticks at tick_rate=3)\n";
+    dp.System() << "  D=[1,1]: tight deadlines — any waiting nearly guarantees a missed deadline,\n";
+    dp.System() << "  making the generalist's routing decision highly consequential.\n";
     dp.System() << "  lam0=0.8: server 0 at 80% load, frequent overflow to server 1 creates routing conflict.\n";
     dp.System() << "  lam1=0.2: server 1 has spare capacity that FIFO wastes on type 0 overflow.\n";
-    dp.System() << "  Symmetric deadlines: routing tension driven by specialisation + 3x cost ratio.\n";
     dp.System() << "  Config selected from grid search (lam0=0.8, lam1=0.2).\n";
     dp.System() << "  tick_rate=3  H=300  N=20K  M=400  num_gens=3  eg_eps=0.10\n";
     dp.System() << "  Base: FIFO (1 gen reference) + StochFIFO(0.30) x 3 gens\n";
 
     run_stoch_fifo_experiment(dp,
-        "specialist_gen  [srv0=type0_only, srv1=both, lam=[0.8,0.2], c=[100,300], D=[3,3]]",
+        "specialist_gen  [srv0=type0_only, srv1=both, lam=[0.8,0.2], c=[100,300], D=[1,1]]",
         make_specialist_generalist_config(),
         /*N=*/       int64_t(20000),
         /*M=*/       int64_t(400),
