@@ -70,13 +70,22 @@ else:
 # ---------------------------------------------------------------------------
 BLUE   = "#4472C4"   # type 0
 ORANGE = "#ED7D31"   # type 1
+GRAY   = "#888888"   # idle (third action category for RVI panel)
 NEAR_TIE_THRESH = 5  # |delta| below this value is highlighted as near-tie
 
-# Two-colour discrete map: 0 -> blue, 1 -> orange
-POLICY_CMAP = LinearSegmentedColormap.from_list("policy", [BLUE, ORANGE], N=2)
+# Two-colour discrete map: 0 -> blue, 1 -> orange  (used for FIFO panel, which
+# can never produce idle).
+POLICY_CMAP   = LinearSegmentedColormap.from_list("policy",  [BLUE, ORANGE],       N=2)
+# Three-colour map: 0 -> blue, 1 -> orange, 2 -> gray  (used whenever the grid
+# contains the idle marker, i.e. for the RVI panel after the C++ fix).
+POLICY_CMAP_3 = LinearSegmentedColormap.from_list("policy3", [BLUE, ORANGE, GRAY], N=3)
 
-# Diverging map for delta: blue side = type 0 cheaper, red side = type 1 cheaper
-DELTA_CMAP = "RdBu_r"
+# Diverging map for delta.  Sign convention from the C++ exporter:
+#   delta > 0  =>  type 0 cheaper  =>  serve type 0  =>  BLUE
+#   delta < 0  =>  type 1 cheaper  =>  serve type 1  =>  RED/ORANGE
+# RdBu maps high values to BLUE and low values to RED, which matches the
+# convention above.  (RdBu_r would invert the legend.)
+DELTA_CMAP = "RdBu"
 
 
 # ---------------------------------------------------------------------------
@@ -170,22 +179,36 @@ def set_axis_labels(ax):
 # ---------------------------------------------------------------------------
 
 def plot_policy_panel(ax, grid, title, dl0, dl1):
-    """Render a discrete policy grid (0 = blue/type-0, 1 = orange/type-1)."""
+    """Render a discrete policy grid.
+
+    Two-action mode (FIFO panel): 0 = BLUE / serve type 0, 1 = ORANGE / serve type 1.
+    Three-action mode (RVI panel with idle detection): adds 2 = GRAY / idle.
+    Auto-detected from the data — if any cell has value 2, the 3-colour map is used.
+    """
+    has_idle = np.nanmax(grid) >= 2
+    cmap     = POLICY_CMAP_3 if has_idle else POLICY_CMAP
+    vmax_    = 2 if has_idle else 1
     ax.imshow(
         grid, origin="lower", aspect="equal",
-        cmap=POLICY_CMAP, vmin=0, vmax=1,
+        cmap=cmap, vmin=0, vmax=vmax_,
         interpolation="nearest",
     )
     dl_items = add_deadline_lines(ax, dl0, dl1)
     ax.set_title(title, fontsize=10, fontweight="bold")
     set_axis_labels(ax)
 
-    patch_0 = mpatches.Patch(facecolor=BLUE,   edgecolor="black", linewidth=0.4,
-                              label="Serve type 0")
-    patch_1 = mpatches.Patch(facecolor=ORANGE, edgecolor="black", linewidth=0.4,
-                              label="Serve type 1")
-    handles = [patch_0, patch_1] + [h for h, _ in dl_items]
-    labels  = ["Serve type 0", "Serve type 1"] + [lb for _, lb in dl_items]
+    patches = [
+        mpatches.Patch(facecolor=BLUE,   edgecolor="black", linewidth=0.4,
+                        label="Serve type 0"),
+        mpatches.Patch(facecolor=ORANGE, edgecolor="black", linewidth=0.4,
+                        label="Serve type 1"),
+    ]
+    if has_idle:
+        patches.append(
+            mpatches.Patch(facecolor=GRAY, edgecolor="black", linewidth=0.4,
+                            label="Idle"))
+    handles = patches + [h for h, _ in dl_items]
+    labels  = [p.get_label() for p in patches] + [lb for _, lb in dl_items]
     ax.legend(handles=handles, labels=labels, fontsize=7.5,
               loc="upper left", framealpha=0.88)
 

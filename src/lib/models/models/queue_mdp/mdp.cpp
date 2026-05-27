@@ -1661,9 +1661,22 @@ namespace DynaPlex::Models {
 			//   delta > 0  ->  type 0 cheaper  ->  serve type 0  (blue in heatmap)
 			//   delta < 0  ->  type 1 cheaper  ->  serve type 1  (orange)
 			//
-			// opt_serves: type that the optimal policy actually serves (0 or 1)
-			//   = top_type  if opt_action=1 (assign top)
-			//   = 1-top_type if opt_action=0 (skip top, serve other)
+			// opt_serves: outcome the optimal policy produces (0, 1, or 2=idle).
+			//   The action space is binary per action_counter (skip/assign), but the
+			//   underlying decision is ternary: serve type-0, serve type-1, or idle.
+			//   Mapping binary -> ternary requires checking BOTH ac=0 and ac=1, because
+			//   "skip top" can either lead to "serve other" or "skip other (= idle)".
+			//   The old logic
+			//       opt_serves = (opt_act==1) ? top_type : (1-top_type)
+			//   collapsed "skip top, then idle" into "serve other type," painting
+			//   true-idle cells with the wrong colour (the BLUE region in the low-FIL
+			//   area, where the optimal is actually to idle, not to serve type-0).
+			//
+			//   Correct mapping (now used below):
+			//     opt_act_ac0 == 1                              -> top_type
+			//     opt_act_ac0 == 0 AND no second candidate      -> 2 (idle)
+			//     opt_act_ac0 == 0 AND opt_act_ac1 == 1         -> 1 - top_type
+			//     opt_act_ac0 == 0 AND opt_act_ac1 == 0         -> 2 (idle)
 			f << "f0,f1,top_type,opt_action,opt_serves,"
 			  << "q_serve_0,q_serve_1,delta,"
 			  << "past_dl_0,past_dl_1\n";
@@ -1711,8 +1724,22 @@ namespace DynaPlex::Models {
 					// Consistent delta: positive = type 0 cheaper = blue
 					const double delta = q_serve_1 - q_serve_0;
 
-					// Which type actually gets served by the optimal action
-					const int opt_serves = (opt_act == 1) ? top_type : (1 - top_type);
+					// 3-way outcome: 0 = serve type-0, 1 = serve type-1, 2 = idle.
+					// Requires inspecting the optimal at action_counter=1 to distinguish
+					// "skip top then serve other" from "skip top then skip other (idle)".
+					int opt_serves;
+					const bool has_second_candidate =
+						(s.server_manager.action_queue.size() >= 2);
+					if (opt_act == 1) {
+						opt_serves = top_type;                       // assign top
+					} else if (!has_second_candidate) {
+						opt_serves = 2;                              // skipped the only candidate
+					} else {
+						int64_t opt_act_ac1 = mdp.EvaluateRVIPolicy(sol, s1);
+						opt_serves = (opt_act_ac1 == 1)
+						             ? (1 - top_type)                // skip top, serve other
+						             : 2;                            // skip both => idle
+					}
 
 					const int past_dl_0 = (f0 > (int64_t)mdp.due_times[0]) ? 1 : 0;
 					const int past_dl_1 = (f1 > (int64_t)mdp.due_times[1]) ? 1 : 0;
