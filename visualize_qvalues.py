@@ -107,14 +107,19 @@ def load_csv(path: str) -> pd.DataFrame:
 def df_to_grid(df: pd.DataFrame, col: str) -> np.ndarray:
     """Pivot a flat (f0, f1, value) frame into a 2-D numpy grid.
 
-    The grid is indexed as grid[f0, f1], matching imshow with origin='lower'
-    so that f0 runs along the y-axis and f1 along the x-axis.
+    Axis convention (matches all imshow calls with origin='lower'):
+        rows  → f1  (y-axis, increases upward) — the expensive type
+        cols  → f0  (x-axis, increases rightward) — the cheap type
+
+    Putting the high-cost type on the vertical axis makes the orange
+    (serve type 1) region sit in the *top* of every panel, which is the
+    natural way to read urgency: "type 1 is high on the chart."
     """
     f0_max = int(df["f0"].max())
     f1_max = int(df["f1"].max())
-    grid = np.full((f0_max + 1, f1_max + 1), np.nan)
+    grid = np.full((f1_max + 1, f0_max + 1), np.nan)   # [f1, f0]
     for _, row in df.iterrows():
-        grid[int(row["f0"]), int(row["f1"])] = row[col]
+        grid[int(row["f1"]), int(row["f0"])] = row[col]
     return grid
 
 
@@ -142,15 +147,20 @@ def deadline_lines(df: pd.DataFrame):
 # ---------------------------------------------------------------------------
 
 def add_deadline_lines(ax, dl0, dl1):
-    """Draw dashed deadline lines and return (handle, label) pairs."""
+    """Draw dashed deadline lines and return (handle, label) pairs.
+
+    After the axis swap (x = f0, y = f1):
+        dl0  →  vertical line   (x-axis = f0)
+        dl1  →  horizontal line (y-axis = f1)
+    """
     added = []
     if dl0 is not None:
-        # Horizontal line: deadline for type 0 (y-axis = f0 with origin='lower')
-        h = ax.axhline(dl0, color="black", linewidth=1.5, linestyle="--", alpha=0.70)
+        # Vertical line: deadline for type 0 (x-axis = f0)
+        h = ax.axvline(dl0, color="black", linewidth=1.5, linestyle="--", alpha=0.70)
         added.append((h, f"DL type 0  (f₀={dl0 - 0.5:.0f})"))
     if dl1 is not None:
-        # Vertical line: deadline for type 1 (x-axis = f1)
-        h = ax.axvline(dl1, color="dimgrey", linewidth=1.5, linestyle="--", alpha=0.70)
+        # Horizontal line: deadline for type 1 (y-axis = f1)
+        h = ax.axhline(dl1, color="dimgrey", linewidth=1.5, linestyle="--", alpha=0.70)
         added.append((h, f"DL type 1  (f₁={dl1 - 0.5:.0f})"))
     return added
 
@@ -162,7 +172,7 @@ def add_near_tie_dots(ax, df, thresh):
     if sub.empty:
         return None
     sc = ax.scatter(
-        sub["f1"], sub["f0"],
+        sub["f0"], sub["f1"],
         s=8, c="black", marker=".", alpha=0.75, zorder=5,
         label=f"|Δ| < {thresh}  (near tie)",
     )
@@ -170,8 +180,8 @@ def add_near_tie_dots(ax, df, thresh):
 
 
 def set_axis_labels(ax):
-    ax.set_xlabel("FIL type 1  (f₁)", fontsize=9)
-    ax.set_ylabel("FIL type 0  (f₀)", fontsize=9)
+    ax.set_xlabel("FIL type 0  (f₀)", fontsize=9)
+    ax.set_ylabel("FIL type 1  (f₁)", fontsize=9)
 
 
 # ---------------------------------------------------------------------------
@@ -276,8 +286,8 @@ def visualise(csv_path: str, save: bool):
 
     dl0, dl1 = deadline_lines(df)
 
-    print(f"  Grid   {grid_fifo.shape[0]} x {grid_fifo.shape[1]} "
-          f"(f0 max={grid_fifo.shape[0]-1}, f1 max={grid_fifo.shape[1]-1})")
+    print(f"  Grid   {grid_fifo.shape[1]} x {grid_fifo.shape[0]} "
+          f"(f0 max={grid_fifo.shape[1]-1}, f1 max={grid_fifo.shape[0]-1})")
     print(f"  DL0={dl0 - 0.5 if dl0 else 'n/a'}  DL1={dl1 - 0.5 if dl1 else 'n/a'}")
     print(f"  delta in [{df['delta'].min():.2f}, {df['delta'].max():.2f}]  "
           f"near-tie cells: {(df['delta'].abs() < NEAR_TIE_THRESH).sum()}")

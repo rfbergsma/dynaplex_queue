@@ -261,68 +261,13 @@ namespace DynaPlex::Models {
 
 				}
 
-				/*
-				//complete job n at server k remove job from busy_on
+				// Free one server in pool k from job type `job`.
+				// Each pool's servers are independent: only pool k is decremented.
 				void complete_job(int64_t k, int64_t job) {
 					int idx = canServeIndex(*static_info, k, job);
 					if (idx < 0) return;
 					if (busy_on[(size_t)k][(size_t)idx] <= 0) return;
 					busy_on[(size_t)k][(size_t)idx] -= 1;
-				}
-				
-				*/
-				void complete_job(int64_t k, int64_t job) {
-					int idx = canServeIndex(*static_info, k, job);
-
-					#if QUEUE_MDP_DEBUG
-						std::cout << "[QMDP]   complete_job called with server=" << k
-							<< ", job=" << job << "\n";
-						if (idx < 0) {
-							std::cout << "[QMDP]   complete_job: canServeIndex < 0 for (k=" << k
-								<< ", job=" << job << "), no-op\n";
-						}
-						else {
-							std::cout << "[QMDP]   complete_job: idx=" << idx
-								<< ", busy_on[k][idx]=" << busy_on[(size_t)k][(size_t)idx]
-								<< "\n";
-						}
-					#endif
-
-						if (idx < 0) {
-							std::cout << "Cannot complete job in server manager" << std::endl;
-						}
-							
-						
-						if (busy_on[(size_t)k][(size_t)idx] <= 0) {
-					#if QUEUE_MDP_DEBUG
-							std::cout << "[QMDP]   complete_job: busy_on already <= 0, no-op\n";
-					#endif
-							std::cout << "Cannot complete job in server manager" << std::endl;
-						return;
-					}
-
-					#if QUEUE_MDP_DEBUG
-					std::cout << "[QMDP]   complete_job: decrementing busy_on[" << k << "]["
-						<< idx << "] from " << busy_on[(size_t)k][(size_t)idx] << " to "
-						<< (busy_on[(size_t)k][(size_t)idx] - 1) << "\n";
-					#endif
-
-					// --- JOB-LEVEL COMPLETION: free all servers on this job type ---
-					for (int64_t k_server = 0; k_server < (int64_t)busy_on.size(); ++k_server) {
-						int idx2 = canServeIndex(*static_info, k_server, job);
-						if (idx2 >= 0) {
-					#if QUEUE_MDP_DEBUG
-							if (busy_on[(size_t)k_server][(size_t)idx2] > 0) {
-								std::cout << "[QMDP]   complete_job: setting busy_on[" << k_server
-									<< "][" << idx2 << "] from "
-									<< busy_on[(size_t)k_server][(size_t)idx2]
-									<< " to 0\n";
-							}
-					#endif
-							busy_on[(size_t)k_server][(size_t)idx2] = 0;
-						}
-					}
-					
 				}
 
 				//returns the index of job in can_serve vector of server k, -1 if cannot serve
