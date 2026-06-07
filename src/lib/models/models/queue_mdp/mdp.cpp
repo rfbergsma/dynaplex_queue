@@ -110,7 +110,7 @@ namespace DynaPlex::Models {
 					state.next_fil_job_type = -1;
 
 					// regenerate actions because FIL changed
-					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting(), cost_rates);
 					state.server_manager.set_action_counter(0);
 					state.stochastic_draws = event.stochastic_draws;
 
@@ -146,7 +146,7 @@ namespace DynaPlex::Models {
 				
 					//state.queue_manager.complete_job(event_type.job_type, uniform_rate_next_fil); // job completed, remove from queue
 					
-					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting(), cost_rates);
 					state.server_manager.set_action_counter(0);
 					state.stochastic_draws = event.stochastic_draws;
 					if (!state.server_manager.action_queue.empty()) {
@@ -173,7 +173,7 @@ namespace DynaPlex::Models {
 					state.queue_manager.arrival(event_type.arrival_index);
 				
 				
-					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting());
+					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting(), cost_rates);
 					state.server_manager.set_action_counter(0);
 					state.stochastic_draws = event.stochastic_draws;
 
@@ -366,7 +366,7 @@ namespace DynaPlex::Models {
 						s2.queue_manager.update_total_arrival_rate(arrival_rates);
 
 						// Regenerate action queue from scratch using new FIL values
-						s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting());
+						s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting(), cost_rates);
 						s2.server_manager.set_action_counter(0);
 						s2.cat = s2.server_manager.action_queue.empty()
 							? StateCategory::AwaitEvent()
@@ -410,7 +410,7 @@ namespace DynaPlex::Models {
 						s2.queue_manager.update_total_tick_rate(tick_rate);
 						s2.queue_manager.update_total_arrival_rate(arrival_rates);
 
-						s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting());
+						s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting(), cost_rates);
 						s2.server_manager.set_action_counter(0);
 						
 						s2.cat = s2.server_manager.action_queue.empty()
@@ -450,7 +450,7 @@ namespace DynaPlex::Models {
 						// completion changes FIL(job) stochastically
 						s2.server_manager.complete_job(k, job);
 
-						s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting());
+						s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting(), cost_rates);
 						s2.server_manager.set_action_counter(0);
 						s2.cat = s2.server_manager.action_queue.empty()
 							? StateCategory::AwaitEvent()
@@ -868,15 +868,21 @@ namespace DynaPlex::Models {
 			// normalized progress through the list (avoid div-by-0)
 			features.Add(qsize > 0 ? static_cast<double>(acnt) / static_cast<double>(qsize) : 0.0);
 
-			// ----- (5) Current candidate (server, job) -----
+			// ----- (5) Current candidate (server, job) + policy-hint labels -----
 			if (qsize <= 0 || acnt < 0 || acnt >= qsize) {
 				features.Add(-1); // no server
 				features.Add(-1); // no job
+				features.Add(-1); // is_fifo_winner  (-1 = no active candidate)
+				features.Add(-1); // is_cmu_winner
+				features.Add(-1); // is_rfq_winner
 			}
 			else {
 				const Action& current_action = state.server_manager.action_queue.at(static_cast<size_t>(acnt));
 				features.Add(current_action.server_index);
 				features.Add(current_action.job_type);
+				features.Add(current_action.is_fifo_winner);
+				features.Add(current_action.is_cmu_winner);
+				features.Add(current_action.is_rfq_winner);
 			}
 		}
 
@@ -894,9 +900,12 @@ namespace DynaPlex::Models {
 				"FIFO with probabilistic skipping: draws[acnt] < threshold -> skip (action=0), "
 				"else assign (action=1).  threshold=0.0 equals plain FIFO.");
 			registry.Register<CmuPolicy>("cmu",
-				"c-mu scheduling policy: assigns the highest c*mu job type for the current server. "
-				"Skips a candidate if a remaining candidate for the same server has strictly higher c*mu. "
-				"Ties broken by FIL (FIFO order).");
+				"c-mu scheduling policy: assigns the top-capacity_k candidates by c*mu for each pool, "
+				"using the precomputed is_cmu_winner label.  Ties broken by FIFO order.");
+			registry.Register<ReverseFIFOPolicy>("reverse_fifo",
+				"Newest-first policy: assigns the top-capacity_k candidates by lowest FIL (newest) "
+				"for each pool, using the precomputed is_rfq_winner label. "
+				"Useful as a DCL training base when the optimal policy prefers newer/costlier jobs.");
 		}
 
 		DynaPlex::StateCategory MDP::GetStateCategory(const State& state) const
@@ -1485,7 +1494,7 @@ namespace DynaPlex::Models {
 					s.server_manager.busy_on[0][0] = 1;
 
 					// Generate the action queue and reset counter
-					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
+					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting(), mdp.cost_rates);
 					s.server_manager.set_action_counter(0);
 					s.server_manager.update_total_service_rate();
 
@@ -1574,7 +1583,7 @@ namespace DynaPlex::Models {
 					s.queue_manager.set_fil(1, (int64_t)f1);
 					s.server_manager.initialize(&mdp.server_static_info, mdp.n_jobs);
 					s.server_manager.busy_on[0][0] = 1;
-					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
+					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting(), mdp.cost_rates);
 					s.server_manager.set_action_counter(0);
 					s.server_manager.update_total_service_rate();
 					s.next_fil_job_type = -1;
@@ -1691,7 +1700,7 @@ namespace DynaPlex::Models {
 					s.queue_manager.set_fil(1, (int64_t)f1);
 					s.server_manager.initialize(&mdp.server_static_info, mdp.n_jobs);
 					s.server_manager.busy_on[0][0] = 1;
-					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
+					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting(), mdp.cost_rates);
 					s.server_manager.set_action_counter(0);
 					s.server_manager.update_total_service_rate();
 					s.next_fil_job_type = -1;
@@ -1790,7 +1799,7 @@ namespace DynaPlex::Models {
 					s.queue_manager.set_fil(1, (int64_t)f1);
 					s.server_manager.initialize(&mdp.server_static_info, mdp.n_jobs);
 					s.server_manager.busy_on[0][0] = 1;
-					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
+					s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting(), mdp.cost_rates);
 					s.server_manager.set_action_counter(0);
 					s.server_manager.update_total_service_rate();
 					s.next_fil_job_type = -1;

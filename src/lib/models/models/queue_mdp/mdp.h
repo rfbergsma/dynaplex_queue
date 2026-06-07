@@ -32,24 +32,44 @@ namespace DynaPlex::Models {
 				int64_t server_index;
 				int64_t job_type;
 
+				// --- Policy-hint labels (computed by LabelActionQueue after every generate_actions) ---
+				// is_fifo_winner : 1 if fewer than capacity_k entries in the full queue for the same
+				//                  pool have strictly higher FIL  (= this is among the FIFO top-C jobs)
+				// is_cmu_winner  : same criterion but for c*µ value
+				// is_rfq_winner  : same criterion but for strictly LOWER FIL (= newest-first top-C)
+				// All default to 0; set to -1 in GetFeatures when no candidate is active.
+				int64_t is_fifo_winner = 0;
+				int64_t is_cmu_winner  = 0;
+				int64_t is_rfq_winner  = 0;
+
 				// --- Default constructor (required by VarGroup and STL containers) ---
-				Action() : server_index(0), job_type(0) {}
+				Action() : server_index(0), job_type(0),
+				           is_fifo_winner(0), is_cmu_winner(0), is_rfq_winner(0) {}
 
 				// --- Full constructor ---
-				Action(int64_t s, int64_t j) : server_index(s), job_type(j) {}
+				Action(int64_t s, int64_t j) : server_index(s), job_type(j),
+				                               is_fifo_winner(0), is_cmu_winner(0), is_rfq_winner(0) {}
 
-				// --- Serialization: convert Action  VarGroup ---
+				// --- Serialization: convert Action -> VarGroup ---
 				DynaPlex::VarGroup ToVarGroup() const {
 					DynaPlex::VarGroup vg;
-					vg.Add("server_index", server_index);
-					vg.Add("job_type", job_type);
+					vg.Add("server_index",   server_index);
+					vg.Add("job_type",       job_type);
+					vg.Add("is_fifo_winner", is_fifo_winner);
+					vg.Add("is_cmu_winner",  is_cmu_winner);
+					vg.Add("is_rfq_winner",  is_rfq_winner);
 					return vg;
 				}
 
-				// --- Deserialization: convert VarGroup Action ---
+				// --- Deserialization: convert VarGroup -> Action ---
+				// HasKey fallback keeps backward compatibility with saved states that
+				// predate the label fields.
 				explicit Action(const DynaPlex::VarGroup& vg) {
 					vg.Get("server_index", server_index);
-					vg.Get("job_type", job_type);
+					vg.Get("job_type",     job_type);
+					is_fifo_winner = vg.HasKey("is_fifo_winner") ? [&]{ int64_t v; vg.Get("is_fifo_winner", v); return v; }() : 0;
+					is_cmu_winner  = vg.HasKey("is_cmu_winner")  ? [&]{ int64_t v; vg.Get("is_cmu_winner",  v); return v; }() : 0;
+					is_rfq_winner  = vg.HasKey("is_rfq_winner")  ? [&]{ int64_t v; vg.Get("is_rfq_winner",  v); return v; }() : 0;
 				}
 			};
 
@@ -108,7 +128,65 @@ namespace DynaPlex::Models {
 					
 				}
 				
-				void generate_actions(std::vector<int64_t> FIL_waiting) {
+				// -----------------------------------------------------------------
+				// LabelActionQueue
+				// For each entry in action_queue, sets the three winner flags using a
+				// capacity-aware full-queue scan:
+				//   is_X_winner = 1  iff  (# same-pool entries with strictly better X) < capacity_k
+				// where capacity_k = static_info[k].servers - n_servers_busy_server_k(k).
+				// Must be called AFTER SortActionsFIFO and BEFORE any actions are taken.
+				// -----------------------------------------------------------------
+				void LabelActionQueue(const std::vector<int64_t>& FIL_waiting,
+				                      const std::vector<double>& cost_rates)
+				{
+					const int64_t n = static_cast<int64_t>(action_queue.size());
+
+					// Helper: c*µ for pool k serving job type j.
+					auto cmu_of = [&](int64_t k, int64_t j) -> double {
+						int idx = canServeIndex(*static_info, k, j);
+						if (idx < 0) return 0.0;
+						const double mu = (*static_info)[static_cast<size_t>(k)].mu_kj[static_cast<size_t>(idx)];
+						const double c  = (j >= 0 && static_cast<size_t>(j) < cost_rates.size())
+						                  ? cost_rates[static_cast<size_t>(j)] : 0.0;
+						return mu * c;
+					};
+
+					// Helper: FIL for job type j (-INT64_MAX when type has no entry).
+					auto fil_of = [&](int64_t j) -> int64_t {
+						return (j >= 0 && static_cast<size_t>(j) < FIL_waiting.size())
+						       ? FIL_waiting[static_cast<size_t>(j)] : INT64_MIN;
+					};
+
+					for (int64_t i = 0; i < n; ++i) {
+						Action& a    = action_queue[static_cast<size_t>(i)];
+						const int64_t k   = a.server_index;
+						const int64_t fil_a = fil_of(a.job_type);
+						const double  cmu_a = cmu_of(k, a.job_type);
+
+						// capacity_k: idle servers available in pool k right now
+						const int64_t cap = (*static_info)[static_cast<size_t>(k)].servers
+						                  - n_servers_busy_server_k(k);
+
+						int64_t cnt_fifo = 0, cnt_cmu = 0, cnt_rfq = 0;
+						for (int64_t m = 0; m < n; ++m) {
+							if (m == i) continue;
+							const Action& b = action_queue[static_cast<size_t>(m)];
+							if (b.server_index != k) continue;
+							const int64_t fil_b = fil_of(b.job_type);
+							const double  cmu_b = cmu_of(k, b.job_type);
+							if (fil_b > fil_a) ++cnt_fifo;
+							if (cmu_b > cmu_a) ++cnt_cmu;
+							if (fil_b < fil_a) ++cnt_rfq;
+						}
+
+						a.is_fifo_winner = (cnt_fifo < cap) ? 1 : 0;
+						a.is_cmu_winner  = (cnt_cmu  < cap) ? 1 : 0;
+						a.is_rfq_winner  = (cnt_rfq  < cap) ? 1 : 0;
+					}
+				}
+
+				void generate_actions(std::vector<int64_t> FIL_waiting,
+				                      const std::vector<double>& cost_rates) {
 					#if QUEUE_MDP_DEBUG
 					std::cout << "\n[QMDP] generate_actions called\n";
 					std::cout << "[QMDP]   old queue size = " << action_queue.size()
@@ -143,6 +221,7 @@ namespace DynaPlex::Models {
 					#endif
 
 					SortActionsFIFO(action_queue, FIL_waiting);
+					LabelActionQueue(FIL_waiting, cost_rates);
 
 				}
 	

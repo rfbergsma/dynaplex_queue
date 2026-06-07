@@ -53,17 +53,28 @@ namespace DynaPlex::Models {
 		};
 
 		/// c-mu scheduling policy.
-		/// At each AwaitAction step, checks whether any remaining candidate in the action
-		/// queue for the SAME server has a strictly higher c*µ value than the current
-		/// candidate.  If yes, skips the current candidate (action=0) so the higher-priority
-		/// job type is presented next.  Otherwise assigns immediately (action=1).
-		/// Ties are broken in FIFO order (the MDP's SortActionsFIFO pre-sorts by FIL).
-		/// This provides a much better training base than FIFO for asymmetric-cost problems.
+		/// Uses the precomputed is_cmu_winner label: assigns (action=1) when the current
+		/// candidate is among the top-capacity_k candidates by c*µ for its pool, skips
+		/// otherwise.  With capacity-aware labeling all idle servers in the pool get served
+		/// in sequence through the alpha steps.
 		class CmuPolicy
 		{
 			std::shared_ptr<const MDP> mdp;
 		public:
 			CmuPolicy(std::shared_ptr<const MDP> mdp, const VarGroup& config);
+			int64_t GetAction(const MDP::State& state) const;
+		};
+
+		/// Reverse-FIFO (newest-first) policy.
+		/// Uses the precomputed is_rfq_winner label: assigns (action=1) when the current
+		/// candidate is among the top-capacity_k newest (lowest-FIL) jobs for its pool.
+		/// Useful as a DCL training base for problems where the optimal policy prefers
+		/// newer / higher-cost jobs over the FIFO ordering.
+		class ReverseFIFOPolicy
+		{
+			std::shared_ptr<const MDP> mdp;
+		public:
+			ReverseFIFOPolicy(std::shared_ptr<const MDP> mdp, const VarGroup& config);
 			int64_t GetAction(const MDP::State& state) const;
 		};
 

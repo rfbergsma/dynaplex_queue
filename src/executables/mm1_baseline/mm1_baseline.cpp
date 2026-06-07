@@ -75,10 +75,35 @@ static DynaPlex::Policy make_epsilon_greedy(DynaPlex::Policy p, double eps)
 // Experiment 1 helpers
 // ============================================================
 
+// M/M/1 config: 1 server, 1 job type, D=0
 static VarGroup mm1_config(double lam, double mu, double tick_rate)
 {
     VarGroup srv;
     srv.Add("servers",      int64_t(1));
+    srv.Add("can_serve",    VarGroup::Int64Vec{0});
+    srv.Add("service_rate", mu);
+
+    VarGroup cfg;
+    cfg.Add("id",              std::string("queue_mdp"));
+    cfg.Add("discount_factor", 1.0);
+    cfg.Add("k_servers",       int64_t(1));
+    cfg.Add("n_jobs",          int64_t(1));
+    cfg.Add("tick_rate",       tick_rate);
+    cfg.Add("reward_type",     int64_t(0));
+    cfg.Add("max_queue_depth", int64_t(1));
+    cfg.Add("arrival_rates",   VarGroup::DoubleVec{lam});
+    cfg.Add("cost_rates",      VarGroup::DoubleVec{1.0});
+    cfg.Add("due_times",       VarGroup::DoubleVec{0.0});
+    cfg.Add("server_type_0",   srv);
+    return cfg;
+}
+
+// M/M/2 config: 1 pool of 2 servers, 1 job type, D=0
+// rho = lam / (2*mu)  (per-server utilisation)
+static VarGroup mm2_config(double lam, double mu, double tick_rate)
+{
+    VarGroup srv;
+    srv.Add("servers",      int64_t(2));         // two servers in one pool
     srv.Add("can_serve",    VarGroup::Int64Vec{0});
     srv.Add("service_rate", mu);
 
@@ -103,12 +128,13 @@ static void print_header_exp1(DynaPlex::DynaPlexProvider& dp)
                 << std::setw(5)  << "rho"
                 << std::setw(11) << "Random"
                 << std::setw(11) << "FIFO"
+                << std::setw(11) << "RevFIFO"
                 << std::setw(11) << "RVI"
                 << std::setw(11) << "NN"
                 << std::setw(9)  << "NN/RVI"
                 << std::setw(11) << "Theory"
                 << std::setw(9)  << "FIFO%err"
-                << "\n" << std::string(78, '-') << "\n";
+                << "\n" << std::string(89, '-') << "\n";
 }
 
 // ============================================================
@@ -207,7 +233,11 @@ static void run_stoch_fifo_experiment(
     const std::vector<double>&  tick_rates,        // e.g. {1.0, 3.0}
     double                      eg_epsilon     = 0.10,
     bool                        print_heatmaps = true,
-    const std::string&          csv_stem       = "")
+    const std::string&          csv_stem       = "",
+    // If non-empty, this policy ID is evaluated alongside FIFO/RVI and used as
+    // the primary multi-gen training base (in addition to the 1-gen FIFO reference).
+    // Useful when FIFO is a poor training base, e.g. "cmu" for asymmetric-cost problems.
+    const std::string&          primary_base_id = "")
 {
     // Print outer section header once
     dp.System() << "\n" << section_label << "\n"
@@ -258,6 +288,14 @@ static void run_stoch_fifo_experiment(
         const double rvi_phys  = rvi_mean  * Lambda;
         const double norm      = rvi_mean;   // normalise ratios by raw RVI (Lambda cancels)
 
+        // Optional primary base (e.g. cmu): evaluate once here, reuse below.
+        DynaPlex::Policy primary_base;
+        double           primary_base_mean = 0.0;
+        if (!primary_base_id.empty()) {
+            primary_base = mdp->GetPolicy(primary_base_id);
+            comparer.Compare({primary_base})[0].Get("mean", primary_base_mean);
+        }
+
         // --- Tick-rate sub-header ---
         dp.System() << "\n  [tick_rate=" << std::fixed << std::setprecision(0) << tr
                     << "  Lambda=" << std::setprecision(3) << Lambda
@@ -267,7 +305,14 @@ static void run_stoch_fifo_experiment(
                     << "  |  FIFO/RVI = " << fifo_mean / rvi_mean
                     << "  (" << std::setprecision(1)
                     << (fifo_mean / rvi_mean - 1.0) * 100.0 << "% gap)"
-                    << "  |  eg_eps=" << std::setprecision(2) << eg_epsilon << "\n\n";
+                    << "  |  eg_eps=" << std::setprecision(2) << eg_epsilon << "\n";
+        if (!primary_base_id.empty()) {
+            dp.System() << "  " << primary_base_id << "*Λ = "
+                        << std::fixed << std::setprecision(4) << primary_base_mean * Lambda
+                        << "  |  " << primary_base_id << "/RVI = "
+                        << std::setprecision(4) << primary_base_mean / norm << "\n";
+        }
+        dp.System() << "\n";
 
         // --- Heatmaps for FIFO and RVI (first tick_rate only) ---
         if (print_heatmaps && first_tr) {
@@ -429,6 +474,13 @@ static void run_stoch_fifo_experiment(
         // FIFO base: 1 generation (reference point only)
         train_and_print("FIFO (eps=0.00)", fifo_mean, /*n_gens=*/1, fifo);
 
+        // Primary base (e.g. cmu): multi-gen training when specified.
+        // For asymmetric-cost problems the c-mu rule already reflects cost structure,
+        // so DCL from this base converges to near-optimal in a single generation.
+        if (!primary_base_id.empty()) {
+            train_and_print(primary_base_id, primary_base_mean, num_gens, primary_base);
+        }
+
         // Stochastic FIFO variants: num_gens generations each
         for (double eps : stoch_epsilons) {
             VarGroup stoch_cfg;
@@ -556,6 +608,7 @@ int main()
 
     // ---- Run-control flags ----
     const bool run_exp1      = true;
+    const bool run_exp1b     = true;   // M/M/2 validation (theory: 2rho^2/(1+rho))
     const bool run_exp2      = true;
     const bool run_exp3_grid = true;   // fast FIFO/RVI gap scan (no NN training)
     const bool run_exp3      = true;   // full DCL training with chosen config
@@ -600,8 +653,9 @@ int main()
             auto cfg   = mm1_config(lam, mu, tick_rate);
             auto mdp   = dp.GetMDP(cfg);
 
-            auto random = mdp->GetPolicy("random");
-            auto fifo   = mdp->GetPolicy("FIFO policy");
+            auto random   = mdp->GetPolicy("random");
+            auto fifo     = mdp->GetPolicy("FIFO policy");
+            auto rev_fifo = mdp->GetPolicy("reverse_fifo");
 
             VarGroup rvi_cfg;
             rvi_cfg.Add("id",      std::string("RVI_optimal"));
@@ -627,16 +681,18 @@ int main()
                     /*n_traj=*/100, /*steps=*/500000, /*warmup=*/50000);
             };
 
-            auto r_random = eval(random);
-            auto r_fifo   = eval(fifo);
-            auto r_rvi    = eval(rvi);
-            auto r_nn     = eval(nn);
+            auto r_random   = eval(random);
+            auto r_fifo     = eval(fifo);
+            auto r_rev_fifo = eval(rev_fifo);
+            auto r_rvi      = eval(rvi);
+            auto r_nn       = eval(nn);
 
             const double Lambda = raw_mdp.uniformization_rate;
-            double rate_random = r_random.mean_cost_per_event * Lambda;
-            double rate_fifo   = r_fifo.mean_cost_per_event   * Lambda;
-            double rate_rvi    = r_rvi.mean_cost_per_event    * Lambda;
-            double rate_nn     = r_nn.mean_cost_per_event     * Lambda;
+            double rate_random   = r_random.mean_cost_per_event   * Lambda;
+            double rate_fifo     = r_fifo.mean_cost_per_event     * Lambda;
+            double rate_rev_fifo = r_rev_fifo.mean_cost_per_event * Lambda;
+            double rate_rvi      = r_rvi.mean_cost_per_event      * Lambda;
+            double rate_nn       = r_nn.mean_cost_per_event       * Lambda;
 
             double theory   = rho * rho;
             double fifo_err = (theory > 1e-15)
@@ -647,6 +703,7 @@ int main()
                         << std::setw(5)  << std::setprecision(1) << rho
                         << std::setw(11) << std::setprecision(6) << rate_random
                         << std::setw(11) << std::setprecision(6) << rate_fifo
+                        << std::setw(11) << std::setprecision(6) << rate_rev_fifo
                         << std::setw(11) << std::setprecision(6) << rate_rvi
                         << std::setw(11) << std::setprecision(6) << rate_nn
                         << std::setw(9)  << std::setprecision(4) << nn_ratio
@@ -656,6 +713,99 @@ int main()
         }
     }
   } // end run_exp1
+
+    // ----------------------------------------------------------
+    // Experiment 1b: M/M/2 validation
+    // Same structure as Exp1 but with 2 servers (single pool, C=2).
+    // rho = lambda / (2*mu)  (per-server utilisation).
+    // FIFO is trivially optimal (single job type, always assign when free).
+    // Theory: 2*rho^2/(1+rho)  (Erlang-C for c=2, P(>=2 in system)).
+    // RevFIFO should equal FIFO (single candidate => is_rfq_winner=1 always).
+    // ----------------------------------------------------------
+  if (run_exp1b) {
+    dp.System() << "\n=== Experiment 1b: M/M/2 validation ===\n";
+    dp.System() << "  reward_type=0 (binary cost 1{wait>0}), D=0, mu=1, 2 servers (C=2 pool)\n";
+    dp.System() << "  rho = lambda/(2*mu)  (per-server utilisation)\n";
+    dp.System() << "  Metric: physical cost rate = mean_cost_per_event * Lambda\n";
+    dp.System() << "  Theory: 2*rho^2/(1+rho)  (Erlang-C, P(>=2 in system))\n";
+    dp.System() << "  DCL: N=10K, M=400, H=50, num_gens=1, arch={64,32,2}\n";
+
+    VarGroup nn_arch_small;
+    nn_arch_small.Add("type",          std::string("mlp"));
+    nn_arch_small.Add("hidden_layers", VarGroup::Int64Vec{64, 32, 2});
+
+    for (double tick_rate : {1.0, 2.0, 10.0})
+    {
+        dp.System() << "\n--- tick_rate = " << std::fixed << std::setprecision(0)
+                    << tick_rate << " ---\n\n";
+        print_header_exp1(dp);
+
+        for (double rho : {0.2, 0.4, 0.6, 0.8})
+        {
+            double lam = rho * 2.0 * mu;   // rho = lam/(2*mu)
+            auto cfg   = mm2_config(lam, mu, tick_rate);
+            auto mdp   = dp.GetMDP(cfg);
+
+            auto random   = mdp->GetPolicy("random");
+            auto fifo     = mdp->GetPolicy("FIFO policy");
+            auto rev_fifo = mdp->GetPolicy("reverse_fifo");
+
+            VarGroup rvi_cfg;
+            rvi_cfg.Add("id",      std::string("RVI_optimal"));
+            rvi_cfg.Add("rel_tol", 0.01);
+            rvi_cfg.Add("silent",  int64_t(1));
+            auto rvi = mdp->GetPolicy(rvi_cfg);
+
+            VarGroup dcl_cfg;
+            dcl_cfg.Add("N",               int64_t(10000));
+            dcl_cfg.Add("M",               int64_t(400));
+            dcl_cfg.Add("H",               int64_t(50));
+            dcl_cfg.Add("num_gens",        int64_t(1));
+            dcl_cfg.Add("silent",          true);
+            dcl_cfg.Add("nn_architecture", nn_arch_small);
+
+            auto dcl = dp.GetDCL(mdp, fifo, dcl_cfg);
+            dcl.TrainPolicy();
+            auto nn = dcl.GetPolicies().back();
+
+            qm::MDP raw_mdp(cfg);
+            auto eval = [&](DynaPlex::Policy pol) {
+                return qm::EvaluatePolicyRawParallel(raw_mdp, pol,
+                    /*n_traj=*/100, /*steps=*/500000, /*warmup=*/50000);
+            };
+
+            auto r_random   = eval(random);
+            auto r_fifo     = eval(fifo);
+            auto r_rev_fifo = eval(rev_fifo);
+            auto r_rvi      = eval(rvi);
+            auto r_nn       = eval(nn);
+
+            const double Lambda = raw_mdp.uniformization_rate;
+            double rate_random   = r_random.mean_cost_per_event   * Lambda;
+            double rate_fifo     = r_fifo.mean_cost_per_event     * Lambda;
+            double rate_rev_fifo = r_rev_fifo.mean_cost_per_event * Lambda;
+            double rate_rvi      = r_rvi.mean_cost_per_event      * Lambda;
+            double rate_nn       = r_nn.mean_cost_per_event       * Lambda;
+
+            double theory   = 2.0 * rho * rho / (1.0 + rho);
+            double fifo_err = (theory > 1e-15)
+                            ? (rate_fifo - theory) / theory * 100.0 : 0.0;
+            double nn_ratio = (rate_rvi > 1e-15) ? rate_nn / rate_rvi : 1.0;
+
+            dp.System() << std::fixed
+                        << std::setw(5)  << std::setprecision(1) << rho
+                        << std::setw(11) << std::setprecision(6) << rate_random
+                        << std::setw(11) << std::setprecision(6) << rate_fifo
+                        << std::setw(11) << std::setprecision(6) << rate_rev_fifo
+                        << std::setw(11) << std::setprecision(6) << rate_rvi
+                        << std::setw(11) << std::setprecision(6) << rate_nn
+                        << std::setw(9)  << std::setprecision(4) << nn_ratio
+                        << std::setw(11) << std::setprecision(6) << theory
+                        << std::setw(8)  << std::setprecision(2) << fifo_err << "%"
+                        << "\n";
+        }
+    }
+  } // end run_exp1b
 
     // ----------------------------------------------------------
     // Experiment 2: two servers, two job types, asymmetric costs
@@ -684,18 +834,19 @@ int main()
     run_stoch_fifo_experiment(dp,
         "asym_cost_2s  [k=2, n=2, fully flexible, lam=[0.25,0.25], c=[100,300], D=[3,3]]",
         cfg2,
-        /*N=*/       int64_t(20000),
-        /*M=*/       int64_t(400),
-        /*base_H=*/  int64_t(100),
-        /*num_gens=*/int64_t(3),
-        /*rel_tol=*/ true,
-        /*rvi_M=*/   int64_t(0),
+        /*N=*/            int64_t(20000),
+        /*M=*/            int64_t(400),
+        /*base_H=*/       int64_t(100),
+        /*num_gens=*/     int64_t(3),
+        /*rel_tol=*/      true,
+        /*rvi_M=*/        int64_t(0),
         nn_arch,
-        /*epsilons=*/std::vector<double>{0.30},
+        /*epsilons=*/     std::vector<double>{0.30},
         tick_rates_exp,
-        /*eg_eps=*/  0.10,
-        /*heatmaps=*/true,
-        /*csv_stem=*/"exp2");
+        /*eg_eps=*/       0.10,
+        /*heatmaps=*/     true,
+        /*csv_stem=*/     "exp2",
+        /*primary_base=*/ std::string("reverse_fifo"));
   } // end run_exp2
 
     // ----------------------------------------------------------
@@ -811,18 +962,19 @@ int main()
     run_stoch_fifo_experiment(dp,
         "specialist_gen  [srv0=type0_only, srv1=both, lam=[0.8,0.2], c=[100,300], D=[1,1]]",
         make_specialist_generalist_config(),
-        /*N=*/       int64_t(20000),
-        /*M=*/       int64_t(400),
-        /*base_H=*/  int64_t(100),
-        /*num_gens=*/int64_t(3),
-        /*rel_tol=*/ true,
-        /*rvi_M=*/   int64_t(0),
+        /*N=*/            int64_t(20000),
+        /*M=*/            int64_t(400),
+        /*base_H=*/       int64_t(100),
+        /*num_gens=*/     int64_t(3),
+        /*rel_tol=*/      true,
+        /*rvi_M=*/        int64_t(0),
         nn_arch,
-        /*epsilons=*/std::vector<double>{0.30},
+        /*epsilons=*/     std::vector<double>{0.30},
         tick_rates_exp,
-        /*eg_eps=*/  0.10,
-        /*heatmaps=*/true,
-        /*csv_stem=*/"exp3");
+        /*eg_eps=*/       0.10,
+        /*heatmaps=*/     true,
+        /*csv_stem=*/     "exp3",
+        /*primary_base=*/ std::string("reverse_fifo"));
   } // end run_exp3
 
     // ----------------------------------------------------------

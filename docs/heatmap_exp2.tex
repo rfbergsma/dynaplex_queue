@@ -6,19 +6,27 @@
 %
 %  Configuration
 %    tick_rate = 3,  lambda = (0.25, 0.25),  mu = 0.35
-%    c = (100, 300),  D_0 = 6,  D_1 = 3  (physical time units)
-%    => D0_ticks = 18 (outside visible range),  D1_ticks = 9
+%    c = (100, 300),  D_0 = 3,  D_1 = 3  (physical time units)
+%    => D0_ticks = D1_ticks = 9  (both deadlines at FIL=9)
 %
 %  Axis orientation:
 %    X-axis: FIL_1  (left=0, right=12)
 %    Y-axis: FIL_0  (bottom=0, top=12)   <- natural
 %
-%  RVI blue cells derived from the actual computed action map.
-%  Decoding rule for the text heatmap printout:
-%    "0" -> FIFO-top was type 0, action=assign  -> blue
-%    "1" -> FIFO-top was type 1, action=assign  -> orange
-%    "." above diagonal (FIL_1 > FIL_0)         -> skip type 1, serve type 0 -> blue
-%    "." on/below diagonal (FIL_0 >= FIL_1)     -> skip type 0, serve type 1 -> orange
+%  RVI policy decoding (canonical state: pool0 busy on type0, pool1 idle):
+%    "." on/below diagonal (FIL_0 >= FIL_1, FIL_1 > 0):
+%         skip type-0 (FIFO-top) at action alpha=0;
+%         next action (alpha=1) assigns type-1 to pool1  ->  orange
+%    "." with FIL_1 = 0:
+%         no type-1 waiting; pool1 stays idle  ->  idle (shown orange, covered by alpha)
+%    "1" above diagonal (FIL_1 > FIL_0):
+%         direct assign type-1 to pool1  ->  orange
+%    "0" at (FIL_0=10, FIL_1=0):
+%         type-0 has exceeded deadline (FIL_0>9), type-1 just arrived;
+%         assign type-0 urgently  ->  BLUE  [unique exception]
+%
+%  Result: RVI is uniformly orange except the single blue dot at (FIL_0=10, FIL_1=0).
+%  FIFO/RVI = 1.73 (72.6% cost gap); FIFO*Lambda=70.38, RVI*Lambda=40.79.
 % ============================================================
 \documentclass[11pt,a4paper]{article}
 \usepackage{tikz}
@@ -51,9 +59,13 @@
 
     \draw[gray!45, very thin] (0,0) grid (13,13);
 
-    % Deadline: type-1 cost fires for FIL_1 > 9 (d_1 = 9 ticks)
+    % Type-1 deadline: cost fires for FIL_1 > 9  (vertical)
     \draw[red!70, dashed, thick] (10,0) -- (10,13);
     \node[red!70, font=\tiny, above] at (10,13.5) {$d_1{=}9$};
+
+    % Type-0 deadline: cost fires for FIL_0 > 9  (horizontal)
+    \draw[red!70, dashed, thick] (0,10) -- (13,10);
+    \node[red!70, font=\tiny, right] at (13.2,10.5) {$d_0{=}9$};
 
     \foreach \j in {0,3,6,9,12}
       \node[below, font=\scriptsize] at (\j+0.5,-0.3) {\j};
@@ -71,51 +83,33 @@
   % ============================================================
   % RIGHT PANEL — RVI optimal policy
   %
-  % Blue cells are taken directly from the computed action map.
-  % Each entry below is (FIL_1=j / FIL_0=i), i.e. TikZ (x=j, y=i).
+  % After fixing the complete_job bug (gang-release -> per-pool decrement)
+  % the optimal policy collapses to: always serve type 1 (orange),
+  % with one single exception.
   %
-  % Full decoded output (B=blue, O=orange):
-  %   row  0: O B O O O O O O O O O O O  <- j=1 blue (. above diag)
-  %   row  1: O O B O O O O O O O O O O  <- j=2 blue (. above diag)
-  %   row  2: O B O O O O O O O O O O O  <- j=1 blue (0 below diag)
-  %   row  3: O O O B O O O O O O O O O  <- j=3 blue (0 on diag)
-  %   row  4: O O O O B O O O O O O O O  <- j=4 blue (0 on diag)
-  %   row  5: O O O O O O O O O O O O O  <- all orange
-  %   row  6: O O O B B O O O O O O O O  <- j=3,4 blue (0 below diag)
-  %   row  7: O B B O O O O O O O O O O  <- j=1,2 blue (0 below diag)
-  %   row  8: B B O B B O O O O O O O O  <- j=0,1,3,4 blue
-  %   row  9: B O O O B B O O O O O O O  <- j=0,4,5 blue
-  %   row 10: O O O O O O B O O O O O O  <- j=6 blue
-  %   row 11: B B O O O O O O O O O O O  <- j=0,1 blue
-  %   row 12: B B O B O O O O O O O O O  <- j=0,1,3 blue
+  % Decoded full output (13x13 canonical grid):
+  %   All cells: orange (type-1 served, via direct assign or skip-then-assign chain)
+  %   Exception: (FIL_1=0, FIL_0=10) -> blue (type-0 past deadline, type-1 just arrived)
   % ============================================================
   \begin{scope}[xshift=7.5cm]
 
-    % Background: type 1 served everywhere
+    % Background: type 1 served everywhere (direct or via skip-then-assign)
     \fill[orange!65] (0,0) rectangle (13,13);
 
-    % Blue cells: exact RVI action map (format: FIL_1/FIL_0 = j/i)
-    \foreach \j/\i in {
-      1/0,
-      2/1,
-      1/2,
-      3/3,
-      4/4,
-      3/6, 4/6,
-      1/7, 2/7,
-      0/8, 1/8,      3/8, 4/8,
-      0/9,           4/9, 5/9,
-      6/10,
-      0/11, 1/11,
-      0/12, 1/12,    3/12
-    }{
-      \fill[blue!55] (\j,\i) rectangle (\j+1,\i+1);
-    }
+    % Single blue cell at TikZ (x=FIL_1=0, y=FIL_0=10):
+    %   FIL_0=10 > d_0=9  =>  type-0 is accruing deadline penalty
+    %   FIL_1=0            =>  type-1 just arrived, no urgency
+    %   RVI: serve type-0 to stop the ongoing cost.
+    \fill[blue!55] (0,10) rectangle (1,11);
 
     \draw[gray!45, very thin] (0,0) grid (13,13);
 
+    % Deadline lines (same as FIFO panel)
     \draw[red!70, dashed, thick] (10,0) -- (10,13);
     \node[red!70, font=\tiny, above] at (10,13.5) {$d_1{=}9$};
+
+    \draw[red!70, dashed, thick] (0,10) -- (13,10);
+    \node[red!70, font=\tiny, right] at (13.2,10.5) {$d_0{=}9$};
 
     \foreach \j in {0,3,6,9,12}
       \node[below, font=\scriptsize] at (\j+0.5,-0.3) {\j};
@@ -138,7 +132,7 @@
 
     \draw[red!70, dashed, thick] (8.6cm,0.23cm) -- (9.1cm,0.23cm);
     \node[right, font=\footnotesize] at (9.2cm,0.23cm)
-          {type-1 deadline $d_1{=}9$ ticks};
+          {shared deadline $d_0{=}d_1{=}9$ ticks};
   \end{scope}
 
 \end{tikzpicture}
@@ -147,23 +141,23 @@
   ($\text{tick\_rate}=3$,\;
    $\boldsymbol{\lambda}=(0.25,0.25)$,\;
    $\mathbf{c}=(100,300)$,\;
-   $D_0=6$, $D_1=3$ physical time units).
+   $D_0=D_1=3$ physical time units, $d_0=d_1=9$ ticks).
   Each cell $(i,j)$ shows which job type the server assigns when
   $\mathrm{FIL}_0=i$ (vertical axis, $0$ at bottom) and
   $\mathrm{FIL}_1=j$ (horizontal axis, $0$ at left).
   \textbf{Blue}: type~0 served.\quad\textbf{Orange}: type~1 served.
-  \textbf{FIFO} (left) always serves the oldest job:
-  blue on/above the diagonal ($\mathrm{FIL}_0 \ge \mathrm{FIL}_1$),
-  orange below it.
-  \textbf{RVI} (right) is dominated by type~1 (orange) throughout---reflecting
-  its $3\times$ higher cost rate---but type~0 (blue) appears in scattered cells
-  where the value function judges that type~0's age or proximity to its deadline
-  tips the balance.
-  Notably, a handful of blue cells sit \emph{above} the diagonal
-  ($\mathrm{FIL}_1>\mathrm{FIL}_0$): RVI overrides FIFO order and serves the
-  cheaper type because type~1's low FIL means it carries no urgency yet.
-  The dashed red line marks $d_1=9$ ticks; type-1 cost accrues
-  to the right of this line.%
+  The dashed red lines mark the shared deadline $d=9$ ticks for both types.
+  \textbf{FIFO} (left) splits on the diagonal:
+  blue on/below ($\mathrm{FIL}_0 \ge \mathrm{FIL}_1$), orange above---it
+  is cost-blind and serves jobs purely by seniority.
+  \textbf{RVI} (right) is nearly uniformly orange: the $3\times$ cost advantage
+  of type~1 ($c_1=300$ vs.\ $c_0=100$) is large enough that the optimal policy
+  \emph{always} prioritises type~1, regardless of which type has been waiting longer.
+  The single blue cell at $(\mathrm{FIL}_0{=}10,\,\mathrm{FIL}_1{=}0)$ is the
+  unique exception: type~0 has already breached its deadline ($\mathrm{FIL}_0>9$)
+  while type~1 has just arrived ($\mathrm{FIL}_1=0$), making it optimal to
+  relieve type~0's accruing penalty immediately.
+  The resulting FIFO/RVI cost ratio is $1.73$ (72.6\% gap).%
 }
 \label{fig:heatmap_exp2}
 \end{figure}

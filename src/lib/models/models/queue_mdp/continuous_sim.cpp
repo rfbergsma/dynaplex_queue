@@ -118,7 +118,7 @@ MDP::State BuildQueryState(
     }
 
     // --- Generate the FIFO-ordered action queue and set action counter ---
-    s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting());
+    s.server_manager.generate_actions(s.queue_manager.get_FIL_waiting(), mdp.cost_rates);
     s.server_manager.set_action_counter(0);
     s.server_manager.update_total_service_rate();
     s.next_fil_job_type = -1;
