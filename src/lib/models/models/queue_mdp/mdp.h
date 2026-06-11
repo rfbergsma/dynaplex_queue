@@ -87,8 +87,13 @@ namespace DynaPlex::Models {
 				ServerDynamicState() = default;
 				
 
+				// descending=true  -> FIFO order   (oldest first, larger FIL first)
+				// descending=false -> reverse-FIFO (newest first, smaller FIL first)
+				// Only the primary (FIL) key flips; tie-breakers stay deterministic so the
+				// queue order is reproducible in both modes.
 				void SortActionsFIFO(std::deque<Action>& actions,
-					const std::vector<int64_t>& FIL_waiting)
+					const std::vector<int64_t>& FIL_waiting,
+					bool descending = true)
 				{
 					// Stable sort so that ties keep previous relative order (useful for reproducibility)
 					std::stable_sort(actions.begin(), actions.end(),
@@ -100,8 +105,8 @@ namespace DynaPlex::Models {
 								? FIL_waiting[(size_t)b.job_type]
 								: INT64_MIN;
 
-							// Primary: "oldest first" (larger FIL first)
-							if (wa != wb) return wa > wb;
+							// Primary: FIL order (descending = oldest first; ascending = newest first)
+							if (wa != wb) return descending ? (wa > wb) : (wa < wb);
 
 							// Secondary: smaller server pool index first
 							if (a.server_index != b.server_index) return a.server_index < b.server_index;
@@ -186,7 +191,8 @@ namespace DynaPlex::Models {
 				}
 
 				void generate_actions(std::vector<int64_t> FIL_waiting,
-				                      const std::vector<double>& cost_rates) {
+				                      const std::vector<double>& cost_rates,
+				                      bool sort_descending = true) {
 					#if QUEUE_MDP_DEBUG
 					std::cout << "\n[QMDP] generate_actions called\n";
 					std::cout << "[QMDP]   old queue size = " << action_queue.size()
@@ -220,7 +226,7 @@ namespace DynaPlex::Models {
 						<< ", action_counter (unchanged) = " << action_counter << "\n";
 					#endif
 
-					SortActionsFIFO(action_queue, FIL_waiting);
+					SortActionsFIFO(action_queue, FIL_waiting, sort_descending);
 					LabelActionQueue(FIL_waiting, cost_rates);
 
 				}
@@ -447,6 +453,7 @@ namespace DynaPlex::Models {
 			std::vector<double> due_times; // rewards for completing each job type n
 			double uniformization_rate;
 			int64_t reward_type;      // 0=binary (FIL>D), 1=queue-lateness (default)
+			bool sort_descending = true; // action-queue order: true=FIFO (oldest first), false=reverse (newest first)
 			int64_t max_queue_depth;  // tracked positions per job type: 1=FIL only (default)
 			int64_t feature_queue_depth; // NN feature slots per job type (>= max_queue_depth; pads with 0)
 			int64_t int_hash = 0;        // config hash — used by EvaluatePolicyRaw(Policy) to build type-erased states

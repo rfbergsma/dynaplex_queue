@@ -27,8 +27,10 @@
 #include <memory>
 #include <span>
 #include <filesystem>
+#include <optional>
 #include "dynaplex/dynaplexprovider.h"
 #include "dynaplex/policy.h"
+#include "dynaplex/policycomparer.h"
 #include "../../../lib/models/models/queue_mdp/mdp.h"
 
 using namespace DynaPlex;
@@ -288,12 +290,23 @@ static void run_stoch_fifo_experiment(
         const double rvi_phys  = rvi_mean  * Lambda;
         const double norm      = rvi_mean;   // normalise ratios by raw RVI (Lambda cancels)
 
-        // Optional primary base (e.g. cmu): evaluate once here, reuse below.
+        // Optional primary base (e.g. reverse_fifo): evaluate once here, reuse below.
+        // reverse_fifo trains/evaluates on an ascending-sorted MDP so the newest candidate
+        // is presented at alpha=0 (matching the policy's intent).  Other bases use the
+        // standard descending-sorted MDP.  RVI g* is identical on both, so norm is valid.
+        DynaPlex::MDP    primary_mdp = mdp;
         DynaPlex::Policy primary_base;
         double           primary_base_mean = 0.0;
+        std::optional<DynaPlex::Utilities::PolicyComparer> primary_comparer_opt;
         if (!primary_base_id.empty()) {
-            primary_base = mdp->GetPolicy(primary_base_id);
-            comparer.Compare({primary_base})[0].Get("mean", primary_base_mean);
+            if (primary_base_id == "reverse_fifo") {
+                VarGroup cfg_primary = mdp_config;
+                cfg_primary.Set("action_sort", std::string("reverse_fifo"));
+                primary_mdp = dp.GetMDP(cfg_primary);
+            }
+            primary_comparer_opt = dp.GetPolicyComparer(primary_mdp, eval_cfg);
+            primary_base = primary_mdp->GetPolicy(primary_base_id);
+            primary_comparer_opt->Compare({primary_base})[0].Get("mean", primary_base_mean);
         }
 
         // --- Tick-rate sub-header ---
@@ -314,46 +327,34 @@ static void run_stoch_fifo_experiment(
         }
         dp.System() << "\n";
 
-        // --- Heatmaps for FIFO and RVI (first tick_rate only) ---
-        if (print_heatmaps && first_tr) {
-            dp.System() << "  FIFO policy  (FIL_0=row, FIL_1=col; 0=skip, 1=serve type0, 2=serve type1):\n";
-            qm::PrintPolicyHeatmap(mdp, fifo, 12);
-            dp.System() << "\n  RVI optimal policy:\n";
-            qm::PrintPolicyHeatmap(mdp, rvi, 12);
-            dp.System() << "\n";
-
-            // --- RVI gap (confidence) heatmap ---
-            // Re-runs RVI silently to obtain the RVISolution with gap_map populated.
-            // Each cell shows floor(log10|Q(s,0)-Q(s,1)|); large negative values
-            // (e.g. -5, -6) flag near-ties caused by binary-reward flat gradients.
-            dp.System() << "  RVI action-value gap  floor(log10|Q(s,0)-Q(s,1)|)"
-                        << "  (near-zero gap -> large negative = numerical near-tie):\n";
+        // --- RVI diagnostics + CSV export (first tick_rate only) ---
+        // Compute the RVISolution once if it is needed for either console diagnostics
+        // (print_heatmaps) or the CSV export.  Console output is gated by print_heatmaps;
+        // the CSV is always written when csv_stem is set, so turning heatmaps off keeps
+        // the Q-value CSVs intact.
+        if (first_tr && (print_heatmaps || !csv_stem.empty())) {
             auto rvi_sol = use_rel_tol
                 ? raw_mdp.runRVI(0.01, /*silent=*/true)
                 : raw_mdp.runRVI((int)rvi_M_fixed, 10000, /*silent=*/true);
-            qm::PrintEnumeratedGapHeatmap(raw_mdp, rvi_sol, 12);
-            dp.System() << "\n";
 
-            // --- Q-value table: verify action_map consistency and inspect ---
-            // surprsing cells (e.g. "0" below diagonal that should be skip).
-            dp.System() << "  RVI Q-value table (delta=Q[skip]-Q[assign];"
-                        << " delta>0 -> assign cheaper):\n";
-            qm::PrintRVIQValueTable(raw_mdp, rvi_sol, 12);
-            dp.System() << "\n";
+            if (print_heatmaps) {
+                dp.System() << "  FIFO policy  (FIL_0=row, FIL_1=col; 0=skip, 1=serve type0, 2=serve type1):\n";
+                qm::PrintPolicyHeatmap(mdp, fifo, 12);
+                dp.System() << "\n  RVI optimal policy:\n";
+                qm::PrintPolicyHeatmap(mdp, rvi, 12);
+                dp.System() << "\n";
 
-            // --- g* cross-check: solver Bellman value vs simulation ---
-            // The RVI g* is cost per chain-step (action + event steps combined).
-            // EvaluatePolicyRaw.mean_cost_per_step_gic uses the SAME denominator,
-            // so the two values should agree within simulation noise (~1%).
-            //
-            // NOTE: rvi_phys = comparer_mean * Lambda uses cost/event-step, which
-            // is systematically higher than g* by the ratio of (action+event)/event.
-            // Do NOT compare rvi_sol.g_star*Lambda directly with rvi_phys — they
-            // measure different things.
-            //
-            // BFS truncation M >> 12 (auto-selected) confirms the FIL=10,11,12 cells
-            // in the heatmap are NOT truncation artifacts.
-            {
+                dp.System() << "  RVI action-value gap  floor(log10|Q(s,0)-Q(s,1)|)"
+                            << "  (near-zero gap -> large negative = numerical near-tie):\n";
+                qm::PrintEnumeratedGapHeatmap(raw_mdp, rvi_sol, 12);
+                dp.System() << "\n";
+
+                dp.System() << "  RVI Q-value table (delta=Q[skip]-Q[assign];"
+                            << " delta>0 -> assign cheaper):\n";
+                qm::PrintRVIQValueTable(raw_mdp, rvi_sol, 12);
+                dp.System() << "\n";
+
+                // g* cross-check: solver Bellman value vs simulation (same denominator).
                 auto raw_eval = qm::EvaluatePolicyRaw(
                     raw_mdp, rvi,
                     /*n_traj=*/50, /*steps=*/200000, /*warmup=*/20000);
@@ -369,19 +370,16 @@ static void run_stoch_fifo_experiment(
                             << std::setprecision(6) << sim_gstar << "\n";
                 dp.System() << "    Diff           = "
                             << std::setprecision(2) << pct
-                            << "%  (< 1% = solver and simulation agree = heatmap correct)\n";
-                dp.System() << "    [Physical cost rates (comparer metric, different denominator)]\n";
+                            << "%  (< 1% = solver and simulation agree)\n";
                 dp.System() << "    FIFO*Λ = " << std::setprecision(4) << fifo_phys
                             << "   RVI*Λ = " << rvi_phys << "\n\n";
             }
 
-            // --- Export Q-value table to CSV for external visualisation ---
+            // --- Export Q-value table to CSV (independent of print_heatmaps) ---
             if (!csv_stem.empty()) {
                 const std::string csv_path =
                     dp.FilePath({"csv_results"}, csv_stem + "_rvi_qvalues.csv");
                 dp.System() << "  [CSV] Writing to: " << csv_path << "\n";
-                // Extend grid past the largest deadline so the deadline region
-                // is visible in the heatmap (e.g. Exp 3 has D0=18 ticks).
                 int max_fil_csv = 12;
                 for (size_t n = 0; n < raw_mdp.due_times.size(); ++n)
                     max_fil_csv = std::max(max_fil_csv,
@@ -400,21 +398,28 @@ static void run_stoch_fifo_experiment(
             << "\n" << std::string(66, '-') << "\n";
 
         // --- Training loop ---
-        auto train_and_print = [&](const std::string&      base_name,
-                                    double                  base_direct_mean,
-                                    int64_t                 n_gens,
-                                    const DynaPlex::Policy& base_policy)
+        // train_mdp / eval_comparer let a base train+evaluate on a different MDP than
+        // the standard (FIFO-sorted) one.  The reverse_fifo base uses an ascending-sorted
+        // MDP so its newest-first candidate is presented at alpha=0; FIFO/StochFIFO use
+        // the standard descending-sorted MDP.  RVI g* is sort-invariant, so `norm`
+        // (from the standard MDP) normalises NN/RVI consistently across both.
+        auto train_and_print = [&](const std::string&                          base_name,
+                                    double                                      base_direct_mean,
+                                    int64_t                                     n_gens,
+                                    const DynaPlex::Policy&                     base_policy,
+                                    DynaPlex::MDP                               train_mdp,
+                                    const DynaPlex::Utilities::PolicyComparer&  eval_comparer)
         {
             DynaPlex::Policy current_base = base_policy;
 
             for (int64_t g = 1; g <= n_gens; ++g) {
-                auto dcl = dp.GetDCL(mdp, current_base,
+                auto dcl = dp.GetDCL(train_mdp, current_base,
                                       make_dcl_cfg(N, M, H, nn_arch));
                 dcl.TrainPolicy();
                 auto nn_g = dcl.GetPolicies()[(size_t)1];
 
                 double nn_mean = 0.0;
-                comparer.Compare({nn_g})[0].Get("mean", nn_mean);
+                eval_comparer.Compare({nn_g})[0].Get("mean", nn_mean);
                 const double nn_phys = nn_mean * Lambda;
 
                 if (g == 1)
@@ -465,23 +470,24 @@ static void run_stoch_fifo_experiment(
                     // NN heatmap: first tick_rate only, after final generation
                     dp.System() << "\n  NN policy heatmap [" << base_name
                                 << ", gen " << g << "]:\n";
-                    qm::PrintPolicyHeatmap(mdp, nn_g, 12);
+                    qm::PrintPolicyHeatmap(train_mdp, nn_g, 12);
                     dp.System() << "\n";
                 }
             }
         };
 
-        // FIFO base: 1 generation (reference point only)
-        train_and_print("FIFO (eps=0.00)", fifo_mean, /*n_gens=*/1, fifo);
+        // FIFO base: 1 generation (reference point only). Standard descending-sorted MDP.
+        train_and_print("FIFO (eps=0.00)", fifo_mean, /*n_gens=*/1, fifo, mdp, comparer);
 
-        // Primary base (e.g. cmu): multi-gen training when specified.
-        // For asymmetric-cost problems the c-mu rule already reflects cost structure,
-        // so DCL from this base converges to near-optimal in a single generation.
+        // Primary base (e.g. reverse_fifo): multi-gen training when specified.
+        // reverse_fifo trains on its own ascending-sorted MDP (primary_mdp); other
+        // primary bases default primary_mdp to the standard MDP.
         if (!primary_base_id.empty()) {
-            train_and_print(primary_base_id, primary_base_mean, num_gens, primary_base);
+            train_and_print(primary_base_id, primary_base_mean, num_gens,
+                            primary_base, primary_mdp, *primary_comparer_opt);
         }
 
-        // Stochastic FIFO variants: num_gens generations each
+        // Stochastic FIFO variants: num_gens generations each. Standard descending-sorted MDP.
         for (double eps : stoch_epsilons) {
             VarGroup stoch_cfg;
             stoch_cfg.Add("id",        std::string("stochastic_FIFO"));
@@ -494,7 +500,7 @@ static void run_stoch_fifo_experiment(
             std::ostringstream lbl;
             lbl << "StochFIFO(eps="
                 << std::fixed << std::setprecision(2) << eps << ")";
-            train_and_print(lbl.str(), base_mean, num_gens, stoch);
+            train_and_print(lbl.str(), base_mean, num_gens, stoch, mdp, comparer);
         }
 
     } // end tick_rate loop
@@ -607,10 +613,11 @@ int main()
     dp.System() << "  [IO] IO root: " << dp.FilePath({"csv_results"}, "probe") << "\n";
 
     // ---- Run-control flags ----
-    const bool run_exp1      = true;
-    const bool run_exp1b     = true;   // M/M/2 validation (theory: 2rho^2/(1+rho))
+    // Labels-off reproduction run: only Exp2 and Exp3 (Exp1/Exp1b/grid disabled).
+    const bool run_exp1      = false;
+    const bool run_exp1b     = false;  // M/M/2 validation (theory: 2rho^3/(1+rho))
     const bool run_exp2      = true;
-    const bool run_exp3_grid = true;   // fast FIFO/RVI gap scan (no NN training)
+    const bool run_exp3_grid = false;  // fast FIFO/RVI gap scan (no NN training)
     const bool run_exp3      = true;   // full DCL training with chosen config
     const bool run_exp4      = false;  // queue-lateness reward, num_gens=3 (slow)
 
@@ -719,7 +726,7 @@ int main()
     // Same structure as Exp1 but with 2 servers (single pool, C=2).
     // rho = lambda / (2*mu)  (per-server utilisation).
     // FIFO is trivially optimal (single job type, always assign when free).
-    // Theory: 2*rho^2/(1+rho)  (Erlang-C for c=2, P(>=2 in system)).
+    // Theory: 2*rho^3/(1+rho)  (M/M/2, P(>=3 in system) = P(W^1>0)).
     // RevFIFO should equal FIFO (single candidate => is_rfq_winner=1 always).
     // ----------------------------------------------------------
   if (run_exp1b) {
@@ -727,7 +734,7 @@ int main()
     dp.System() << "  reward_type=0 (binary cost 1{wait>0}), D=0, mu=1, 2 servers (C=2 pool)\n";
     dp.System() << "  rho = lambda/(2*mu)  (per-server utilisation)\n";
     dp.System() << "  Metric: physical cost rate = mean_cost_per_event * Lambda\n";
-    dp.System() << "  Theory: 2*rho^2/(1+rho)  (Erlang-C, P(>=2 in system))\n";
+    dp.System() << "  Theory: 2*rho^3/(1+rho)  (M/M/2, P(>=3 in system) = P(W^1>0))\n";
     dp.System() << "  DCL: N=10K, M=400, H=50, num_gens=1, arch={64,32,2}\n";
 
     VarGroup nn_arch_small;
@@ -787,7 +794,10 @@ int main()
             double rate_rvi      = r_rvi.mean_cost_per_event      * Lambda;
             double rate_nn       = r_nn.mean_cost_per_event       * Lambda;
 
-            double theory   = 2.0 * rho * rho / (1.0 + rho);
+            // Cost fires on P(W^1 > 0) = P(>=3 in system) for c=2 servers
+            // (a job waits in queue only when both servers are busy AND >=1 waits).
+            // M/M/2 stationary: P(>=3) = 2*rho^3 / (1+rho).
+            double theory   = 2.0 * rho * rho * rho / (1.0 + rho);
             double fifo_err = (theory > 1e-15)
                             ? (rate_fifo - theory) / theory * 100.0 : 0.0;
             double nn_ratio = (rate_rvi > 1e-15) ? rate_nn / rate_rvi : 1.0;
@@ -844,7 +854,7 @@ int main()
         /*epsilons=*/     std::vector<double>{0.30},
         tick_rates_exp,
         /*eg_eps=*/       0.10,
-        /*heatmaps=*/     true,
+        /*heatmaps=*/     false,
         /*csv_stem=*/     "exp2",
         /*primary_base=*/ std::string("reverse_fifo"));
   } // end run_exp2
@@ -972,7 +982,7 @@ int main()
         /*epsilons=*/     std::vector<double>{0.30},
         tick_rates_exp,
         /*eg_eps=*/       0.10,
-        /*heatmaps=*/     true,
+        /*heatmaps=*/     false,
         /*csv_stem=*/     "exp3",
         /*primary_base=*/ std::string("reverse_fifo"));
   } // end run_exp3
