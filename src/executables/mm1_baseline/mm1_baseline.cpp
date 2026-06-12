@@ -395,7 +395,11 @@ static void run_stoch_fifo_experiment(
             << std::setw(5)  << "Gen"
             << std::setw(12) << "NN*Lambda"
             << std::setw(10) << "NN/RVI"
-            << "\n" << std::string(66, '-') << "\n";
+            << std::setw(10) << "TrLoss"
+            << std::setw(10) << "VaLoss"
+            << std::setw(10) << "Gap"
+            << std::setw(6)  << "In"
+            << "\n" << std::string(102, '-') << "\n";
 
         // --- Training loop ---
         // train_mdp / eval_comparer let a base train+evaluate on a different MDP than
@@ -422,20 +426,39 @@ static void run_stoch_fifo_experiment(
                 eval_comparer.Compare({nn_g})[0].Get("mean", nn_mean);
                 const double nn_phys = nn_mean * Lambda;
 
+                // Training diagnostics: train/val cross-entropy loss (lower = better fit),
+                // their gap (val - train; large positive = classic overfitting), and the
+                // input-feature count (changes when labels are toggled on/off).
+                double  t_loss = 0.0, v_loss = 0.0;
+                int64_t num_inputs = 0;
+                auto nn_cfg = nn_g->GetConfig();
+                nn_cfg.Get("saved_training_loss",   t_loss);
+                nn_cfg.Get("saved_validation_loss", v_loss);
+                if (nn_cfg.HasKey("num_inputs")) nn_cfg.Get("num_inputs", num_inputs);
+                const double overfit_gap = v_loss - t_loss;
+
                 if (g == 1)
                     dp.System() << std::left  << std::setw(28) << base_name
                                 << std::fixed << std::setprecision(4)
                                 << std::setw(11) << base_direct_mean / norm
                                 << std::setw(5)  << g
                                 << std::setw(12) << nn_phys
-                                << std::setw(10) << nn_mean / norm << "\n";
+                                << std::setw(10) << nn_mean / norm
+                                << std::setw(10) << t_loss
+                                << std::setw(10) << v_loss
+                                << std::setw(10) << overfit_gap
+                                << std::setw(6)  << num_inputs << "\n";
                 else
                     dp.System() << std::left
                                 << std::setw(28) << "" << std::setw(11) << ""
                                 << std::fixed << std::setprecision(4)
                                 << std::setw(5)  << g
                                 << std::setw(12) << nn_phys
-                                << std::setw(10) << nn_mean / norm << "\n";
+                                << std::setw(10) << nn_mean / norm
+                                << std::setw(10) << t_loss
+                                << std::setw(10) << v_loss
+                                << std::setw(10) << overfit_gap
+                                << std::setw(6)  << num_inputs << "\n";
 
                 if (g < n_gens) {
                     // Guard 1 (overfit): skip EG wrap if val-train gap > 0.01
@@ -445,11 +468,6 @@ static void run_stoch_fifo_experiment(
                     //   → the NN already uses strategic idleness; adding random skips
                     //   over-represents action=0, causing the next gen to collapse to
                     //   always-idle behaviour (NN/RVI >> 1).  Pass the raw NN instead.
-                    double t_loss = 0.0, v_loss = 0.0;
-                    auto nn_cfg = nn_g->GetConfig();
-                    nn_cfg.Get("saved_training_loss",   t_loss);
-                    nn_cfg.Get("saved_validation_loss", v_loss);
-                    const double overfit_gap   = v_loss - t_loss;
                     const double nn_ratio_g    = nn_mean / norm;
 
                     if (overfit_gap > 0.01) {
@@ -613,13 +631,20 @@ int main()
     dp.System() << "  [IO] IO root: " << dp.FilePath({"csv_results"}, "probe") << "\n";
 
     // ---- Run-control flags ----
-    // Labels-off reproduction run: only Exp2 and Exp3 (Exp1/Exp1b/grid disabled).
+    // Labels diagnostic run: only Exp2 and Exp3 (Exp1/Exp1b/grid disabled).
     const bool run_exp1      = false;
     const bool run_exp1b     = false;  // M/M/2 validation (theory: 2rho^3/(1+rho))
     const bool run_exp2      = true;
     const bool run_exp3_grid = false;  // fast FIFO/RVI gap scan (no NN training)
     const bool run_exp3      = true;   // full DCL training with chosen config
     const bool run_exp4      = false;  // queue-lateness reward, num_gens=3 (slow)
+
+    // Toggle the 3 policy-hint label features in the NN input vector.
+    //   true  -> labels ON  (Exp2 FIFO ~0.999, Exp3 FIFO ~14.5 regression)
+    //   false -> labels OFF (reproduces paper: Exp2 FIFO ~4.42, Exp3 FIFO ~0.999)
+    // Compare the TrLoss/VaLoss/Gap columns between the two settings to test the
+    // overfitting hypothesis.
+    const bool enable_labels = true;
 
     // Shared NN architecture for Experiments 2 and 3.
     // {64,32,2} matches stochastic_fifo_test and reliably converges.
@@ -840,6 +865,7 @@ int main()
     // Override to symmetric deadlines: D=[3,3] instead of D=[6,3].
     // Both types now share the same 9-tick deadline; the only asymmetry is cost (c=[100,300]).
     cfg2.Set("due_times", VarGroup::DoubleVec{3.0, 3.0});
+    cfg2.Set("enable_action_labels", enable_labels);
 
     run_stoch_fifo_experiment(dp,
         "asym_cost_2s  [k=2, n=2, fully flexible, lam=[0.25,0.25], c=[100,300], D=[3,3]]",
@@ -969,9 +995,12 @@ int main()
     dp.System() << "  tick_rate=3  H=300  N=20K  M=400  num_gens=3  eg_eps=0.10\n";
     dp.System() << "  Base: FIFO (1 gen reference) + StochFIFO(0.30) x 3 gens\n";
 
+    auto cfg3 = make_specialist_generalist_config();
+    cfg3.Set("enable_action_labels", enable_labels);
+
     run_stoch_fifo_experiment(dp,
         "specialist_gen  [srv0=type0_only, srv1=both, lam=[0.8,0.2], c=[100,300], D=[1,1]]",
-        make_specialist_generalist_config(),
+        cfg3,
         /*N=*/            int64_t(20000),
         /*M=*/            int64_t(400),
         /*base_H=*/       int64_t(100),

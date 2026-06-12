@@ -454,6 +454,7 @@ namespace DynaPlex::Models {
 			double uniformization_rate;
 			int64_t reward_type;      // 0=binary (FIL>D), 1=queue-lateness (default)
 			bool sort_descending = true; // action-queue order: true=FIFO (oldest first), false=reverse (newest first)
+			bool enable_action_labels = true; // include is_fifo/cmu/rfq_winner in NN features (config "enable_action_labels")
 			int64_t max_queue_depth;  // tracked positions per job type: 1=FIL only (default)
 			int64_t feature_queue_depth; // NN feature slots per job type (>= max_queue_depth; pads with 0)
 			int64_t int_hash = 0;        // config hash — used by EvaluatePolicyRaw(Policy) to build type-erased states
