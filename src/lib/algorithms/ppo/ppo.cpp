@@ -1,0 +1,386 @@
+#include "dynaplex/ppo.h"
+#include "dynaplex/error.h"
+#include "dynaplex/rng.h"
+#include <algorithm>
+#include <numeric>
+#include <cmath>
+
+#if DP_TORCH_AVAILABLE
+#include <torch/torch.h>
+#endif
+
+namespace DynaPlex::Algorithms {
+
+#if DP_TORCH_AVAILABLE
+
+	// ----------------------------------------------------------------------
+	// ActorCritic network: shared MLP trunk + policy-logits head + value head.
+	// forward(x) -> [B, num_actions + 1]; columns [0..A-1] are policy logits,
+	// column A is the state value V(s).
+	// ----------------------------------------------------------------------
+	struct ActorCriticImpl : torch::nn::Module {
+		torch::nn::Sequential trunk{ nullptr };
+		torch::nn::Linear     policy_head{ nullptr };
+		torch::nn::Linear     value_head{ nullptr };
+		int64_t num_actions{ 0 };
+
+		ActorCriticImpl(int64_t in_dim, int64_t num_actions_,
+		                const std::vector<int64_t>& hidden)
+			: num_actions(num_actions_)
+		{
+			trunk = torch::nn::Sequential();
+			int64_t last = in_dim;
+			for (size_t i = 0; i < hidden.size(); ++i) {
+				trunk->push_back(torch::nn::Linear(last, hidden[i]));
+				trunk->push_back(torch::nn::ReLU());
+				last = hidden[i];
+			}
+			register_module("trunk", trunk);
+			policy_head = register_module("policy_head", torch::nn::Linear(last, num_actions));
+			value_head  = register_module("value_head",  torch::nn::Linear(last, 1));
+
+			// Small-gain init on the policy head so the initial policy is near-uniform.
+			// Without this the default (kaiming) init produces large logits that saturate
+			// within a few updates -> premature entropy collapse to a deterministic, often
+			// suboptimal, policy.  This is the standard PPO initialisation trick.
+			{
+				torch::NoGradGuard ng;
+				policy_head->weight.mul_(0.01);
+				policy_head->bias.zero_();
+			}
+		}
+
+		torch::Tensor forward(torch::Tensor x) {
+			torch::Tensor h = trunk->forward(x);
+			torch::Tensor logits = policy_head->forward(h);          // [B, A]
+			torch::Tensor value  = value_head->forward(h);           // [B, 1]
+			return torch::cat({ logits, value }, /*dim=*/1);         // [B, A+1]
+		}
+	};
+	TORCH_MODULE(ActorCritic);
+
+	// ----------------------------------------------------------------------
+	// Deterministic (argmax) evaluation policy wrapping a trained ActorCritic.
+	// Slices off the value column and reuses the MDP's masked argmax logic, so
+	// it plugs into PolicyComparer / heatmaps exactly like an NN_Policy.
+	// ----------------------------------------------------------------------
+	class PPOActorPolicy : public DynaPlex::PolicyInterface {
+		DynaPlex::MDP mdp;
+		ActorCritic net;
+		int64_t num_actions;
+		DynaPlex::VarGroup config;
+	public:
+		PPOActorPolicy(DynaPlex::MDP mdp, ActorCritic net, int64_t num_actions)
+			: mdp(mdp), net(net), num_actions(num_actions)
+		{
+			config.Add("id", std::string("PPO_Policy"));
+		}
+		std::string TypeIdentifier() const override { return "PPO_Policy"; }
+		const DynaPlex::VarGroup& GetConfig() const override { return config; }
+
+		void SetAction(std::span<DynaPlex::Trajectory> trajectories) const override {
+			const int64_t B  = static_cast<int64_t>(trajectories.size());
+			if (B == 0) return;
+			const int64_t in = mdp->NumFlatFeatures();
+
+			torch::Tensor feats = torch::empty({ B, in }, torch::kFloat32);
+			mdp->GetFlatFeatures(trajectories,
+				std::span<float>(feats.data_ptr<float>(), static_cast<size_t>(B * in)));
+
+			torch::NoGradGuard no_grad;
+			ActorCritic net_local = net;   // copy holder (shares module) to call non-const forward
+			torch::Tensor out = net_local->forward(feats);           // [B, A+1]
+			torch::Tensor logits = out.narrow(1, 0, num_actions).contiguous();
+
+			mdp->SetArgMaxAction(trajectories,
+				std::span<float>(logits.data_ptr<float>(), static_cast<size_t>(B * num_actions)));
+		}
+	};
+
+#endif // DP_TORCH_AVAILABLE
+
+	// ======================================================================
+	//  PPO::Impl
+	// ======================================================================
+	struct PPO::Impl {
+		DynaPlex::System system;
+		DynaPlex::MDP    mdp;
+		DynaPlex::Policy policy_0;
+
+		// hyperparameters
+		int64_t rng_seed, num_envs, rollout_steps, num_updates, epochs_per_update, mini_batch_size;
+		double  gae_gamma, gae_lambda, clip_epsilon, entropy_coef, value_coef, learning_rate, max_grad_norm;
+		bool    silent, normalize_advantages;
+		std::vector<int64_t> hidden_layers;
+
+		Impl(const DynaPlex::System& system, DynaPlex::MDP mdp, DynaPlex::Policy policy_0, const VarGroup& config)
+			: system(system), mdp(mdp), policy_0(policy_0)
+		{
+			if (!mdp) throw DynaPlex::Error("PPO: mdp should not be null");
+			config.GetOrDefault("rng_seed",          rng_seed,          (int64_t)15112017);
+			config.GetOrDefault("silent",            silent,            false);
+			config.GetOrDefault("num_envs",          num_envs,          (int64_t)16);
+			config.GetOrDefault("rollout_steps",     rollout_steps,     (int64_t)256);
+			config.GetOrDefault("num_updates",       num_updates,       (int64_t)200);
+			config.GetOrDefault("epochs_per_update", epochs_per_update, (int64_t)10);
+			config.GetOrDefault("mini_batch_size",   mini_batch_size,   (int64_t)256);
+			config.GetOrDefault("gae_gamma",         gae_gamma,         0.99);
+			config.GetOrDefault("gae_lambda",        gae_lambda,        0.95);
+			config.GetOrDefault("clip_epsilon",      clip_epsilon,      0.2);
+			config.GetOrDefault("entropy_coef",      entropy_coef,      0.01);
+			config.GetOrDefault("value_coef",        value_coef,        0.5);
+			config.GetOrDefault("learning_rate",     learning_rate,     3e-4);
+			config.GetOrDefault("max_grad_norm",     max_grad_norm,     0.5);
+			config.GetOrDefault("normalize_advantages", normalize_advantages, true);
+
+			if (config.HasKey("nn_architecture")) {
+				VarGroup arch; config.Get("nn_architecture", arch);
+				if (arch.HasKey("hidden_layers"))
+					arch.Get("hidden_layers", hidden_layers);
+			}
+			if (hidden_layers.empty()) hidden_layers = { 64, 32 };
+		}
+
+#if DP_TORCH_AVAILABLE
+		ActorCritic net{ nullptr };
+
+		void Build() {
+			torch::manual_seed(static_cast<uint64_t>(rng_seed));
+			net = ActorCritic(mdp->NumFlatFeatures(), mdp->NumValidActions(), hidden_layers);
+		}
+
+		void Train() {
+			if (!net) Build();
+			const int64_t A = mdp->NumValidActions();
+			const int64_t in = mdp->NumFlatFeatures();
+			const int64_t E = num_envs;
+			const int64_t T = rollout_steps;
+			const double  obj = mdp->Objective();   // +1 max, -1 min
+
+			torch::optim::Adam optimizer(net->parameters(),
+				torch::optim::AdamOptions(learning_rate).betas({ 0.9, 0.999 }));
+
+			// Persistent rollout trajectories (infinite-horizon chain continues across updates).
+			std::vector<DynaPlex::Trajectory> trajs;
+			trajs.reserve(static_cast<size_t>(E));
+			for (int64_t i = 0; i < E; ++i) {
+				trajs.emplace_back(i);
+				trajs[(size_t)i].RNGProvider.SeedEventStreams(true, rng_seed, i);
+			}
+			mdp->InitiateState(trajs);
+			mdp->IncorporateUntilNonTrivialAction(trajs);
+
+			// Running scale of the (raw) returns.  The value head predicts NORMALISED
+			// returns (return / ret_std_running); we multiply its output by this scale
+			// to recover raw values for GAE.  Without this, large binary-cost returns
+			// (O(1e2-1e3)) make the value MSE dominate the shared trunk and collapse the
+			// policy (value-scale domination).
+			double ret_std_running = 1.0;
+
+			for (int64_t update = 0; update < num_updates; ++update) {
+				// ----- Rollout buffers (flat: index = t*E + e) -----
+				torch::Tensor buf_feat = torch::empty({ T * E, in }, torch::kFloat32);
+				torch::Tensor buf_mask = torch::zeros({ T * E, A }, torch::kBool);
+				torch::Tensor buf_act  = torch::empty({ T * E }, torch::kInt64);
+				torch::Tensor buf_logp = torch::empty({ T * E }, torch::kFloat32);
+				torch::Tensor buf_val  = torch::empty({ T * E }, torch::kFloat32);
+				torch::Tensor buf_rew  = torch::empty({ T * E }, torch::kFloat32);
+				// periods (events) elapsed between this decision and the next; used for
+				// semi-MDP time-aware discounting (gamma^dperiods) so that skip vs assign,
+				// which take different amounts of time, are credited consistently.
+				torch::Tensor buf_dp   = torch::empty({ T * E }, torch::kFloat32);
+
+				for (int64_t t = 0; t < T; ++t) {
+					const int64_t base = t * E;
+					// features for this step
+					torch::Tensor feats = buf_feat.narrow(0, base, E);
+					mdp->GetFlatFeatures(trajs,
+						std::span<float>(feats.data_ptr<float>(), static_cast<size_t>(E * in)));
+					// mask (zero-init, GetMask sets allowed=true)
+					torch::Tensor mask = buf_mask.narrow(0, base, E);
+					mdp->GetMask(trajs,
+						std::span<bool>(mask.data_ptr<bool>(), static_cast<size_t>(E * A)));
+
+					torch::Tensor logits, value;
+					{
+						torch::NoGradGuard ng;
+						torch::Tensor out = net->forward(feats);
+						logits = out.narrow(1, 0, A);
+						value  = out.narrow(1, A, 1).squeeze(1) * ret_std_running; // raw value
+					}
+					torch::Tensor masked = logits.masked_fill(mask.logical_not(), -1e9);
+					torch::Tensor probs  = torch::softmax(masked, 1);
+					torch::Tensor logp_all = torch::log_softmax(masked, 1);
+					torch::Tensor action = torch::multinomial(probs, 1, true).squeeze(1); // [E]
+					torch::Tensor logp = logp_all.gather(1, action.unsqueeze(1)).squeeze(1);
+
+					buf_act.narrow(0, base, E).copy_(action);
+					buf_logp.narrow(0, base, E).copy_(logp);
+					buf_val.narrow(0, base, E).copy_(value);
+
+					// apply actions and advance to next decision; reward = obj * delta(CumulativeReturn)
+					auto act_acc = action.accessor<int64_t, 1>();
+					std::vector<double> c_before(static_cast<size_t>(E));
+					std::vector<int64_t> p_before(static_cast<size_t>(E));
+					for (int64_t e = 0; e < E; ++e) {
+						trajs[(size_t)e].NextAction = act_acc[e];
+						c_before[(size_t)e] = trajs[(size_t)e].CumulativeReturn;
+						p_before[(size_t)e] = trajs[(size_t)e].PeriodCount;
+					}
+					mdp->IncorporateAction(trajs);
+					mdp->IncorporateUntilNonTrivialAction(trajs);
+					torch::Tensor rew_slice = buf_rew.narrow(0, base, E);
+					torch::Tensor dp_slice  = buf_dp.narrow(0, base, E);
+					auto rew_acc = rew_slice.accessor<float, 1>();
+					auto dp_acc  = dp_slice.accessor<float, 1>();
+					for (int64_t e = 0; e < E; ++e) {
+						rew_acc[e] = static_cast<float>(obj * (trajs[(size_t)e].CumulativeReturn - c_before[(size_t)e]));
+						int64_t dper = trajs[(size_t)e].PeriodCount - p_before[(size_t)e];
+						dp_acc[e] = static_cast<float>(dper > 0 ? dper : 1);
+					}
+				}
+
+				// ----- bootstrap value V(s_T) for each env -----
+				torch::Tensor boot;
+				{
+					torch::Tensor feats = torch::empty({ E, in }, torch::kFloat32);
+					mdp->GetFlatFeatures(trajs,
+						std::span<float>(feats.data_ptr<float>(), static_cast<size_t>(E * in)));
+					torch::NoGradGuard ng;
+					torch::Tensor out = net->forward(feats);
+					boot = (out.narrow(1, A, 1).squeeze(1) * ret_std_running).contiguous();   // raw [E]
+				}
+
+				// ----- GAE (per env, backwards) -----
+				torch::Tensor buf_adv = torch::empty({ T * E }, torch::kFloat32);
+				torch::Tensor buf_ret = torch::empty({ T * E }, torch::kFloat32);
+				{
+					auto rew = buf_rew.accessor<float, 1>();
+					auto val = buf_val.accessor<float, 1>();
+					auto dp  = buf_dp.accessor<float, 1>();
+					auto adv = buf_adv.accessor<float, 1>();
+					auto ret = buf_ret.accessor<float, 1>();
+					auto bv  = boot.accessor<float, 1>();
+					for (int64_t e = 0; e < E; ++e) {
+						double gae = 0.0;
+						for (int64_t t = T - 1; t >= 0; --t) {
+							const int64_t idx = t * E + e;
+							const double next_val = (t == T - 1) ? bv[e] : val[(t + 1) * E + e];
+							// time-aware discount: gamma raised to the #periods this decision spanned.
+							const double disc = std::pow(gae_gamma, (double)dp[idx]);
+							const double delta = rew[idx] + disc * next_val - val[idx];
+							gae = delta + disc * gae_lambda * gae;
+							adv[idx] = static_cast<float>(gae);
+							ret[idx] = static_cast<float>(gae + val[idx]);
+						}
+					}
+				}
+				if (normalize_advantages) {
+					double mean = buf_adv.mean().item<double>();
+					double std  = buf_adv.std().item<double>();
+					buf_adv = (buf_adv - mean) / (std + 1e-8);
+				}
+
+				// Update the running return scale (used to normalise value targets and to
+				// rescale the value head's output back to raw units).  Initialise from the
+				// first rollout so even update 0 trains on O(1) value targets.
+				{
+					double cur_std = buf_ret.std().item<double>();
+					if (cur_std < 1e-6) cur_std = 1e-6;
+					if (update == 0) ret_std_running = cur_std;
+					else             ret_std_running = 0.95 * ret_std_running + 0.05 * cur_std;
+				}
+				torch::Tensor buf_ret_norm = buf_ret / ret_std_running;   // value-head target
+
+				// ----- PPO update: K epochs over minibatches -----
+				const int64_t NB = T * E;
+				std::vector<int64_t> idx(static_cast<size_t>(NB));
+				std::iota(idx.begin(), idx.end(), 0);
+				DynaPlex::RNG shuffle_rng{ false, rng_seed + update + 1 };
+
+				double last_ploss = 0, last_vloss = 0, last_ent = 0;
+				for (int64_t epoch = 0; epoch < epochs_per_update; ++epoch) {
+					std::shuffle(idx.begin(), idx.end(), shuffle_rng.gen());
+					for (int64_t start = 0; start + mini_batch_size <= NB; start += mini_batch_size) {
+						torch::Tensor sel = torch::from_blob(idx.data() + start,
+							{ mini_batch_size }, torch::kInt64).clone();
+
+						torch::Tensor mb_feat = buf_feat.index_select(0, sel);
+						torch::Tensor mb_mask = buf_mask.index_select(0, sel);
+						torch::Tensor mb_act  = buf_act.index_select(0, sel);
+						torch::Tensor mb_oldlp= buf_logp.index_select(0, sel);
+						torch::Tensor mb_adv  = buf_adv.index_select(0, sel);
+						torch::Tensor mb_ret  = buf_ret_norm.index_select(0, sel);   // normalised value target
+
+						torch::Tensor out = net->forward(mb_feat);
+						torch::Tensor logits = out.narrow(1, 0, A);
+						torch::Tensor value  = out.narrow(1, A, 1).squeeze(1);       // normalised value prediction
+						torch::Tensor masked = logits.masked_fill(mb_mask.logical_not(), -1e9);
+						torch::Tensor logp_all = torch::log_softmax(masked, 1);
+						torch::Tensor probs = torch::softmax(masked, 1);
+						torch::Tensor new_logp = logp_all.gather(1, mb_act.unsqueeze(1)).squeeze(1);
+
+						torch::Tensor ratio = torch::exp(new_logp - mb_oldlp);
+						torch::Tensor surr1 = ratio * mb_adv;
+						torch::Tensor surr2 = torch::clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * mb_adv;
+						torch::Tensor policy_loss = -torch::min(surr1, surr2).mean();
+						torch::Tensor value_loss = torch::mse_loss(value, mb_ret);
+						torch::Tensor entropy = -(probs * logp_all).sum(1).mean();
+
+						torch::Tensor loss = policy_loss + value_coef * value_loss - entropy_coef * entropy;
+
+						optimizer.zero_grad();
+						loss.backward();
+						torch::nn::utils::clip_grad_norm_(net->parameters(), max_grad_norm);
+						optimizer.step();
+
+						last_ploss = policy_loss.item<double>();
+						last_vloss = value_loss.item<double>();
+						last_ent   = entropy.item<double>();
+					}
+				}
+
+				if (!silent && (update % 10 == 0 || update == num_updates - 1)) {
+					const double mean_rew = buf_rew.mean().item<double>();
+					system << "[PPO] update " << update
+					       << "  mean_reward=" << mean_rew
+					       << "  ploss=" << last_ploss
+					       << "  vloss=" << last_vloss
+					       << "  entropy=" << last_ent << std::endl;
+				}
+			}
+		}
+
+		DynaPlex::Policy GetTrainedPolicy() {
+			if (!net) throw DynaPlex::Error("PPO::GetPolicy - call TrainPolicy() first.");
+			return std::make_shared<PPOActorPolicy>(mdp, net, mdp->NumValidActions());
+		}
+#else
+		void Train() {
+			throw DynaPlex::Error("PPO: Torch not available. Set dynaplex_enable_pytorch=true.");
+		}
+		DynaPlex::Policy GetTrainedPolicy() {
+			throw DynaPlex::Error("PPO: Torch not available. Set dynaplex_enable_pytorch=true.");
+		}
+#endif
+	};
+
+	// ======================================================================
+	//  PPO public interface
+	// ======================================================================
+	PPO::PPO(const DynaPlex::System& system, DynaPlex::MDP mdp, DynaPlex::Policy policy_0, const VarGroup& config)
+		: impl(std::make_shared<Impl>(system, mdp, policy_0, config))
+	{
+	}
+
+	void PPO::TrainPolicy() { impl->Train(); }
+
+	DynaPlex::Policy PPO::GetPolicy(int64_t /*iteration*/) { return impl->GetTrainedPolicy(); }
+
+	std::vector<DynaPlex::Policy> PPO::GetPolicies() {
+		std::vector<DynaPlex::Policy> out;
+		if (impl->policy_0) out.push_back(impl->policy_0);
+		out.push_back(impl->GetTrainedPolicy());
+		return out;
+	}
+}

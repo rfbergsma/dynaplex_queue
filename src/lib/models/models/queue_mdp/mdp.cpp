@@ -646,12 +646,29 @@ namespace DynaPlex::Models {
 				sort_descending = true;
 			}
 
-			// enable_action_labels: include the 3 policy-hint label features in GetFeatures.
+			// enable_action_labels: master toggle for the 3 policy-hint label features.
 			// Default true; set false to reproduce the pre-label (paper) feature vector.
+			enable_action_labels = true;
 			if (config.HasKey("enable_action_labels"))
 				config.Get("enable_action_labels", enable_action_labels);
-			else
-				enable_action_labels = true;
+			label_fifo = label_cmu = label_rfq = enable_action_labels;
+
+			// action_labels: optional granular override, a string naming which labels to
+			// include — "all", "none", or any combination of "fifo"/"cmu"/"rfq"
+			// (e.g. "cmu", "cmu+rfq", "fifo,rfq").  Overrides enable_action_labels.
+			if (config.HasKey("action_labels")) {
+				std::string s;
+				config.Get("action_labels", s);
+				if (s == "all") {
+					label_fifo = label_cmu = label_rfq = true;
+				} else if (s == "none") {
+					label_fifo = label_cmu = label_rfq = false;
+				} else {
+					label_fifo = s.find("fifo") != std::string::npos;
+					label_cmu  = s.find("cmu")  != std::string::npos;
+					label_rfq  = s.find("rfq")  != std::string::npos;
+				}
+			}
 
 			// max_queue_depth: number of queue positions tracked per job type (default 1 = FIL only)
 			if (config.HasKey("max_queue_depth"))
@@ -896,21 +913,17 @@ namespace DynaPlex::Models {
 			if (qsize <= 0 || acnt < 0 || acnt >= qsize) {
 				features.Add(-1); // no server
 				features.Add(-1); // no job
-				if (enable_action_labels) {
-					features.Add(-1); // is_fifo_winner  (-1 = no active candidate)
-					features.Add(-1); // is_cmu_winner
-					features.Add(-1); // is_rfq_winner
-				}
+				if (label_fifo) features.Add(-1); // is_fifo_winner (-1 = no active candidate)
+				if (label_cmu)  features.Add(-1); // is_cmu_winner
+				if (label_rfq)  features.Add(-1); // is_rfq_winner
 			}
 			else {
 				const Action& current_action = state.server_manager.action_queue.at(static_cast<size_t>(acnt));
 				features.Add(current_action.server_index);
 				features.Add(current_action.job_type);
-				if (enable_action_labels) {
-					features.Add(current_action.is_fifo_winner);
-					features.Add(current_action.is_cmu_winner);
-					features.Add(current_action.is_rfq_winner);
-				}
+				if (label_fifo) features.Add(current_action.is_fifo_winner);
+				if (label_cmu)  features.Add(current_action.is_cmu_winner);
+				if (label_rfq)  features.Add(current_action.is_rfq_winner);
 			}
 		}
 

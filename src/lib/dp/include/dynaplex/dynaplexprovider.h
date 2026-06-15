@@ -6,6 +6,7 @@
 #include "dynaplex/demonstrator.h"
 #include "dynaplex/policycomparer.h"
 #include "dynaplex/dcl.h"
+#include "dynaplex/ppo.h"
 #include "dynaplex/exactsolver.h"
 namespace DynaPlex {
     class DynaPlexProvider {
@@ -55,7 +56,17 @@ namespace DynaPlex {
         */
         DynaPlex::Algorithms::DCL GetDCL(DynaPlex::MDP mdp, DynaPlex::Policy policy = nullptr, const VarGroup& config = VarGroup{});
 
-     
+        /**
+         * @brief gets a PPO (Proximal Policy Optimization) trainer, mirroring GetDCL.
+         * @param mdp model
+         * @param policy optional; kept for interface symmetry (PPO is on-policy and does not require it).
+         * @param config PPO hyperparameters; see dynaplex/ppo.h. gae_gamma (default 0.99) is PPO's own
+         *        discount for advantage computation, independent of the MDP discount factor.
+         * @return the configured PPO instance.
+         */
+        DynaPlex::Algorithms::PPO GetPPO(DynaPlex::MDP mdp, DynaPlex::Policy policy = nullptr, const VarGroup& config = VarGroup{});
+
+
 
         /**
          * Config may include max_period_count (default:3)

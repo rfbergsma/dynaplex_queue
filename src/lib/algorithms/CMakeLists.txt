@@ -23,6 +23,11 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/ DESTINATION include)
 install(TARGETS DP_${targetname} DESTINATION bin)
 if(dynaplex_all_warnings)
 target_compile_options(DP_${targetname} PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/W3>  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra> )
-endif() 
+endif()
+#PyTorch needed directly by the PPO subsystem (ppo/ppo.cpp).
+if(Torch_FOUND)
+   target_compile_definitions(DP_${targetname} PRIVATE DP_TORCH_AVAILABLE=1)
+   target_link_libraries(DP_${targetname} PUBLIC "${TORCH_LIBRARIES}")
+endif()
 endif()
 

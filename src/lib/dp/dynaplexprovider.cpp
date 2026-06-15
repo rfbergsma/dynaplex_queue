@@ -37,6 +37,11 @@ namespace DynaPlex {
         return DynaPlex::Algorithms::DCL{ this->System(),mdp, policy,config };
     }
 
+    DynaPlex::Algorithms::PPO DynaPlexProvider::GetPPO(DynaPlex::MDP mdp, DynaPlex::Policy policy, const VarGroup& config)
+    {
+        return DynaPlex::Algorithms::PPO{ this->System(),mdp, policy,config };
+    }
+
    
     void DynaPlexProvider::SetIORootDirectory(std::string path) {
         m_systemInfo.SetIOLocation(path, "IO_DynaPlex");
