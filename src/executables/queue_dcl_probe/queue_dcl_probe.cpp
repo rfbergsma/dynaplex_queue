@@ -33,19 +33,20 @@ namespace qm = DynaPlex::Models::queue_mdp;
 // ============================================================
 //  KNOBS  — edit these, rebuild only queue_dcl_probe
 // ============================================================
-constexpr int           EXPERIMENT  = 3;              // 2 (fully flexible) or 3 (specialist+generalist)
+constexpr int           EXPERIMENT  = 2;              // 2 (fully flexible) or 3 (specialist+generalist)
+constexpr int64_t       REWARD_TYPE = 1;              // 0 = binary (FIL>D); 1 = queue-lateness (denser ramp past deadline)
 static const std::string BASE        = "FIFO policy"; // "FIFO policy" / "reverse_fifo" / "stochastic_FIFO" / "cmu"
 static const std::string ACTION_SORT = "fifo";        // "fifo" (descending) / "reverse_fifo" (ascending)
 static const std::string LABELS      = "all";         // "all" / "none" / "fifo" / "cmu" / "rfq" / e.g. "cmu+rfq"
 constexpr int           NUM_GENS    = 1;              // generations from BASE (raw NN passed forward, no EG)
 constexpr double        STOCH_EPS   = 0.30;           // only used when BASE == "stochastic_FIFO"
 
-static const std::string METHOD      = "ppo";         // "dcl" (base+gens) or "ppo" (on-policy)
+static const std::string METHOD      = "dcl";         // "dcl" (base+gens) or "ppo" (on-policy)
 
 // Seed sweep: one independent training run per seed (measures run-to-run variance).
 // DCL/PPO key is "rng_seed".  Compare the spread of NN/RVI across seeds: that is the
 // signal — DCL on Exp3 ranged ~1.0 .. 18.5; the question is whether PPO is tighter.
-static const std::vector<int64_t> SEEDS = {1};
+static const std::vector<int64_t> SEEDS = {1, 2, 3};
 
 // PPO hyperparameters (used when METHOD == "ppo").
 constexpr int64_t       PPO_NUM_ENVS      = 16;
@@ -109,6 +110,7 @@ int main()
     cfg.Set("tick_rate",     TICK_RATE);
     cfg.Set("action_sort",   ACTION_SORT);
     cfg.Set("action_labels", LABELS);
+    cfg.Set("reward_type",   REWARD_TYPE);
 
     const int64_t H = int64_t(BASE_H * TICK_RATE);
 
@@ -156,7 +158,8 @@ int main()
               << "  Exp" << EXPERIMENT
               << "  base=" << (METHOD == "ppo" ? std::string("(none)") : BASE)
               << "  sort=" << ACTION_SORT
-              << "  labels=" << LABELS << "\n";
+              << "  labels=" << LABELS
+              << "  reward_type=" << REWARD_TYPE << "\n";
     std::cout << "N=" << N << "  M=" << M << "  H=" << H
               << "  tick_rate=" << TICK_RATE << "  Lambda=" << std::fixed << std::setprecision(3) << Lambda << "\n";
     std::cout << std::fixed << std::setprecision(4)
