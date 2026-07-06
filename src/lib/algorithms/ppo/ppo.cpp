@@ -127,7 +127,8 @@ namespace DynaPlex::Algorithms {
 		// hyperparameters
 		int64_t rng_seed, num_envs, rollout_steps, num_updates, epochs_per_update, mini_batch_size;
 		double  gae_gamma, gae_lambda, clip_epsilon, entropy_coef, value_coef, learning_rate, max_grad_norm;
-		bool    silent, normalize_advantages, entropy_anneal;
+		double  rho_step;
+		bool    silent, normalize_advantages, entropy_anneal, average_reward;
 		std::vector<int64_t> hidden_layers;
 
 		Impl(const DynaPlex::System& system, DynaPlex::MDP mdp, DynaPlex::Policy policy_0, const VarGroup& config)
@@ -150,6 +151,8 @@ namespace DynaPlex::Algorithms {
 			config.GetOrDefault("max_grad_norm",     max_grad_norm,     0.5);
 			config.GetOrDefault("normalize_advantages", normalize_advantages, true);
 			config.GetOrDefault("entropy_anneal",    entropy_anneal,    true);
+			config.GetOrDefault("average_reward",    average_reward,    true);
+			config.GetOrDefault("rho_step",          rho_step,          0.1);
 
 			if (config.HasKey("nn_architecture")) {
 				VarGroup arch; config.Get("nn_architecture", arch);
@@ -194,6 +197,12 @@ namespace DynaPlex::Algorithms {
 			// (O(1e2-1e3)) make the value MSE dominate the shared trunk and collapse the
 			// policy (value-scale domination).
 			double ret_std_running = 1.0;
+
+			// Running estimate of the average reward per period (rho), for
+			// average_reward mode.  Rewards are negative costs here, so rho < 0;
+			// the differential reward r - rho*dperiods then charges each elapsed
+			// period against the long-run average.
+			double rho_running = 0.0;
 
 			for (int64_t update = 0; update < num_updates; ++update) {
 				// entropy annealing: full entropy_coef during the first half of training
@@ -282,7 +291,21 @@ namespace DynaPlex::Algorithms {
 					boot = (out.narrow(1, A, 1).squeeze(1) * ret_std_running).contiguous();   // raw [E]
 				}
 
+				// ----- update rho (average reward per period) from this rollout -----
+				if (average_reward) {
+					const double sum_rew = buf_rew.sum().item<double>();
+					const double sum_dp  = buf_dp.sum().item<double>();
+					if (sum_dp > 0.0) {
+						const double batch_rho = sum_rew / sum_dp;
+						if (update == 0) rho_running = batch_rho;
+						else             rho_running = (1.0 - rho_step) * rho_running + rho_step * batch_rho;
+					}
+				}
+
 				// ----- GAE (per env, backwards) -----
+				// average_reward mode: differential rewards r - rho*dperiods, gamma=1
+				// (the critic learns the RVI-style relative value function).
+				// discounted mode: time-aware discount gamma^dperiods (semi-MDP).
 				torch::Tensor buf_adv = torch::empty({ T * E }, torch::kFloat32);
 				torch::Tensor buf_ret = torch::empty({ T * E }, torch::kFloat32);
 				{
@@ -297,10 +320,17 @@ namespace DynaPlex::Algorithms {
 						for (int64_t t = T - 1; t >= 0; --t) {
 							const int64_t idx = t * E + e;
 							const double next_val = (t == T - 1) ? bv[e] : val[(t + 1) * E + e];
-							// time-aware discount: gamma raised to the #periods this decision spanned.
-							const double disc = std::pow(gae_gamma, (double)dp[idx]);
-							const double delta = rew[idx] + disc * next_val - val[idx];
-							gae = delta + disc * gae_lambda * gae;
+							double delta, decay;
+							if (average_reward) {
+								const double r_diff = rew[idx] - rho_running * (double)dp[idx];
+								delta = r_diff + next_val - val[idx];
+								decay = gae_lambda;
+							} else {
+								const double disc = std::pow(gae_gamma, (double)dp[idx]);
+								delta = rew[idx] + disc * next_val - val[idx];
+								decay = disc * gae_lambda;
+							}
+							gae = delta + decay * gae;
 							adv[idx] = static_cast<float>(gae);
 							ret[idx] = static_cast<float>(gae + val[idx]);
 						}
@@ -374,8 +404,9 @@ namespace DynaPlex::Algorithms {
 				if (!silent && (update % 10 == 0 || update == num_updates - 1)) {
 					const double mean_rew = buf_rew.mean().item<double>();
 					system << "[PPO] update " << update
-					       << "  mean_reward=" << mean_rew
-					       << "  ploss=" << last_ploss
+					       << "  mean_reward=" << mean_rew;
+					if (average_reward) system << "  rho=" << rho_running;
+					system << "  ploss=" << last_ploss
 					       << "  vloss=" << last_vloss
 					       << "  entropy=" << last_ent << std::endl;
 				}

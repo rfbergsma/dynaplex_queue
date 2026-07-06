@@ -452,7 +452,10 @@ namespace DynaPlex::Models {
 			std::vector<double> cost_rates; // service rates for each server type k
 			std::vector<double> due_times; // rewards for completing each job type n
 			double uniformization_rate;
-			int64_t reward_type;      // 0=binary (FIL>D), 1=queue-lateness (default)
+			int64_t reward_type;      // 0=binary (FIL>D), 1=queue-lateness (default),
+			                          // 2=binary + potential-based shaping (dense urgency ramp
+			                          //   toward the deadline, refunded on service; preserves the
+			                          //   reward_type=0 optimal policy and long-run average cost)
 			bool sort_descending = true; // action-queue order: true=FIFO (oldest first), false=reverse (newest first)
 			bool enable_action_labels = true; // master toggle (config "enable_action_labels")
 			// Per-label inclusion in NN features (config "action_labels", e.g. "all"/"none"/"cmu"/"cmu+rfq").
@@ -769,6 +772,14 @@ namespace DynaPlex::Models {
 			std::vector<nextStateProbability> getNextStateProbability(const MDP::State& state, int64_t action) const;
 			double GetImmediateCost(const State& state) const;
 			double ComputeTickCost(const State& state) const;
+			// rtype-override variant: lets RVI evaluate the BINARY base cost when
+			// reward_type==2 (shaping preserves the optimal policy; RVI's state-cost
+			// structure cannot represent the action-tied shaping terms).
+			double ComputeTickCost(const State& state, int64_t rtype) const;
+			// urgency of a waiting job of type n with waiting time t (ticks):
+			// cost_rates[n] * min(t,D)/D, 0 when D<1.  The potential is
+			// Phi(s) = -sum_n JobUrgency(n, FIL_n).
+			double JobUrgency(int64_t n, int64_t t) const;
 
 			struct RVISolution {
 				double g_star;  // optimal average cost per time unit

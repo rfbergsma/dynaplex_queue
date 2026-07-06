@@ -3,7 +3,8 @@
 // Factorial experiment driver for the queue routing problem. Sweeps:
 //     cell    in {Exp2 (fully flexible), Exp3 (specialist+generalist)}
 //     method  in {DCL (gen-1 from FIFO), PPO}
-//     reward  in {0 (binary FIL>D), 1 (queue-lateness ramp)}
+//     reward  in {0 (binary FIL>D), 2 (binary + potential-based shaping)}
+//     (reward 1 = unbounded queue-lateness was dropped from the sweep: NaN-prone)
 //     budget  in {1x, 10x}   (DCL: N=20k/200k ; PPO: 300/3000 updates)
 //     seed    in {1..NSEEDS}
 // Default NSEEDS=8 -> 2*2*2*2*8 = 128 runs.
@@ -113,7 +114,7 @@ int main(int argc, char** argv) {
     std::vector<Run> runs;
     for (int cell : {2,3})
         for (std::string method : {std::string("dcl"), std::string("ppo")})
-            for (int64_t reward : {int64_t(0), int64_t(1)})
+            for (int64_t reward : {int64_t(0), int64_t(2)})
                 for (int budget : {1,10})
                     for (int64_t seed = 1; seed <= NSEEDS; ++seed)
                         runs.push_back({cell, method, reward, budget, seed});

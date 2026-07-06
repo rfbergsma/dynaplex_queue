@@ -103,8 +103,23 @@ namespace DynaPlex::Models {
 				if (state.next_fil_job_type != -1) {
 					const int64_t n = state.next_fil_job_type;
 
+					// Shaping (reward_type 2): the served job is the current FIL; serving
+					// it swaps the potential term -u(t_old) for -u(t_new) of the revealed
+					// next head.  Charge Phi(s)-Phi(s') = u(t_new)-u(t_old): usually
+					// negative, i.e. an immediate reward for serving an urgent job.
+					int64_t t_old = 0;
+					if (reward_type == 2 && !state.queue_manager.waiting[(size_t)n].empty())
+						t_old = state.queue_manager.waiting[(size_t)n].front();
+
 					// Pop head / reveal next head using your existing sampler
 					state.queue_manager.complete_job(n, uniform_rate_next_fil);
+
+					double shaping_cost = 0.0;
+					if (reward_type == 2) {
+						const auto& q = state.queue_manager.waiting[(size_t)n];
+						const int64_t t_new = q.empty() ? 0 : q.front();
+						shaping_cost = JobUrgency(n, t_new) - JobUrgency(n, t_old);
+					}
 
 					// clear pending refresh
 					state.next_fil_job_type = -1;
@@ -120,7 +135,7 @@ namespace DynaPlex::Models {
 						: StateCategory::AwaitAction();
 
 					state.last_event_category = "fil_refresh";
-					return 0.0;
+					return shaping_cost;
 				}
 
 
@@ -477,16 +492,37 @@ namespace DynaPlex::Models {
 			return out;
 		}
 
+		double MDP::JobUrgency(int64_t n, int64_t t) const {
+			const int64_t D = (int64_t)due_times[(size_t)n];
+			if (D < 1) return 0.0;
+			const int64_t c = std::min(t, D);
+			return cost_rates[(size_t)n] * (double)c / (double)D;
+		}
+
 		double MDP::ComputeTickCost(const State& state) const {
+			return ComputeTickCost(state, reward_type);
+		}
+
+		double MDP::ComputeTickCost(const State& state, int64_t rtype) const {
 			double cost = 0.0;
 			for (size_t n = 0; n < (size_t)n_jobs; ++n) {
 				const auto& q = state.queue_manager.waiting[n];
 				if (q.empty()) continue;
 
-				if (reward_type == 0) {
+				if (rtype == 0 || rtype == 2) {
 					// Binary: only FIL matters (flat cost if FIL > deadline)
 					if (q.front() > (int64_t)due_times[n])
 						cost += cost_rates[n];
+
+					// Shaping (rtype 2): the FIL just aged one tick, so the potential
+					// Phi = -JobUrgency(FIL) dropped by u(t)-u(t-1) = cost_rate/D for
+					// 1 <= t <= D.  Charged here; refunded on service (fil_refresh).
+					if (rtype == 2) {
+						const int64_t t = q.front();
+						const int64_t D = (int64_t)due_times[n];
+						if (D >= 1 && t >= 1 && t <= D)
+							cost += cost_rates[n] / (double)D;
+					}
 				}
 				else {
 					// Queue-lateness: exact excess summed over all tracked positions,

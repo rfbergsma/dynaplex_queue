@@ -16,10 +16,17 @@ namespace DynaPlex::Algorithms {
 	 * deterministic (argmax) policy usable directly in PolicyComparer and heatmaps,
 	 * exactly like the DCL-trained NN policy.
 	 *
-	 * Average-cost note: DynaPlex queue MDPs are undiscounted (discount=1.0).  PPO
-	 * uses its OWN discount "gae_gamma" (default 0.99) purely for advantage/return
-	 * computation; it does not touch the MDP's discount factor.  Per-decision reward
-	 * is Objective()*delta(CumulativeReturn), so PPO maximises -cost = minimises cost.
+	 * Average-cost note: DynaPlex queue MDPs are undiscounted (discount=1.0).  By
+	 * default PPO runs in AVERAGE-REWARD mode (Dai & Gluzman style): each step's
+	 * reward is replaced by the differential reward r - rho*dperiods, where rho is
+	 * a running estimate of the average reward per period, and GAE runs undiscounted
+	 * (gamma=1).  The critic then learns the differential (relative) value function —
+	 * the same object RVI computes.  Idling is charged rho per elapsed period, so the
+	 * never-serve attractor loses its discounting subsidy, and long-run gains (e.g.
+	 * cmu-style priorities over FIFO) are not truncated by an effective horizon.
+	 * Set average_reward=false for classic discounted GAE with gae_gamma.
+	 * Per-decision reward is Objective()*delta(CumulativeReturn), so PPO maximises
+	 * -cost = minimises cost.
 	 *
 	 * Config keys (all optional):
 	 *   rng_seed (15112017), silent (false)
@@ -28,6 +35,9 @@ namespace DynaPlex::Algorithms {
 	 *   num_updates (200)      PPO outer iterations
 	 *   epochs_per_update (10) optimisation passes over each rollout buffer
 	 *   mini_batch_size (256)
+	 *   average_reward (true)  differential rewards r - rho*dperiods with undiscounted
+	 *                          GAE; gae_gamma is only used when this is false
+	 *   rho_step (0.1)         EMA step for the running average-reward estimate rho
 	 *   gae_gamma (0.99), gae_lambda (0.95)
 	 *   clip_epsilon (0.2), entropy_coef (0.01), value_coef (0.5)
 	 *   entropy_anneal (true)  keep entropy_coef for the first half of training,

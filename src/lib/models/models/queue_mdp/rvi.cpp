@@ -86,9 +86,16 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 		states.push_back(s);
 		transitions.push_back({});
 
-		// Delegate to GetImmediateCost so reward_type is respected
-		// (reward_type=0 -> binary; reward_type=1 -> queue-lateness)
-		immediate_cost.push_back(GetImmediateCost(s));
+		// Delegate to ComputeTickCost so reward_type is respected
+		// (reward_type=0 -> binary; reward_type=1 -> queue-lateness).
+		// reward_type=2 (potential-based shaping) deliberately uses the BINARY
+		// base cost: shaping preserves the optimal policy and long-run average,
+		// and RVI's state-cost structure cannot represent the action-tied terms.
+		const int64_t rvi_rtype = (reward_type == 2) ? 0 : reward_type;
+		if (s.cat == DynaPlex::StateCategory::AwaitEvent())
+			immediate_cost.push_back((tick_rate / uniformization_rate) * ComputeTickCost(s, rvi_rtype));
+		else
+			immediate_cost.push_back(0.0);
 		bfs_queue.push(idx);
 		return idx;
 	};
