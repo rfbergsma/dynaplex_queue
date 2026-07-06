@@ -188,6 +188,9 @@ namespace DynaPlex::Algorithms {
 				// periods (events) elapsed between this decision and the next; used for
 				// semi-MDP time-aware discounting (gamma^dperiods) so that skip vs assign,
 				// which take different amounts of time, are credited consistently.
+				// NOTE: 0 is a valid value — the queue MDP presents multiple candidates per
+				// tick (cat stays AwaitAction), so consecutive decisions within one tick span
+				// zero periods and must get discount gamma^0 = 1.
 				torch::Tensor buf_dp   = torch::empty({ T * E }, torch::kFloat32);
 
 				for (int64_t t = 0; t < T; ++t) {
@@ -208,6 +211,8 @@ namespace DynaPlex::Algorithms {
 						logits = out.narrow(1, 0, A);
 						value  = out.narrow(1, A, 1).squeeze(1) * ret_std_running; // raw value
 					}
+					// guard against network blow-up (inf/nan logits crash multinomial)
+					logits = torch::nan_to_num(logits, 0.0, 30.0, -30.0).clamp(-30.0, 30.0);
 					torch::Tensor masked = logits.masked_fill(mask.logical_not(), -1e9);
 					torch::Tensor probs  = torch::softmax(masked, 1);
 					torch::Tensor logp_all = torch::log_softmax(masked, 1);
@@ -236,7 +241,7 @@ namespace DynaPlex::Algorithms {
 					for (int64_t e = 0; e < E; ++e) {
 						rew_acc[e] = static_cast<float>(obj * (trajs[(size_t)e].CumulativeReturn - c_before[(size_t)e]));
 						int64_t dper = trajs[(size_t)e].PeriodCount - p_before[(size_t)e];
-						dp_acc[e] = static_cast<float>(dper > 0 ? dper : 1);
+						dp_acc[e] = static_cast<float>(dper);
 					}
 				}
 
