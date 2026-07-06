@@ -68,14 +68,15 @@ namespace DynaPlex::Algorithms {
 		DynaPlex::MDP mdp;
 		ActorCritic net;
 		int64_t num_actions;
+		bool stochastic;
 		DynaPlex::VarGroup config;
 	public:
-		PPOActorPolicy(DynaPlex::MDP mdp, ActorCritic net, int64_t num_actions)
-			: mdp(mdp), net(net), num_actions(num_actions)
+		PPOActorPolicy(DynaPlex::MDP mdp, ActorCritic net, int64_t num_actions, bool stochastic = false)
+			: mdp(mdp), net(net), num_actions(num_actions), stochastic(stochastic)
 		{
-			config.Add("id", std::string("PPO_Policy"));
+			config.Add("id", std::string(stochastic ? "PPO_Policy_Stochastic" : "PPO_Policy"));
 		}
-		std::string TypeIdentifier() const override { return "PPO_Policy"; }
+		std::string TypeIdentifier() const override { return stochastic ? "PPO_Policy_Stochastic" : "PPO_Policy"; }
 		const DynaPlex::VarGroup& GetConfig() const override { return config; }
 
 		void SetAction(std::span<DynaPlex::Trajectory> trajectories) const override {
@@ -91,6 +92,22 @@ namespace DynaPlex::Algorithms {
 			ActorCritic net_local = net;   // copy holder (shares module) to call non-const forward
 			torch::Tensor out = net_local->forward(feats);           // [B, A+1]
 			torch::Tensor logits = out.narrow(1, 0, num_actions).contiguous();
+
+			if (stochastic) {
+				// sample from the softmax over allowed actions — this is the policy
+				// PPO actually optimised during training.
+				logits = torch::nan_to_num(logits, 0.0, 30.0, -30.0).clamp(-30.0, 30.0);
+				torch::Tensor mask = torch::zeros({ B, num_actions }, torch::kBool);
+				mdp->GetMask(trajectories,
+					std::span<bool>(mask.data_ptr<bool>(), static_cast<size_t>(B * num_actions)));
+				torch::Tensor masked = logits.masked_fill(mask.logical_not(), -1e9);
+				torch::Tensor probs  = torch::softmax(masked, 1);
+				torch::Tensor action = torch::multinomial(probs, 1, true).squeeze(1);
+				auto acc = action.accessor<int64_t, 1>();
+				for (int64_t b = 0; b < B; ++b)
+					trajectories[(size_t)b].NextAction = acc[b];
+				return;
+			}
 
 			mdp->SetArgMaxAction(trajectories,
 				std::span<float>(logits.data_ptr<float>(), static_cast<size_t>(B * num_actions)));
@@ -110,7 +127,7 @@ namespace DynaPlex::Algorithms {
 		// hyperparameters
 		int64_t rng_seed, num_envs, rollout_steps, num_updates, epochs_per_update, mini_batch_size;
 		double  gae_gamma, gae_lambda, clip_epsilon, entropy_coef, value_coef, learning_rate, max_grad_norm;
-		bool    silent, normalize_advantages;
+		bool    silent, normalize_advantages, entropy_anneal;
 		std::vector<int64_t> hidden_layers;
 
 		Impl(const DynaPlex::System& system, DynaPlex::MDP mdp, DynaPlex::Policy policy_0, const VarGroup& config)
@@ -132,6 +149,7 @@ namespace DynaPlex::Algorithms {
 			config.GetOrDefault("learning_rate",     learning_rate,     3e-4);
 			config.GetOrDefault("max_grad_norm",     max_grad_norm,     0.5);
 			config.GetOrDefault("normalize_advantages", normalize_advantages, true);
+			config.GetOrDefault("entropy_anneal",    entropy_anneal,    true);
 
 			if (config.HasKey("nn_architecture")) {
 				VarGroup arch; config.Get("nn_architecture", arch);
@@ -178,6 +196,14 @@ namespace DynaPlex::Algorithms {
 			double ret_std_running = 1.0;
 
 			for (int64_t update = 0; update < num_updates; ++update) {
+				// entropy annealing: full entropy_coef during the first half of training
+				// (exploration), then linear decay to 0 so the policy sharpens toward a
+				// deterministic one that argmax extraction reads out faithfully.
+				double ent_coef_now = entropy_coef;
+				if (entropy_anneal && num_updates > 1) {
+					const double frac = (double)update / (double)(num_updates - 1);
+					ent_coef_now = entropy_coef * std::clamp(2.0 * (1.0 - frac), 0.0, 1.0);
+				}
 				// ----- Rollout buffers (flat: index = t*E + e) -----
 				torch::Tensor buf_feat = torch::empty({ T * E, in }, torch::kFloat32);
 				torch::Tensor buf_mask = torch::zeros({ T * E, A }, torch::kBool);
@@ -332,7 +358,7 @@ namespace DynaPlex::Algorithms {
 						torch::Tensor value_loss = torch::mse_loss(value, mb_ret);
 						torch::Tensor entropy = -(probs * logp_all).sum(1).mean();
 
-						torch::Tensor loss = policy_loss + value_coef * value_loss - entropy_coef * entropy;
+						torch::Tensor loss = policy_loss + value_coef * value_loss - ent_coef_now * entropy;
 
 						optimizer.zero_grad();
 						loss.backward();
@@ -356,15 +382,15 @@ namespace DynaPlex::Algorithms {
 			}
 		}
 
-		DynaPlex::Policy GetTrainedPolicy() {
+		DynaPlex::Policy GetTrainedPolicy(bool stochastic = false) {
 			if (!net) throw DynaPlex::Error("PPO::GetPolicy - call TrainPolicy() first.");
-			return std::make_shared<PPOActorPolicy>(mdp, net, mdp->NumValidActions());
+			return std::make_shared<PPOActorPolicy>(mdp, net, mdp->NumValidActions(), stochastic);
 		}
 #else
 		void Train() {
 			throw DynaPlex::Error("PPO: Torch not available. Set dynaplex_enable_pytorch=true.");
 		}
-		DynaPlex::Policy GetTrainedPolicy() {
+		DynaPlex::Policy GetTrainedPolicy(bool stochastic = false) {
 			throw DynaPlex::Error("PPO: Torch not available. Set dynaplex_enable_pytorch=true.");
 		}
 #endif
@@ -381,6 +407,8 @@ namespace DynaPlex::Algorithms {
 	void PPO::TrainPolicy() { impl->Train(); }
 
 	DynaPlex::Policy PPO::GetPolicy(int64_t /*iteration*/) { return impl->GetTrainedPolicy(); }
+
+	DynaPlex::Policy PPO::GetStochasticPolicy() { return impl->GetTrainedPolicy(true); }
 
 	std::vector<DynaPlex::Policy> PPO::GetPolicies() {
 		std::vector<DynaPlex::Policy> out;

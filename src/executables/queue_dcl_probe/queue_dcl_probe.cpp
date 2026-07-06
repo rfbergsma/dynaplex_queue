@@ -200,12 +200,14 @@ int main()
             auto ppo = dp.GetPPO(mdp, nullptr, ppo_cfg);
             ppo.TrainPolicy();
             auto nn = ppo.GetPolicy();
+            auto nn_stoch = ppo.GetStochasticPolicy();
 
-            double nn_mean = 0.0;
+            double nn_mean = 0.0, stoch_mean = 0.0;
             try {
-                std::cout << "  [eval] starting PolicyComparer on PPO policy...\n" << std::flush;
-                comparer.Compare({nn})[0].Get("mean", nn_mean);
-                std::cout << "  [eval] done, mean=" << nn_mean << "\n" << std::flush;
+                std::cout << "  [eval] comparing argmax + stochastic PPO policies...\n" << std::flush;
+                auto res = comparer.Compare({nn, nn_stoch});
+                res[0].Get("mean", nn_mean);
+                res[1].Get("mean", stoch_mean);
             } catch (const std::exception& e) {
                 std::cout << "  [eval EXCEPTION] " << e.what() << "\n" << std::flush;
                 continue;
@@ -223,6 +225,9 @@ int main()
                       << std::setw(10) << "-"
                       << std::setw(6)  << "-"
                       << "\n" << std::flush;
+            std::cout << "      [stoch] NN*Lambda=" << stoch_mean * Lambda
+                      << "  NN/RVI=" << stoch_mean / norm
+                      << "   (stoch << argmax = extraction mismatch)\n" << std::flush;
             if (PRINT_HEATMAP) {
                 std::cout << "\n  PPO policy heatmap [Exp" << EXPERIMENT
                           << ", reward=" << REWARD_TYPE << ", seed=" << seed << "]:\n";

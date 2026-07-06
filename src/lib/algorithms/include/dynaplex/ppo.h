@@ -30,6 +30,9 @@ namespace DynaPlex::Algorithms {
 	 *   mini_batch_size (256)
 	 *   gae_gamma (0.99), gae_lambda (0.95)
 	 *   clip_epsilon (0.2), entropy_coef (0.01), value_coef (0.5)
+	 *   entropy_anneal (true)  keep entropy_coef for the first half of training,
+	 *                          then decay linearly to 0 so the policy sharpens and
+	 *                          argmax extraction matches the stochastic policy
 	 *   learning_rate (3e-4), max_grad_norm (0.5)
 	 *   normalize_advantages (true)
 	 *   nn_architecture (mlp {hidden_layers:[64,32]})  -- shared trunk; heads are added internally
@@ -48,6 +51,13 @@ namespace DynaPlex::Algorithms {
 		/// iteration is accepted for interface symmetry with DCL; only the latest
 		/// trained policy is maintained, so any value returns it (and -1 = latest).
 		DynaPlex::Policy GetPolicy(int64_t iteration = -1);
+
+		/// Returns the trained policy in STOCHASTIC mode: actions are sampled from
+		/// the softmax distribution instead of argmax.  This is the policy PPO
+		/// actually optimises; comparing it against GetPolicy() exposes
+		/// extraction mismatch (stochastic good, argmax bad = probabilities
+		/// hovering below 0.5 in states where repeated stochastic tries suffice).
+		DynaPlex::Policy GetStochasticPolicy();
 
 		/// Returns {policy_0, trained_policy} for interface symmetry with DCL.
 		std::vector<DynaPlex::Policy> GetPolicies();
