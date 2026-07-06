@@ -48,6 +48,10 @@ namespace DynaPlex::Algorithms {
 	 *                          so late training optimises (near-)argmax behavior and
 	 *                          closes the stochastic-vs-argmax extraction gap
 	 *   temp_min (0.25)        final behavior temperature under temp_anneal
+	 *   env_reset_every (16)   staggered env resets: env e re-initiates at updates
+	 *                          where (update+e) %% env_reset_every == 0.  Prevents the
+	 *                          persistent-env trap (all envs drifting into a bad region
+	 *                          whose data then starves the healthy states).  0 = never.
 	 *   learning_rate (3e-4), max_grad_norm (0.5)
 	 *   normalize_advantages (true)
 	 *   nn_architecture (mlp {hidden_layers:[64,32]})  -- shared trunk; heads are added internally

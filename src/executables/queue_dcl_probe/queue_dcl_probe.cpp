@@ -34,7 +34,7 @@ namespace qm = DynaPlex::Models::queue_mdp;
 //  KNOBS  — edit these, rebuild only queue_dcl_probe
 // ============================================================
 constexpr int           EXPERIMENT  = 2;              // 2 (fully flexible) or 3 (specialist+generalist)
-constexpr int64_t       REWARD_TYPE = 0;              // 0 = binary (FIL>D); 1 = queue-lateness (denser ramp past deadline)
+constexpr int64_t       REWARD_TYPE = 2;              // 0 = binary (FIL>D); 1 = queue-lateness; 2 = binary + potential shaping
 constexpr bool          PRINT_HEATMAP = false;        // print the trained policy's heatmap (use with 1 seed)
 static const std::string BASE        = "FIFO policy"; // "FIFO policy" / "reverse_fifo" / "stochastic_FIFO" / "cmu"
 static const std::string ACTION_SORT = "fifo";        // "fifo" (descending) / "reverse_fifo" (ascending)

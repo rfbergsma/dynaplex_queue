@@ -126,6 +126,7 @@ namespace DynaPlex::Algorithms {
 
 		// hyperparameters
 		int64_t rng_seed, num_envs, rollout_steps, num_updates, epochs_per_update, mini_batch_size;
+		int64_t env_reset_every;
 		double  gae_gamma, gae_lambda, clip_epsilon, entropy_coef, value_coef, learning_rate, max_grad_norm;
 		double  rho_step, temp_min;
 		bool    silent, normalize_advantages, entropy_anneal, average_reward, temp_anneal;
@@ -155,6 +156,7 @@ namespace DynaPlex::Algorithms {
 			config.GetOrDefault("rho_step",          rho_step,          0.1);
 			config.GetOrDefault("temp_anneal",       temp_anneal,       false);
 			config.GetOrDefault("temp_min",          temp_min,          0.25);
+			config.GetOrDefault("env_reset_every",   env_reset_every,   (int64_t)16);
 
 			if (config.HasKey("nn_architecture")) {
 				VarGroup arch; config.Get("nn_architecture", arch);
@@ -206,7 +208,29 @@ namespace DynaPlex::Algorithms {
 			// period against the long-run average.
 			double rho_running = 0.0;
 
+			// guarded-temperature-annealing state (see comment in the update loop)
+			double temp_T = 1.0;            // current behavior temperature
+			double rew_ema = 0.0;           // EMA of rollout mean reward (health signal)
+			bool   rew_ema_init = false;
+			double ema_ref = 0.0;           // best EMA since annealing started (ratchet)
+
 			for (int64_t update = 0; update < num_updates; ++update) {
+				// STAGGERED ENV RESETS: without resets the persistent envs are a trap —
+				// one bad excursion drives all envs into the deep-late region (where the
+				// urgency shaping is saturated and no dense gradient exists); training
+				// data then only covers that region, the policy's behavior on healthy
+				// short-queue states rots unmaintained, and eval from the empty state
+				// collapses.  Resetting one env per update keeps the data distribution
+				// anchored to the region the deployed policy actually starts in.
+				if (env_reset_every > 0) {
+					for (int64_t e = 0; e < E; ++e) {
+						if ((update + e) % env_reset_every == 0) {
+							std::span<DynaPlex::Trajectory> one(&trajs[(size_t)e], 1);
+							mdp->InitiateState(one);
+							mdp->IncorporateUntilNonTrivialAction(one);
+						}
+					}
+				}
 				// entropy annealing: full entropy_coef during the first half of training
 				// (exploration), then linear decay to 0 so the policy sharpens toward a
 				// deterministic one that argmax extraction reads out faithfully.
@@ -216,17 +240,32 @@ namespace DynaPlex::Algorithms {
 					ent_coef_now = entropy_coef * std::clamp(2.0 * (1.0 - frac), 0.0, 1.0);
 				}
 
-				// temperature annealing of the BEHAVIOR policy: sample from
-				// softmax(logits / T) with T going 1 -> temp_min over the second half
-				// of training.  As T drops, rollouts increasingly reflect the argmax
-				// readout, so states where the argmax action is wrong actually hurt
-				// the return and receive gradient — this trains the policy that will
-				// be deployed, closing the stochastic-vs-argmax extraction gap.
+				// GUARDED temperature annealing of the BEHAVIOR policy: sample from
+				// softmax(logits / T).  As T drops, rollouts increasingly reflect the
+				// argmax readout, so states where the argmax action is wrong actually
+				// hurt the return and receive gradient — this trains the policy that
+				// will be deployed, closing the stochastic-vs-argmax extraction gap.
+				// The guard: T only steps DOWN when the EMA of the rollout reward is
+				// not degrading, and steps back UP when it is.  Blind (clock-driven)
+				// annealing amplifies whichever mode the policy is in mid-training:
+				// good seeds sharpen to the best results, bad seeds lock into collapse.
+				// (T_now is maintained across updates in temp_T; the EMA update happens
+				// after the rollout, the T decision just before the next one.)
 				double T_now = 1.0;
 				if (temp_anneal && num_updates > 1) {
-					const double frac = (double)update / (double)(num_updates - 1);
-					const double s = std::clamp(2.0 * (1.0 - frac), 0.0, 1.0);   // 1 -> 0 over 2nd half
-					T_now = temp_min + (1.0 - temp_min) * s;
+					const int64_t anneal_start = num_updates / 2;
+					if (update == anneal_start) ema_ref = rew_ema;   // baseline at anneal start
+					if (update > anneal_start && rew_ema_init
+					    && (update - anneal_start) % 5 == 0) {
+						const double tol = 0.05 * (std::abs(ema_ref) + 1e-9);
+						if (rew_ema >= ema_ref - tol) {
+							if (temp_T > temp_min) temp_T = std::max(temp_min, temp_T * 0.9);
+							if (rew_ema > ema_ref) ema_ref = rew_ema;     // ratchet reference up
+						} else {
+							temp_T = std::min(1.0, temp_T / 0.9);         // degrading: back off
+						}
+					}
+					T_now = temp_T;
 				}
 				// ----- Rollout buffers (flat: index = t*E + e) -----
 				torch::Tensor buf_feat = torch::empty({ T * E, in }, torch::kFloat32);
@@ -293,6 +332,18 @@ namespace DynaPlex::Algorithms {
 						int64_t dper = trajs[(size_t)e].PeriodCount - p_before[(size_t)e];
 						dp_acc[e] = static_cast<float>(dper);
 					}
+				}
+
+				// ----- rollout health EMA (drives the guarded temperature controller) -----
+				// PER-PERIOD rate, NOT per-decision mean: intra-tick skip decisions carry
+				// zero reward, so an idling policy with a full queue makes many free
+				// decisions per tick and DILUTES the per-decision mean — a guard on that
+				// signal happily sharpens into idle-collapse while "improving".
+				{
+					const double sum_dp = buf_dp.sum().item<double>();
+					const double mr = buf_rew.sum().item<double>() / std::max(1.0, sum_dp);
+					if (!rew_ema_init) { rew_ema = mr; rew_ema_init = true; }
+					else               rew_ema = 0.9 * rew_ema + 0.1 * mr;
 				}
 
 				// ----- bootstrap value V(s_T) for each env -----
@@ -419,8 +470,13 @@ namespace DynaPlex::Algorithms {
 				}
 
 				if (!silent && (update % 10 == 0 || update == num_updates - 1)) {
+					// per-period rate is the honest health number; the per-decision mean
+					// is diluted by zero-reward intra-tick decisions (see EMA comment).
 					const double mean_rew = buf_rew.mean().item<double>();
+					const double rate = buf_rew.sum().item<double>()
+					                  / std::max(1.0, buf_dp.sum().item<double>());
 					system << "[PPO] update " << update
+					       << "  rew/period=" << rate
 					       << "  mean_reward=" << mean_rew;
 					if (average_reward) system << "  rho=" << rho_running;
 					if (temp_anneal)    system << "  T=" << T_now;
