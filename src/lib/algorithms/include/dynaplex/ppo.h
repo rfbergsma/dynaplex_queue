@@ -43,6 +43,11 @@ namespace DynaPlex::Algorithms {
 	 *   entropy_anneal (true)  keep entropy_coef for the first half of training,
 	 *                          then decay linearly to 0 so the policy sharpens and
 	 *                          argmax extraction matches the stochastic policy
+	 *   temp_anneal (false)    anneal the BEHAVIOR policy temperature 1 -> temp_min
+	 *                          over the second half: rollouts sample softmax(logits/T),
+	 *                          so late training optimises (near-)argmax behavior and
+	 *                          closes the stochastic-vs-argmax extraction gap
+	 *   temp_min (0.25)        final behavior temperature under temp_anneal
 	 *   learning_rate (3e-4), max_grad_norm (0.5)
 	 *   normalize_advantages (true)
 	 *   nn_architecture (mlp {hidden_layers:[64,32]})  -- shared trunk; heads are added internally

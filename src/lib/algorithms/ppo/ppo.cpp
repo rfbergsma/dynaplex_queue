@@ -127,8 +127,8 @@ namespace DynaPlex::Algorithms {
 		// hyperparameters
 		int64_t rng_seed, num_envs, rollout_steps, num_updates, epochs_per_update, mini_batch_size;
 		double  gae_gamma, gae_lambda, clip_epsilon, entropy_coef, value_coef, learning_rate, max_grad_norm;
-		double  rho_step;
-		bool    silent, normalize_advantages, entropy_anneal, average_reward;
+		double  rho_step, temp_min;
+		bool    silent, normalize_advantages, entropy_anneal, average_reward, temp_anneal;
 		std::vector<int64_t> hidden_layers;
 
 		Impl(const DynaPlex::System& system, DynaPlex::MDP mdp, DynaPlex::Policy policy_0, const VarGroup& config)
@@ -153,6 +153,8 @@ namespace DynaPlex::Algorithms {
 			config.GetOrDefault("entropy_anneal",    entropy_anneal,    true);
 			config.GetOrDefault("average_reward",    average_reward,    true);
 			config.GetOrDefault("rho_step",          rho_step,          0.1);
+			config.GetOrDefault("temp_anneal",       temp_anneal,       false);
+			config.GetOrDefault("temp_min",          temp_min,          0.25);
 
 			if (config.HasKey("nn_architecture")) {
 				VarGroup arch; config.Get("nn_architecture", arch);
@@ -213,6 +215,19 @@ namespace DynaPlex::Algorithms {
 					const double frac = (double)update / (double)(num_updates - 1);
 					ent_coef_now = entropy_coef * std::clamp(2.0 * (1.0 - frac), 0.0, 1.0);
 				}
+
+				// temperature annealing of the BEHAVIOR policy: sample from
+				// softmax(logits / T) with T going 1 -> temp_min over the second half
+				// of training.  As T drops, rollouts increasingly reflect the argmax
+				// readout, so states where the argmax action is wrong actually hurt
+				// the return and receive gradient — this trains the policy that will
+				// be deployed, closing the stochastic-vs-argmax extraction gap.
+				double T_now = 1.0;
+				if (temp_anneal && num_updates > 1) {
+					const double frac = (double)update / (double)(num_updates - 1);
+					const double s = std::clamp(2.0 * (1.0 - frac), 0.0, 1.0);   // 1 -> 0 over 2nd half
+					T_now = temp_min + (1.0 - temp_min) * s;
+				}
 				// ----- Rollout buffers (flat: index = t*E + e) -----
 				torch::Tensor buf_feat = torch::empty({ T * E, in }, torch::kFloat32);
 				torch::Tensor buf_mask = torch::zeros({ T * E, A }, torch::kBool);
@@ -248,7 +263,7 @@ namespace DynaPlex::Algorithms {
 					}
 					// guard against network blow-up (inf/nan logits crash multinomial)
 					logits = torch::nan_to_num(logits, 0.0, 30.0, -30.0).clamp(-30.0, 30.0);
-					torch::Tensor masked = logits.masked_fill(mask.logical_not(), -1e9);
+					torch::Tensor masked = (logits / T_now).masked_fill(mask.logical_not(), -1e9);
 					torch::Tensor probs  = torch::softmax(masked, 1);
 					torch::Tensor logp_all = torch::log_softmax(masked, 1);
 					torch::Tensor action = torch::multinomial(probs, 1, true).squeeze(1); // [E]
@@ -376,7 +391,9 @@ namespace DynaPlex::Algorithms {
 						torch::Tensor out = net->forward(mb_feat);
 						torch::Tensor logits = out.narrow(1, 0, A);
 						torch::Tensor value  = out.narrow(1, A, 1).squeeze(1);       // normalised value prediction
-						torch::Tensor masked = logits.masked_fill(mb_mask.logical_not(), -1e9);
+						// same temperature as the rollout that produced this data: the
+						// PPO ratio must compare old/new within the same tempered family.
+						torch::Tensor masked = (logits / T_now).masked_fill(mb_mask.logical_not(), -1e9);
 						torch::Tensor logp_all = torch::log_softmax(masked, 1);
 						torch::Tensor probs = torch::softmax(masked, 1);
 						torch::Tensor new_logp = logp_all.gather(1, mb_act.unsqueeze(1)).squeeze(1);
@@ -406,6 +423,7 @@ namespace DynaPlex::Algorithms {
 					system << "[PPO] update " << update
 					       << "  mean_reward=" << mean_rew;
 					if (average_reward) system << "  rho=" << rho_running;
+					if (temp_anneal)    system << "  T=" << T_now;
 					system << "  ploss=" << last_ploss
 					       << "  vloss=" << last_vloss
 					       << "  entropy=" << last_ent << std::endl;

@@ -35,7 +35,7 @@ namespace qm = DynaPlex::Models::queue_mdp;
 // ============================================================
 constexpr int           EXPERIMENT  = 2;              // 2 (fully flexible) or 3 (specialist+generalist)
 constexpr int64_t       REWARD_TYPE = 0;              // 0 = binary (FIL>D); 1 = queue-lateness (denser ramp past deadline)
-constexpr bool          PRINT_HEATMAP = true;         // print the trained policy's heatmap (use with 1 seed)
+constexpr bool          PRINT_HEATMAP = false;        // print the trained policy's heatmap (use with 1 seed)
 static const std::string BASE        = "FIFO policy"; // "FIFO policy" / "reverse_fifo" / "stochastic_FIFO" / "cmu"
 static const std::string ACTION_SORT = "fifo";        // "fifo" (descending) / "reverse_fifo" (ascending)
 static const std::string LABELS      = "all";         // "all" / "none" / "fifo" / "cmu" / "rfq" / e.g. "cmu+rfq"
@@ -47,7 +47,7 @@ static const std::string METHOD      = "ppo";         // "dcl" (base+gens) or "p
 // Seed sweep: one independent training run per seed (measures run-to-run variance).
 // DCL/PPO key is "rng_seed".  Compare the spread of NN/RVI across seeds: that is the
 // signal — DCL on Exp3 ranged ~1.0 .. 18.5; the question is whether PPO is tighter.
-static const std::vector<int64_t> SEEDS = {1};
+static const std::vector<int64_t> SEEDS = {2, 3};
 
 // PPO hyperparameters (used when METHOD == "ppo").
 constexpr int64_t       PPO_NUM_ENVS      = 16;
@@ -56,14 +56,25 @@ constexpr int64_t       PPO_NUM_UPDATES   = 300;
 constexpr int64_t       PPO_EPOCHS        = 4;
 constexpr int64_t       PPO_MINI_BATCH    = 256;
 constexpr double        PPO_LR            = 3e-4;
-constexpr double        PPO_GAE_GAMMA     = 0.99;
+constexpr double        PPO_GAE_GAMMA     = 0.99;   // only used when PPO_AVG_REWARD=false
+constexpr double        PPO_GAE_LAMBDA    = 0.95;   // credit horizon ~1/(1-lambda) decisions
 constexpr double        PPO_ENTROPY_COEF  = 0.01;
+constexpr bool          PPO_AVG_REWARD    = false;  // differential rewards r - rho*dp, gamma=1
+constexpr double        PPO_RHO_STEP      = 1.0;    // 1.0 = fresh batch rho (no EMA lag)
+constexpr bool          PPO_TEMP_ANNEAL   = true;   // behavior temperature 1 -> temp_min (2nd half)
+constexpr double        PPO_TEMP_MIN      = 0.25;
 
 // Full hyperparameters (do NOT down-scale: smaller N/M/H is too noisy).
 constexpr int64_t       N           = 20000;
 constexpr int64_t       M           = 400;
 constexpr double        TICK_RATE   = 3.0;
 constexpr int64_t       BASE_H      = 100;            // H = BASE_H * TICK_RATE = 300
+
+// Evaluation size.  Full Snellius setting is 100 x 500000; locally 100 x 50000
+// keeps a probe run to a few minutes and is plenty to separate FIFO-level (~70)
+// from collapse (~400) (noise ~1-2%).
+constexpr int64_t       EVAL_TRAJ    = 100;
+constexpr int64_t       EVAL_PERIODS = 50000;
 // ============================================================
 
 // Mirrors make_specialist_generalist_config() in mm1_baseline.cpp (Experiment 3).
@@ -122,8 +133,8 @@ int main()
     auto mdp = dp.GetMDP(cfg);
 
     VarGroup eval_cfg;
-    eval_cfg.Add("number_of_trajectories", int64_t(100));
-    eval_cfg.Add("periods_per_trajectory",  int64_t(500000));
+    eval_cfg.Add("number_of_trajectories", EVAL_TRAJ);
+    eval_cfg.Add("periods_per_trajectory",  EVAL_PERIODS);
     auto comparer = dp.GetPolicyComparer(mdp, eval_cfg);
 
     // --- Benchmarks: FIFO and RVI ---
@@ -191,7 +202,12 @@ int main()
             ppo_cfg.Add("mini_batch_size",   PPO_MINI_BATCH);
             ppo_cfg.Add("learning_rate",     PPO_LR);
             ppo_cfg.Add("gae_gamma",         PPO_GAE_GAMMA);
+            ppo_cfg.Add("gae_lambda",        PPO_GAE_LAMBDA);
             ppo_cfg.Add("entropy_coef",      PPO_ENTROPY_COEF);
+            ppo_cfg.Add("average_reward",    PPO_AVG_REWARD);
+            ppo_cfg.Add("rho_step",          PPO_RHO_STEP);
+            ppo_cfg.Add("temp_anneal",       PPO_TEMP_ANNEAL);
+            ppo_cfg.Add("temp_min",          PPO_TEMP_MIN);
             ppo_cfg.Add("rng_seed",          seed);
             ppo_cfg.Add("silent",            false);   // show training trace for diagnosis
             VarGroup parch; parch.Add("hidden_layers", VarGroup::Int64Vec{64, 32});
