@@ -1,27 +1,35 @@
 // queue_dcl_probe.cpp
 //
-// Single-cell DCL playground for fast local iteration.  Runs ONE experiment with
-// ONE base policy for NUM_GENS generations, at the FULL hyperparameters used in the
-// paper (N=20K, M=400, H=300) so results are trustworthy (not down-scaled).
+// Single-cell DCL/PPO playground for fast local iteration.  Runs ONE experiment
+// with ONE method for a sweep of seeds, at full paper hyperparameters by default.
 //
-// Edit the KNOBS block, rebuild just this target (~30s), run (~few min/gen).
-// No heatmaps, no CSV, no generation guards/EG wrapping — just the diagnostic row:
+// All knobs are runtime key=value arguments (defaults below) — no rebuild needed,
+// and multiple configurations can run in PARALLEL as separate processes:
 //
-//   Gen  NN*L      NN/RVI   TrLoss   VaLoss   Gap      In
+//   queue_dcl_probe exp=3 reward=2 seeds=1,2,3
+//   queue_dcl_probe exp=2 reward=2 seeds=1 heatmap=1 temp_min=0.10 updates=600
+//   queue_dcl_probe exp=3 method=dcl reward=2 seeds=1,2,3
 //
-// where Gap = VaLoss - TrLoss (classic overfitting signal) and In = #NN input features.
+// Keys (default):
+//   exp(2) reward(2) method(ppo) seeds(2,3) heatmap(0) gens(1)
+//   base(FIFO policy) sort(fifo) labels(all)
+//   updates(300) envs(16) rollout(256) epochs(4) minibatch(256) lr(3e-4)
+//   gamma(0.99) lambda(0.95) entropy(0.01) avg(0) rho_step(1.0)
+//   temp_anneal(1) temp_min(0.25) resets(16)
+//   N(20000) M(400) tick(3.0) base_h(100) eval_traj(100) eval_periods(50000)
 //
-// Use it to ablate the label features (LABELS = "none"/"cmu"/"rfq"/"fifo"/combos),
-// flip the action sort, swap the base policy, and compare training losses across
-// conditions — all without the 30-min full Snellius run.
+// Output per seed: argmax row (NN*Lambda, NN/RVI) + [stoch] line; summary stats.
 
 #include <iostream>
 #include <iomanip>
 #include <string>
 #include <vector>
+#include <map>
 #include <memory>
 #include <cmath>
+#include <cstdlib>
 #include <algorithm>
+#include <sstream>
 #include "dynaplex/dynaplexprovider.h"
 #include "dynaplex/policy.h"
 #include "dynaplex/policycomparer.h"
@@ -29,53 +37,6 @@
 
 using namespace DynaPlex;
 namespace qm = DynaPlex::Models::queue_mdp;
-
-// ============================================================
-//  KNOBS  — edit these, rebuild only queue_dcl_probe
-// ============================================================
-constexpr int           EXPERIMENT  = 2;              // 2 (fully flexible) or 3 (specialist+generalist)
-constexpr int64_t       REWARD_TYPE = 2;              // 0 = binary (FIL>D); 1 = queue-lateness; 2 = binary + potential shaping
-constexpr bool          PRINT_HEATMAP = false;        // print the trained policy's heatmap (use with 1 seed)
-static const std::string BASE        = "FIFO policy"; // "FIFO policy" / "reverse_fifo" / "stochastic_FIFO" / "cmu"
-static const std::string ACTION_SORT = "fifo";        // "fifo" (descending) / "reverse_fifo" (ascending)
-static const std::string LABELS      = "all";         // "all" / "none" / "fifo" / "cmu" / "rfq" / e.g. "cmu+rfq"
-constexpr int           NUM_GENS    = 1;              // generations from BASE (raw NN passed forward, no EG)
-constexpr double        STOCH_EPS   = 0.30;           // only used when BASE == "stochastic_FIFO"
-
-static const std::string METHOD      = "ppo";         // "dcl" (base+gens) or "ppo" (on-policy)
-
-// Seed sweep: one independent training run per seed (measures run-to-run variance).
-// DCL/PPO key is "rng_seed".  Compare the spread of NN/RVI across seeds: that is the
-// signal — DCL on Exp3 ranged ~1.0 .. 18.5; the question is whether PPO is tighter.
-static const std::vector<int64_t> SEEDS = {2, 3};
-
-// PPO hyperparameters (used when METHOD == "ppo").
-constexpr int64_t       PPO_NUM_ENVS      = 16;
-constexpr int64_t       PPO_ROLLOUT_STEPS = 256;
-constexpr int64_t       PPO_NUM_UPDATES   = 300;
-constexpr int64_t       PPO_EPOCHS        = 4;
-constexpr int64_t       PPO_MINI_BATCH    = 256;
-constexpr double        PPO_LR            = 3e-4;
-constexpr double        PPO_GAE_GAMMA     = 0.99;   // only used when PPO_AVG_REWARD=false
-constexpr double        PPO_GAE_LAMBDA    = 0.95;   // credit horizon ~1/(1-lambda) decisions
-constexpr double        PPO_ENTROPY_COEF  = 0.01;
-constexpr bool          PPO_AVG_REWARD    = false;  // differential rewards r - rho*dp, gamma=1
-constexpr double        PPO_RHO_STEP      = 1.0;    // 1.0 = fresh batch rho (no EMA lag)
-constexpr bool          PPO_TEMP_ANNEAL   = true;   // behavior temperature 1 -> temp_min (2nd half)
-constexpr double        PPO_TEMP_MIN      = 0.25;
-
-// Full hyperparameters (do NOT down-scale: smaller N/M/H is too noisy).
-constexpr int64_t       N           = 20000;
-constexpr int64_t       M           = 400;
-constexpr double        TICK_RATE   = 3.0;
-constexpr int64_t       BASE_H      = 100;            // H = BASE_H * TICK_RATE = 300
-
-// Evaluation size.  Full Snellius setting is 100 x 500000; locally 100 x 50000
-// keeps a probe run to a few minutes and is plenty to separate FIFO-level (~70)
-// from collapse (~400) (noise ~1-2%).
-constexpr int64_t       EVAL_TRAJ    = 100;
-constexpr int64_t       EVAL_PERIODS = 50000;
-// ============================================================
 
 // Mirrors make_specialist_generalist_config() in mm1_baseline.cpp (Experiment 3).
 static VarGroup exp3_config()
@@ -105,8 +66,59 @@ static VarGroup exp3_config()
     return cfg;
 }
 
-int main()
+int main(int argc, char** argv)
 {
+    // ---------------- runtime knobs (key=value args) ----------------
+    std::map<std::string, std::string> kv;
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        auto eq = a.find('=');
+        if (eq != std::string::npos) kv[a.substr(0, eq)] = a.substr(eq + 1);
+    }
+    auto S = [&](const std::string& k, const std::string& d) { auto it = kv.find(k); return it == kv.end() ? d : it->second; };
+    auto I = [&](const std::string& k, int64_t d)            { auto it = kv.find(k); return it == kv.end() ? d : (int64_t)std::atoll(it->second.c_str()); };
+    auto D = [&](const std::string& k, double d)             { auto it = kv.find(k); return it == kv.end() ? d : std::atof(it->second.c_str()); };
+
+    const int         EXPERIMENT   = (int)I("exp", 2);
+    const int64_t     REWARD_TYPE  = I("reward", 2);
+    const std::string METHOD       = S("method", "ppo");
+    const bool        PRINT_HEATMAP= I("heatmap", 0) != 0;
+    const std::string BASE         = S("base", "FIFO policy");
+    const std::string ACTION_SORT  = S("sort", "fifo");
+    const std::string LABELS       = S("labels", "all");
+    const int         NUM_GENS     = (int)I("gens", 1);
+    const double      STOCH_EPS    = D("stoch_eps", 0.30);
+
+    std::vector<int64_t> SEEDS;
+    {
+        std::stringstream ss(S("seeds", "2,3"));
+        std::string tok;
+        while (std::getline(ss, tok, ',')) if (!tok.empty()) SEEDS.push_back(std::atoll(tok.c_str()));
+    }
+
+    const int64_t PPO_NUM_ENVS      = I("envs", 16);
+    const int64_t PPO_ROLLOUT_STEPS = I("rollout", 256);
+    const int64_t PPO_NUM_UPDATES   = I("updates", 300);
+    const int64_t PPO_EPOCHS        = I("epochs", 4);
+    const int64_t PPO_MINI_BATCH    = I("minibatch", 256);
+    const double  PPO_LR            = D("lr", 3e-4);
+    const double  PPO_GAE_GAMMA     = D("gamma", 0.99);
+    const double  PPO_GAE_LAMBDA    = D("lambda", 0.95);
+    const double  PPO_ENTROPY_COEF  = D("entropy", 0.01);
+    const bool    PPO_AVG_REWARD    = I("avg", 0) != 0;
+    const double  PPO_RHO_STEP      = D("rho_step", 1.0);
+    const bool    PPO_TEMP_ANNEAL   = I("temp_anneal", 1) != 0;
+    const double  PPO_TEMP_MIN      = D("temp_min", 0.25);
+    const int64_t PPO_RESETS        = I("resets", 16);
+
+    const int64_t N            = I("N", 20000);
+    const int64_t M            = I("M", 400);
+    const double  TICK_RATE    = D("tick", 3.0);
+    const int64_t BASE_H       = I("base_h", 100);
+    const int64_t EVAL_TRAJ    = I("eval_traj", 100);
+    const int64_t EVAL_PERIODS = I("eval_periods", 50000);
+    // -----------------------------------------------------------------
+
     auto& dp = DynaPlexProvider::Get();
 
     // --- Build the MDP config for the chosen experiment ---
@@ -124,7 +136,7 @@ int main()
     cfg.Set("action_labels", LABELS);
     cfg.Set("reward_type",   REWARD_TYPE);
 
-    const int64_t H = int64_t(BASE_H * TICK_RATE);
+    const int64_t H = int64_t((double)BASE_H * TICK_RATE);
 
     // Lambda from the raw MDP (for physical cost rate = mean * Lambda).
     qm::MDP raw_mdp(cfg);
@@ -172,6 +184,13 @@ int main()
               << "  sort=" << ACTION_SORT
               << "  labels=" << LABELS
               << "  reward_type=" << REWARD_TYPE << "\n";
+    if (METHOD == "ppo")
+        std::cout << "updates=" << PPO_NUM_UPDATES
+                  << "  temp_anneal=" << (PPO_TEMP_ANNEAL ? 1 : 0)
+                  << "  temp_min=" << PPO_TEMP_MIN
+                  << "  resets=" << PPO_RESETS
+                  << "  avg=" << (PPO_AVG_REWARD ? 1 : 0)
+                  << "  lambda=" << PPO_GAE_LAMBDA << "\n";
     std::cout << "N=" << N << "  M=" << M << "  H=" << H
               << "  tick_rate=" << TICK_RATE << "  Lambda=" << std::fixed << std::setprecision(3) << Lambda << "\n";
     std::cout << std::fixed << std::setprecision(4)
@@ -208,6 +227,7 @@ int main()
             ppo_cfg.Add("rho_step",          PPO_RHO_STEP);
             ppo_cfg.Add("temp_anneal",       PPO_TEMP_ANNEAL);
             ppo_cfg.Add("temp_min",          PPO_TEMP_MIN);
+            ppo_cfg.Add("env_reset_every",   PPO_RESETS);
             ppo_cfg.Add("rng_seed",          seed);
             ppo_cfg.Add("silent",            false);   // show training trace for diagnosis
             VarGroup parch; parch.Add("hidden_layers", VarGroup::Int64Vec{64, 32});
@@ -293,6 +313,13 @@ int main()
                       << std::setw(10) << (v_loss - t_loss)
                       << std::setw(6)  << num_inputs
                       << "\n" << std::flush;
+
+            if (PRINT_HEATMAP) {
+                std::cout << "\n  DCL policy heatmap [Exp" << EXPERIMENT
+                          << ", reward=" << REWARD_TYPE << ", seed=" << seed << "]:\n";
+                qm::PrintPolicyHeatmap(mdp, nn, 12);
+                std::cout << std::flush;
+            }
 
             current_base = nn;  // raw NN forward (only matters if NUM_GENS>1)
         }
