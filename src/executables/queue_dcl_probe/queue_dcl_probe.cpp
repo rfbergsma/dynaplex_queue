@@ -118,10 +118,10 @@ int main(int argc, char** argv)
     const int64_t BASE_H       = I("base_h", 100);
     const int64_t EVAL_TRAJ    = I("eval_traj", 100);
     const int64_t EVAL_PERIODS = I("eval_periods", 50000);
-    // bench=0 skips the FIFO/RVI benchmark phase (RVI solve costs 30+ min per
-    // process); NN/RVI columns then show raw per-period means (norm=1) and the
-    // absolute NN*Lambda is compared against known references offline.
-    const bool    RUN_BENCH    = I("bench", 1) != 0;
+    // bench=1 full (FIFO+RVI); bench=2 FIFO only (for cells where RVI is
+    // intractable, e.g. exp=6); bench=0 none (RVI solve costs 30+ min per
+    // process — ratios computed offline against known references).
+    const int64_t BENCH_MODE   = I("bench", 1);
     // -----------------------------------------------------------------
 
     auto& dp = DynaPlexProvider::Get();
@@ -133,6 +133,12 @@ int main(int argc, char** argv)
                                  "mdp_config_asym_cost_2s.json");
         cfg = VarGroup::LoadFromFile(path);
         cfg.Set("due_times", VarGroup::DoubleVec{3.0, 3.0});   // symmetric deadlines D=[3,3]
+    } else if (EXPERIMENT == 6) {
+        // large instance: 6 job types, 5 chain-skill servers.  RVI intractable
+        // here — use bench=2 (FIFO-only baseline).
+        auto path = dp.FilePath({"mdp_config_examples", "queue_mdp"},
+                                 "mdp_config_large_6j5s.json");
+        cfg = VarGroup::LoadFromFile(path);
     } else {
         cfg = exp3_config();
     }
@@ -140,6 +146,12 @@ int main(int argc, char** argv)
     cfg.Set("action_sort",   ACTION_SORT);
     cfg.Set("action_labels", LABELS);
     cfg.Set("reward_type",   REWARD_TYPE);
+    // salt: extra config key that changes the MDP identity hash (and nothing
+    // else).  Gives concurrent DCL jobs their own sample-cache directories —
+    // without it, same-config jobs race on samples_gen0.json (corrupt JSON,
+    // SIGABRT) or silently REUSE each other's samples (non-independent seeds).
+    const int64_t SALT = I("salt", 0);
+    if (SALT != 0) cfg.Add("sample_salt", SALT);
 
     const int64_t H = int64_t((double)BASE_H * TICK_RATE);
 
@@ -154,9 +166,9 @@ int main(int argc, char** argv)
     eval_cfg.Add("periods_per_trajectory",  EVAL_PERIODS);
     auto comparer = dp.GetPolicyComparer(mdp, eval_cfg);
 
-    // --- Benchmarks: FIFO and RVI (skipped when bench=0) ---
+    // --- Benchmarks (bench=1: FIFO+RVI; bench=2: FIFO only; bench=0: none) ---
     double fifo_mean = 1.0, rvi_mean = 1.0, base_mean = 1.0;
-    if (RUN_BENCH) {
+    if (BENCH_MODE == 1) {
         auto fifo = mdp->GetPolicy("FIFO policy");
         VarGroup rvi_cfg{{"id", std::string("RVI_optimal")}, {"rel_tol", 0.01}, {"silent", int64_t(1)}};
         auto rvi = mdp->GetPolicy(rvi_cfg);
@@ -164,6 +176,10 @@ int main(int argc, char** argv)
         auto bench = comparer.Compare({fifo, rvi});
         bench[0].Get("mean", fifo_mean);
         bench[1].Get("mean", rvi_mean);
+    } else if (BENCH_MODE == 2) {
+        auto fifo = mdp->GetPolicy("FIFO policy");
+        comparer.Compare({fifo})[0].Get("mean", fifo_mean);
+        rvi_mean = fifo_mean;   // norm against FIFO: NN/RVI column reads as NN/FIFO
     }
     const double norm = rvi_mean;
 
@@ -175,7 +191,7 @@ int main(int argc, char** argv)
     } else {
         base = mdp->GetPolicy(BASE);
     }
-    if (RUN_BENCH)
+    if (BENCH_MODE == 1)
         comparer.Compare({base})[0].Get("mean", base_mean);
 
     // --- NN architecture (same as paper) ---
