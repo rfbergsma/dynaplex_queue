@@ -35,8 +35,9 @@ namespace DynaPlex::Algorithms {
 	 *   num_updates (200)      PPO outer iterations
 	 *   epochs_per_update (10) optimisation passes over each rollout buffer
 	 *   mini_batch_size (256)
-	 *   average_reward (true)  differential rewards r - rho*dperiods with undiscounted
-	 *                          GAE; gae_gamma is only used when this is false
+	 *   average_reward (false) differential rewards r - rho*dperiods with undiscounted
+	 *                          GAE; gae_gamma is only used when this is false.  Off by
+	 *                          default: underperforms at small rollout sizes
 	 *   rho_step (0.1)         EMA step for the running average-reward estimate rho
 	 *   gae_gamma (0.99), gae_lambda (0.95)
 	 *   clip_epsilon (0.2), entropy_coef (0.01), value_coef (0.5)

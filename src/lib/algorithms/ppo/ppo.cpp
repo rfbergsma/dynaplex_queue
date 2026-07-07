@@ -153,7 +153,9 @@ namespace DynaPlex::Algorithms {
 			config.GetOrDefault("max_grad_norm",     max_grad_norm,     0.5);
 			config.GetOrDefault("normalize_advantages", normalize_advantages, true);
 			config.GetOrDefault("entropy_anneal",    entropy_anneal,    true);
-			config.GetOrDefault("average_reward",    average_reward,    true);
+			// default FALSE: the validated recipe is discounted PPO (gamma^dperiods);
+			// average-reward mode underperformed at our rollout sizes (needs big batches).
+			config.GetOrDefault("average_reward",    average_reward,    false);
 			config.GetOrDefault("rho_step",          rho_step,          0.1);
 			config.GetOrDefault("temp_anneal",       temp_anneal,       false);
 			config.GetOrDefault("temp_min",          temp_min,          0.25);

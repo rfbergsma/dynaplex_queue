@@ -118,6 +118,10 @@ int main(int argc, char** argv)
     const int64_t BASE_H       = I("base_h", 100);
     const int64_t EVAL_TRAJ    = I("eval_traj", 100);
     const int64_t EVAL_PERIODS = I("eval_periods", 50000);
+    // bench=0 skips the FIFO/RVI benchmark phase (RVI solve costs 30+ min per
+    // process); NN/RVI columns then show raw per-period means (norm=1) and the
+    // absolute NN*Lambda is compared against known references offline.
+    const bool    RUN_BENCH    = I("bench", 1) != 0;
     // -----------------------------------------------------------------
 
     auto& dp = DynaPlexProvider::Get();
@@ -150,18 +154,20 @@ int main(int argc, char** argv)
     eval_cfg.Add("periods_per_trajectory",  EVAL_PERIODS);
     auto comparer = dp.GetPolicyComparer(mdp, eval_cfg);
 
-    // --- Benchmarks: FIFO and RVI ---
-    auto fifo = mdp->GetPolicy("FIFO policy");
-    VarGroup rvi_cfg{{"id", std::string("RVI_optimal")}, {"rel_tol", 0.01}, {"silent", int64_t(1)}};
-    auto rvi = mdp->GetPolicy(rvi_cfg);
+    // --- Benchmarks: FIFO and RVI (skipped when bench=0) ---
+    double fifo_mean = 1.0, rvi_mean = 1.0, base_mean = 1.0;
+    if (RUN_BENCH) {
+        auto fifo = mdp->GetPolicy("FIFO policy");
+        VarGroup rvi_cfg{{"id", std::string("RVI_optimal")}, {"rel_tol", 0.01}, {"silent", int64_t(1)}};
+        auto rvi = mdp->GetPolicy(rvi_cfg);
 
-    auto bench = comparer.Compare({fifo, rvi});
-    double fifo_mean = 0.0, rvi_mean = 0.0;
-    bench[0].Get("mean", fifo_mean);
-    bench[1].Get("mean", rvi_mean);
+        auto bench = comparer.Compare({fifo, rvi});
+        bench[0].Get("mean", fifo_mean);
+        bench[1].Get("mean", rvi_mean);
+    }
     const double norm = rvi_mean;
 
-    // --- Base policy ---
+    // --- Base policy (always constructed: DCL needs it) ---
     DynaPlex::Policy base;
     if (BASE == "stochastic_FIFO") {
         VarGroup c{{"id", std::string("stochastic_FIFO")}, {"threshold", STOCH_EPS}};
@@ -169,8 +175,8 @@ int main(int argc, char** argv)
     } else {
         base = mdp->GetPolicy(BASE);
     }
-    double base_mean = 0.0;
-    comparer.Compare({base})[0].Get("mean", base_mean);
+    if (RUN_BENCH)
+        comparer.Compare({base})[0].Get("mean", base_mean);
 
     // --- NN architecture (same as paper) ---
     VarGroup nn_arch;
