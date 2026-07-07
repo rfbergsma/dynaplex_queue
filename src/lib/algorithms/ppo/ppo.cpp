@@ -23,6 +23,7 @@ namespace DynaPlex::Algorithms {
 		torch::nn::Sequential trunk{ nullptr };
 		torch::nn::Linear     policy_head{ nullptr };
 		torch::nn::Linear     value_head{ nullptr };
+		torch::nn::Linear     adv_head{ nullptr };
 		int64_t num_actions{ 0 };
 
 		ActorCriticImpl(int64_t in_dim, int64_t num_actions_,
@@ -39,6 +40,11 @@ namespace DynaPlex::Algorithms {
 			register_module("trunk", trunk);
 			policy_head = register_module("policy_head", torch::nn::Linear(last, num_actions));
 			value_head  = register_module("value_head",  torch::nn::Linear(last, 1));
+			// auxiliary advantage head: trained on the MEASURED (GAE) advantages of
+			// taken actions.  Its argmax is an alternative deterministic readout that
+			// reads simulated consequences instead of policy-logit signs (which the
+			// re-presentation forgiveness leaves untrained near ties).
+			adv_head    = register_module("adv_head",    torch::nn::Linear(last, num_actions));
 
 			// Small-gain init on the policy head so the initial policy is near-uniform.
 			// Without this the default (kaiming) init produces large logits that saturate
@@ -48,6 +54,8 @@ namespace DynaPlex::Algorithms {
 				torch::NoGradGuard ng;
 				policy_head->weight.mul_(0.01);
 				policy_head->bias.zero_();
+				adv_head->weight.mul_(0.01);
+				adv_head->bias.zero_();
 			}
 		}
 
@@ -55,7 +63,8 @@ namespace DynaPlex::Algorithms {
 			torch::Tensor h = trunk->forward(x);
 			torch::Tensor logits = policy_head->forward(h);          // [B, A]
 			torch::Tensor value  = value_head->forward(h);           // [B, 1]
-			return torch::cat({ logits, value }, /*dim=*/1);         // [B, A+1]
+			torch::Tensor adv    = adv_head->forward(h);             // [B, A]
+			return torch::cat({ logits, value, adv }, /*dim=*/1);    // [B, 2A+1]
 		}
 	};
 	TORCH_MODULE(ActorCritic);
@@ -65,19 +74,35 @@ namespace DynaPlex::Algorithms {
 	// Slices off the value column and reuses the MDP's masked argmax logic, so
 	// it plugs into PolicyComparer / heatmaps exactly like an NN_Policy.
 	// ----------------------------------------------------------------------
+	// Flexible readout policy over a trained ActorCritic:
+	//   temperature <= 0 : argmax (deterministic)
+	//   temperature  > 0 : sample softmax(scores / temperature)
+	//   serve_bias       : added to the scores of all actions >= 1 ("serve"-type
+	//                      actions) before argmax/sampling.  Near-tie sign errors
+	//                      are the diagnosed argmax failure; ties broken toward
+	//                      serving are nearly free by the same re-presentation
+	//                      argument that makes them invisible to training.
+	//   use_adv          : score with the advantage head (measured consequences)
+	//                      instead of the policy logits.
 	class PPOActorPolicy : public DynaPlex::PolicyInterface {
 		DynaPlex::MDP mdp;
 		ActorCritic net;
 		int64_t num_actions;
-		bool stochastic;
+		double temperature, serve_bias;
+		bool use_adv;
 		DynaPlex::VarGroup config;
 	public:
-		PPOActorPolicy(DynaPlex::MDP mdp, ActorCritic net, int64_t num_actions, bool stochastic = false)
-			: mdp(mdp), net(net), num_actions(num_actions), stochastic(stochastic)
+		PPOActorPolicy(DynaPlex::MDP mdp, ActorCritic net, int64_t num_actions,
+		               double temperature = 0.0, double serve_bias = 0.0, bool use_adv = false)
+			: mdp(mdp), net(net), num_actions(num_actions),
+			  temperature(temperature), serve_bias(serve_bias), use_adv(use_adv)
 		{
-			config.Add("id", std::string(stochastic ? "PPO_Policy_Stochastic" : "PPO_Policy"));
+			config.Add("id", std::string("PPO_Policy"));
+			config.Add("temperature", temperature);
+			config.Add("serve_bias", serve_bias);
+			config.Add("use_adv", use_adv ? int64_t(1) : int64_t(0));
 		}
-		std::string TypeIdentifier() const override { return stochastic ? "PPO_Policy_Stochastic" : "PPO_Policy"; }
+		std::string TypeIdentifier() const override { return "PPO_Policy"; }
 		const DynaPlex::VarGroup& GetConfig() const override { return config; }
 
 		void SetAction(std::span<DynaPlex::Trajectory> trajectories) const override {
@@ -91,17 +116,19 @@ namespace DynaPlex::Algorithms {
 
 			torch::NoGradGuard no_grad;
 			ActorCritic net_local = net;   // copy holder (shares module) to call non-const forward
-			torch::Tensor out = net_local->forward(feats);           // [B, A+1]
-			torch::Tensor logits = out.narrow(1, 0, num_actions).contiguous();
+			torch::Tensor out = net_local->forward(feats);           // [B, 2A+1]
+			torch::Tensor scores = use_adv
+				? out.narrow(1, num_actions + 1, num_actions).contiguous()
+				: out.narrow(1, 0, num_actions).contiguous();
+			scores = torch::nan_to_num(scores, 0.0, 30.0, -30.0).clamp(-30.0, 30.0);
+			if (serve_bias != 0.0 && num_actions >= 2)
+				scores.narrow(1, 1, num_actions - 1) += serve_bias;
 
-			if (stochastic) {
-				// sample from the softmax over allowed actions — this is the policy
-				// PPO actually optimised during training.
-				logits = torch::nan_to_num(logits, 0.0, 30.0, -30.0).clamp(-30.0, 30.0);
+			if (temperature > 0.0) {
 				torch::Tensor mask = torch::zeros({ B, num_actions }, torch::kBool);
 				mdp->GetMask(trajectories,
 					std::span<bool>(mask.data_ptr<bool>(), static_cast<size_t>(B * num_actions)));
-				torch::Tensor masked = logits.masked_fill(mask.logical_not(), -1e9);
+				torch::Tensor masked = (scores / temperature).masked_fill(mask.logical_not(), -1e9);
 				torch::Tensor probs  = torch::softmax(masked, 1);
 				torch::Tensor action = torch::multinomial(probs, 1, true).squeeze(1);
 				auto acc = action.accessor<int64_t, 1>();
@@ -111,7 +138,7 @@ namespace DynaPlex::Algorithms {
 			}
 
 			mdp->SetArgMaxAction(trajectories,
-				std::span<float>(logits.data_ptr<float>(), static_cast<size_t>(B * num_actions)));
+				std::span<float>(scores.data_ptr<float>(), static_cast<size_t>(B * num_actions)));
 		}
 	};
 
@@ -484,7 +511,14 @@ namespace DynaPlex::Algorithms {
 						torch::Tensor value_loss = torch::mse_loss(value, mb_ret);
 						torch::Tensor entropy = -(probs * logp_all).sum(1).mean();
 
-						torch::Tensor loss = policy_loss + value_coef * value_loss - ent_coef_now * entropy;
+						// auxiliary advantage head: regress the taken action's predicted
+						// advantage onto the measured (normalized) GAE advantage.
+						torch::Tensor adv_pred = out.narrow(1, A + 1, A)
+							.gather(1, mb_act.unsqueeze(1)).squeeze(1);
+						torch::Tensor adv_loss = torch::mse_loss(adv_pred, mb_adv);
+
+						torch::Tensor loss = policy_loss + value_coef * value_loss
+						                   - ent_coef_now * entropy + 0.5 * adv_loss;
 
 						optimizer.zero_grad();
 						loss.backward();
@@ -530,15 +564,16 @@ namespace DynaPlex::Algorithms {
 			}
 		}
 
-		DynaPlex::Policy GetTrainedPolicy(bool stochastic = false) {
+		DynaPlex::Policy GetTrainedPolicy(double temperature = 0.0, double serve_bias = 0.0, bool use_adv = false) {
 			if (!net) throw DynaPlex::Error("PPO::GetPolicy - call TrainPolicy() first.");
-			return std::make_shared<PPOActorPolicy>(mdp, net, mdp->NumValidActions(), stochastic);
+			return std::make_shared<PPOActorPolicy>(mdp, net, mdp->NumValidActions(),
+			                                        temperature, serve_bias, use_adv);
 		}
 #else
 		void Train() {
 			throw DynaPlex::Error("PPO: Torch not available. Set dynaplex_enable_pytorch=true.");
 		}
-		DynaPlex::Policy GetTrainedPolicy(bool stochastic = false) {
+		DynaPlex::Policy GetTrainedPolicy(double = 0.0, double = 0.0, bool = false) {
 			throw DynaPlex::Error("PPO: Torch not available. Set dynaplex_enable_pytorch=true.");
 		}
 #endif
@@ -556,7 +591,11 @@ namespace DynaPlex::Algorithms {
 
 	DynaPlex::Policy PPO::GetPolicy(int64_t /*iteration*/) { return impl->GetTrainedPolicy(); }
 
-	DynaPlex::Policy PPO::GetStochasticPolicy() { return impl->GetTrainedPolicy(true); }
+	DynaPlex::Policy PPO::GetStochasticPolicy() { return impl->GetTrainedPolicy(1.0); }
+
+	DynaPlex::Policy PPO::GetReadoutPolicy(double temperature, double serve_bias, bool use_adv) {
+		return impl->GetTrainedPolicy(temperature, serve_bias, use_adv);
+	}
 
 	std::vector<DynaPlex::Policy> PPO::GetPolicies() {
 		std::vector<DynaPlex::Policy> out;

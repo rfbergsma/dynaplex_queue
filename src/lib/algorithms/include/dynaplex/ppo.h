@@ -79,6 +79,15 @@ namespace DynaPlex::Algorithms {
 		/// hovering below 0.5 in states where repeated stochastic tries suffice).
 		DynaPlex::Policy GetStochasticPolicy();
 
+		/// Flexible readout over the same trained network:
+		///   temperature <= 0 -> argmax; > 0 -> sample softmax(scores/temperature)
+		///   serve_bias       -> added to scores of all actions >= 1 before selection
+		///                       (breaks near-ties toward serving)
+		///   use_adv          -> score with the auxiliary advantage head (trained on
+		///                       measured GAE advantages) instead of policy logits
+		DynaPlex::Policy GetReadoutPolicy(double temperature = 0.0, double serve_bias = 0.0,
+		                                  bool use_adv = false);
+
 		/// Returns {policy_0, trained_policy} for interface symmetry with DCL.
 		std::vector<DynaPlex::Policy> GetPolicies();
 

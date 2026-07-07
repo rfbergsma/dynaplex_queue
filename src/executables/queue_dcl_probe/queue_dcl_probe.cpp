@@ -245,12 +245,33 @@ int main(int argc, char** argv)
             auto nn = ppo.GetPolicy();
             auto nn_stoch = ppo.GetStochasticPolicy();
 
-            double nn_mean = 0.0, stoch_mean = 0.0;
+            // Readout battery: one training run, many extraction strategies.
+            std::vector<std::string> rnames = {
+                "argmax", "stoch T=1", "stoch T=0.1",
+                "bias 0.25", "bias 0.5", "bias 1.0",
+                "advhead", "advhead b.25" };
+            std::vector<DynaPlex::Policy> rpols = {
+                nn,
+                nn_stoch,
+                ppo.GetReadoutPolicy(0.1, 0.0, false),
+                ppo.GetReadoutPolicy(0.0, 0.25, false),
+                ppo.GetReadoutPolicy(0.0, 0.5,  false),
+                ppo.GetReadoutPolicy(0.0, 1.0,  false),
+                ppo.GetReadoutPolicy(0.0, 0.0,  true),
+                ppo.GetReadoutPolicy(0.0, 0.25, true) };
+
+            double nn_mean = 0.0;
             try {
-                std::cout << "  [eval] comparing argmax + stochastic PPO policies...\n" << std::flush;
-                auto res = comparer.Compare({nn, nn_stoch});
+                std::cout << "  [eval] readout battery (" << rpols.size() << " policies)...\n" << std::flush;
+                auto res = comparer.Compare(rpols);
                 res[0].Get("mean", nn_mean);
-                res[1].Get("mean", stoch_mean);
+                for (size_t r = 0; r < rpols.size(); ++r) {
+                    double m = 0.0; res[r].Get("mean", m);
+                    std::cout << "      [" << std::left << std::setw(12) << rnames[r] << "] "
+                              << std::fixed << std::setprecision(4)
+                              << "NN*Lambda=" << std::setw(10) << m * Lambda
+                              << "  NN/RVI=" << m / norm << "\n" << std::flush;
+                }
             } catch (const std::exception& e) {
                 std::cout << "  [eval EXCEPTION] " << e.what() << "\n" << std::flush;
                 continue;
@@ -268,9 +289,6 @@ int main(int argc, char** argv)
                       << std::setw(10) << "-"
                       << std::setw(6)  << "-"
                       << "\n" << std::flush;
-            std::cout << "      [stoch] NN*Lambda=" << stoch_mean * Lambda
-                      << "  NN/RVI=" << stoch_mean / norm
-                      << "   (stoch << argmax = extraction mismatch)\n" << std::flush;
             if (PRINT_HEATMAP) {
                 std::cout << "\n  PPO policy heatmap [Exp" << EXPERIMENT
                           << ", reward=" << REWARD_TYPE << ", seed=" << seed << "]:\n";
