@@ -110,6 +110,7 @@ int main(int argc, char** argv)
     const bool    PPO_TEMP_ANNEAL   = I("temp_anneal", 1) != 0;
     const double  PPO_TEMP_MIN      = D("temp_min", 0.25);
     const int64_t PPO_RESETS        = I("resets", 16);
+    const bool    PPO_DISTILL       = I("distill", 0) != 0;   // DCL gen-1 from the stochastic PPO policy
 
     const int64_t N            = I("N", 20000);
     const int64_t M            = I("M", 400);
@@ -269,6 +270,41 @@ int main(int argc, char** argv)
                           << ", reward=" << REWARD_TYPE << ", seed=" << seed << "]:\n";
                 qm::PrintPolicyHeatmap(mdp, nn, 12);
                 std::cout << std::flush;
+            }
+
+            // --- optional distillation: one DCL generation from the stochastic
+            // PPO policy.  DCL's Q-rollouts + classifier read out the policy's
+            // BEHAVIOR (near-optimal) instead of its logit signs, producing a
+            // deterministic policy and sidestepping argmax extraction entirely.
+            if (PPO_DISTILL) {
+                std::cout << "  [distill] DCL gen-1 from stochastic PPO policy...\n" << std::flush;
+                VarGroup dcl;
+                dcl.Add("N",               N);
+                dcl.Add("M",               M);
+                dcl.Add("H",               H);
+                dcl.Add("num_gens",        int64_t(1));
+                dcl.Add("silent",          true);
+                dcl.Add("rng_seed",        seed);
+                dcl.Add("nn_architecture", nn_arch);
+                VarGroup nn_training;
+                nn_training.Add("early_stopping_patience", int64_t(3));
+                dcl.Add("nn_training", nn_training);
+
+                auto dclo = dp.GetDCL(mdp, nn_stoch, dcl);
+                dclo.TrainPolicy();
+                auto nn_d = dclo.GetPolicies()[(size_t)1];
+
+                double d_mean = 0.0;
+                comparer.Compare({nn_d})[0].Get("mean", d_mean);
+                std::cout << "      [distilled] NN*Lambda=" << std::fixed << std::setprecision(4)
+                          << d_mean * Lambda
+                          << "  NN/RVI=" << d_mean / norm
+                          << "   (deterministic classifier from stoch behavior)\n" << std::flush;
+                if (PRINT_HEATMAP) {
+                    std::cout << "\n  distilled policy heatmap:\n";
+                    qm::PrintPolicyHeatmap(mdp, nn_d, 12);
+                    std::cout << std::flush;
+                }
             }
             continue;
         }

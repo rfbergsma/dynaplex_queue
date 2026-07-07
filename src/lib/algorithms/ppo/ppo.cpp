@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <numeric>
 #include <cmath>
+#include <limits>
 
 #if DP_TORCH_AVAILABLE
 #include <torch/torch.h>
@@ -214,6 +215,16 @@ namespace DynaPlex::Algorithms {
 			bool   rew_ema_init = false;
 			double ema_ref = 0.0;           // best EMA since annealing started (ratchet)
 
+			// best-sharp snapshot: the guard retreating late in training means the
+			// FINAL network is often not the BEST network — a sharp-and-healthy
+			// moment mid-training can be lost.  We snapshot the parameters whenever
+			// the behavior is meaningfully sharp (T <= 2*temp_min) and the health
+			// EMA is not degraded, and restore the snapshot at the end unless the
+			// final state matches it.
+			std::vector<torch::Tensor> snap_params;
+			double snap_score = -std::numeric_limits<double>::infinity();
+			double snap_T = 1.0;
+
 			for (int64_t update = 0; update < num_updates; ++update) {
 				// STAGGERED ENV RESETS: without resets the persistent envs are a trap —
 				// one bad excursion drives all envs into the deep-late region (where the
@@ -346,6 +357,21 @@ namespace DynaPlex::Algorithms {
 					else               rew_ema = 0.9 * rew_ema + 0.1 * mr;
 				}
 
+				// best-sharp snapshot: the rollout just taken measured (params, T_now);
+				// capture params BEFORE this update's optimizer steps change them.
+				if (temp_anneal && T_now <= 2.0 * temp_min + 1e-9) {
+					const double tol = 0.05 * (std::abs(ema_ref) + 1e-9);
+					const bool healthy = rew_ema >= ema_ref - tol;
+					const bool sharper  = T_now < snap_T - 1e-9;
+					const bool better   = T_now <= snap_T + 1e-9 && rew_ema > snap_score;
+					if (healthy && (sharper || better)) {
+						snap_T = T_now; snap_score = rew_ema;
+						torch::NoGradGuard ng;
+						snap_params.clear();
+						for (const auto& p : net->parameters()) snap_params.push_back(p.detach().clone());
+					}
+				}
+
 				// ----- bootstrap value V(s_T) for each env -----
 				torch::Tensor boot;
 				{
@@ -466,6 +492,21 @@ namespace DynaPlex::Algorithms {
 						last_ploss = policy_loss.item<double>();
 						last_vloss = value_loss.item<double>();
 						last_ent   = entropy.item<double>();
+					}
+				}
+
+				if (update == num_updates - 1 && !snap_params.empty()) {
+					// restore the best-sharp snapshot unless the final net matches it
+					const double tol = 0.05 * (std::abs(ema_ref) + 1e-9);
+					const bool final_ok = (temp_T <= snap_T + 1e-9) && (rew_ema >= snap_score - tol);
+					if (!final_ok) {
+						torch::NoGradGuard ng;
+						auto params = net->parameters();
+						for (size_t i = 0; i < params.size() && i < snap_params.size(); ++i)
+							params[i].copy_(snap_params[i]);
+						if (!silent)
+							system << "[PPO] restored best-sharp snapshot (T=" << snap_T
+							       << ", ema=" << snap_score << ")" << std::endl;
 					}
 				}
 
