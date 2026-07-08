@@ -30,6 +30,8 @@
 #include <cstdlib>
 #include <algorithm>
 #include <sstream>
+#include <random>
+#include <thread>
 #include "dynaplex/dynaplexprovider.h"
 #include "dynaplex/policy.h"
 #include "dynaplex/policycomparer.h"
@@ -54,6 +56,42 @@ public:
     const DynaPlex::VarGroup& GetConfig() const override { return config; }
     void SetAction(std::span<DynaPlex::Trajectory> trajectories) const override {
         for (auto& t : trajectories) t.NextAction = action;
+    }
+};
+
+// Hand-coded stochastic policy sampling from fixed action probabilities
+// (mix_eval=p0,p1,p2).  Distinguishes "the training rollout's terrible
+// rew/period under mixed play is REAL dynamics" from "trainer-side accounting
+// bug": the eval harness measures the same behavior independently.
+// Disallowed sampled actions fall back to 0 (always allowed).
+class MixActionPolicy : public DynaPlex::PolicyInterface {
+    DynaPlex::MDP mdp;
+    std::vector<double> cum;   // cumulative probabilities over actions 0..A-1
+    DynaPlex::VarGroup config;
+public:
+    MixActionPolicy(DynaPlex::MDP mdp, const std::vector<double>& probs)
+        : mdp(mdp)
+    {
+        double sum = 0.0;
+        for (double p : probs) sum += p;
+        double c = 0.0;
+        for (double p : probs) { c += p / sum; cum.push_back(c); }
+        config.Add("id", std::string("MixAction"));
+    }
+    std::string TypeIdentifier() const override { return "MixAction"; }
+    const DynaPlex::VarGroup& GetConfig() const override { return config; }
+    void SetAction(std::span<DynaPlex::Trajectory> trajectories) const override {
+        thread_local std::mt19937 rng(
+            0x9e3779b9u ^ (unsigned)std::hash<std::thread::id>{}(std::this_thread::get_id()));
+        std::uniform_real_distribution<double> unif(0.0, 1.0);
+        for (auto& t : trajectories) {
+            const double u = unif(rng);
+            int64_t a = 0;
+            for (size_t i = 0; i < cum.size(); ++i)
+                if (u <= cum[i]) { a = (int64_t)i; break; }
+            if (a != 0 && !mdp->IsAllowedAction(t.GetState(), a)) a = 0;
+            t.NextAction = a;
+        }
     }
 };
 
@@ -188,6 +226,27 @@ int main(int argc, char** argv)
     eval_cfg.Add("number_of_trajectories", EVAL_TRAJ);
     eval_cfg.Add("periods_per_trajectory",  EVAL_PERIODS);
     auto comparer = dp.GetPolicyComparer(mdp, eval_cfg);
+
+    // --- mix_eval=p0,p1,p2: evaluate a fixed-probability random policy and exit ---
+    if (kv.count("mix_eval")) {
+        std::vector<double> probs;
+        {
+            std::stringstream ss(S("mix_eval", "1,1,1"));
+            std::string tok;
+            while (std::getline(ss, tok, ',')) if (!tok.empty()) probs.push_back(std::atof(tok.c_str()));
+        }
+        std::vector<DynaPlex::Policy> mpols = {
+            std::make_shared<MixActionPolicy>(mdp, probs) };
+        std::cout << "\n================ mix_eval ================\n";
+        std::cout << "  probs = " << S("mix_eval", "1,1,1") << "\n";
+        auto res = comparer.Compare(mpols);
+        double m = 0.0; res[0].Get("mean", m);
+        std::cout << std::fixed << std::setprecision(4)
+                  << "  [mix] mean/period=" << m
+                  << "  NN*Lambda=" << m * Lambda << "\n" << std::flush;
+        std::cout << "==========================================\n";
+        return 0;
+    }
 
     // --- const_eval=1: evaluate hand-coded constant policies and exit ---
     // Integrity check for the skip-all action + eval path, no training involved.
