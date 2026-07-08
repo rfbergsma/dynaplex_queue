@@ -38,6 +38,25 @@
 using namespace DynaPlex;
 namespace qm = DynaPlex::Models::queue_mdp;
 
+// Hand-coded policy that always takes one fixed action, for eval-path integrity
+// checks (const_eval=1): always-0 = skip chain, always-2 = skip-all.  The two are
+// value-degenerate by design, so their evaluated costs must match EXACTLY — and
+// must equal the cost of a trained net whose argmax collapsed to always-idle.
+class ConstActionPolicy : public DynaPlex::PolicyInterface {
+    int64_t action;
+    DynaPlex::VarGroup config;
+public:
+    explicit ConstActionPolicy(int64_t action) : action(action) {
+        config.Add("id", std::string("ConstAction"));
+        config.Add("action", action);
+    }
+    std::string TypeIdentifier() const override { return "ConstAction"; }
+    const DynaPlex::VarGroup& GetConfig() const override { return config; }
+    void SetAction(std::span<DynaPlex::Trajectory> trajectories) const override {
+        for (auto& t : trajectories) t.NextAction = action;
+    }
+};
+
 // Mirrors make_specialist_generalist_config() in mm1_baseline.cpp (Experiment 3).
 static VarGroup exp3_config()
 {
@@ -170,6 +189,27 @@ int main(int argc, char** argv)
     eval_cfg.Add("periods_per_trajectory",  EVAL_PERIODS);
     auto comparer = dp.GetPolicyComparer(mdp, eval_cfg);
 
+    // --- const_eval=1: evaluate hand-coded constant policies and exit ---
+    // Integrity check for the skip-all action + eval path, no training involved.
+    if (I("const_eval", 0) != 0) {
+        std::vector<std::string> cnames = { "always-0 (skip chain)" };
+        std::vector<DynaPlex::Policy> cpols = { std::make_shared<ConstActionPolicy>(0) };
+        if (I("skip_all", 0) != 0) {
+            cnames.push_back("always-2 (skip-all)");
+            cpols.push_back(std::make_shared<ConstActionPolicy>(2));
+        }
+        std::cout << "\n================ const_eval ================\n";
+        auto res = comparer.Compare(cpols);
+        for (size_t r = 0; r < cpols.size(); ++r) {
+            double m = 0.0; res[r].Get("mean", m);
+            std::cout << "  [" << std::left << std::setw(22) << cnames[r] << "] "
+                      << std::fixed << std::setprecision(4)
+                      << "NN*Lambda=" << m * Lambda << "\n" << std::flush;
+        }
+        std::cout << "============================================\n";
+        return 0;
+    }
+
     // --- Benchmarks (bench=1: FIFO+RVI; bench=2: FIFO only; bench=0: none) ---
     double fifo_mean = 1.0, rvi_mean = 1.0, base_mean = 1.0;
     if (BENCH_MODE == 1) {
@@ -255,6 +295,7 @@ int main(int argc, char** argv)
             ppo_cfg.Add("temp_anneal",       PPO_TEMP_ANNEAL);
             ppo_cfg.Add("temp_min",          PPO_TEMP_MIN);
             ppo_cfg.Add("env_reset_every",   PPO_RESETS);
+            ppo_cfg.Add("skip_all_bias",     D("skip_bias", 0.0));
             ppo_cfg.Add("rng_seed",          seed);
             ppo_cfg.Add("silent",            false);   // show training trace for diagnosis
             VarGroup parch; parch.Add("hidden_layers", VarGroup::Int64Vec{64, 32});

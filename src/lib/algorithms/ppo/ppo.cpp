@@ -156,7 +156,7 @@ namespace DynaPlex::Algorithms {
 		int64_t rng_seed, num_envs, rollout_steps, num_updates, epochs_per_update, mini_batch_size;
 		int64_t env_reset_every;
 		double  gae_gamma, gae_lambda, clip_epsilon, entropy_coef, value_coef, learning_rate, max_grad_norm;
-		double  rho_step, temp_min;
+		double  rho_step, temp_min, skip_all_bias;
 		bool    silent, normalize_advantages, entropy_anneal, average_reward, temp_anneal;
 		std::vector<int64_t> hidden_layers;
 
@@ -187,6 +187,12 @@ namespace DynaPlex::Algorithms {
 			config.GetOrDefault("temp_anneal",       temp_anneal,       false);
 			config.GetOrDefault("temp_min",          temp_min,          0.25);
 			config.GetOrDefault("env_reset_every",   env_reset_every,   (int64_t)16);
+			// pessimistic init for a macro-skip action at index 2 (queue MDP
+			// enable_skip_all): uniform init gives "idle the whole tick" a 1/3
+			// prior at every decision, enough to spiral into the never-serve
+			// attractor before learning starts.  A bias of -3 starts it at ~2%:
+			// rare enough not to poison the data, sampled enough to get gradient.
+			config.GetOrDefault("skip_all_bias",     skip_all_bias,     0.0);
 
 			if (config.HasKey("nn_architecture")) {
 				VarGroup arch; config.Get("nn_architecture", arch);
@@ -202,6 +208,10 @@ namespace DynaPlex::Algorithms {
 		void Build() {
 			torch::manual_seed(static_cast<uint64_t>(rng_seed));
 			net = ActorCritic(mdp->NumFlatFeatures(), mdp->NumValidActions(), hidden_layers);
+			if (skip_all_bias != 0.0 && mdp->NumValidActions() >= 3) {
+				torch::NoGradGuard ng;
+				net->policy_head->bias.data_ptr<float>()[2] = static_cast<float>(skip_all_bias);
+			}
 		}
 
 		void Train() {
@@ -559,7 +569,20 @@ namespace DynaPlex::Algorithms {
 					if (temp_anneal)    system << "  T=" << T_now;
 					system << "  ploss=" << last_ploss
 					       << "  vloss=" << last_vloss
-					       << "  entropy=" << last_ent << std::endl;
+					       << "  entropy=" << last_ent;
+					// taken-action fractions this rollout: the direct behavioral signal
+					// (an eval-side pathology shows healthy fractions here yet a
+					// degenerate argmax; a training collapse shows one fraction -> 1).
+					{
+						torch::Tensor counts = torch::bincount(buf_act, {}, A);
+						auto cacc = counts.accessor<int64_t, 1>();
+						system << "  act%=[";
+						for (int64_t a = 0; a < A; ++a)
+							system << (a ? " " : "")
+							       << std::round(10000.0 * cacc[a] / (double)NB) / 100.0;
+						system << "]";
+					}
+					system << std::endl;
 				}
 			}
 		}
