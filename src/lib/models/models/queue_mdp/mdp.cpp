@@ -983,6 +983,11 @@ namespace DynaPlex::Models {
 				"Newest-first policy: assigns the top-capacity_k candidates by lowest FIL (newest) "
 				"for each pool, using the precomputed is_rfq_winner label. "
 				"Useful as a DCL training base when the optimal policy prefers newer/costlier jobs.");
+			registry.Register<EnforcedFIFOPolicy>("enforced_fifo",
+				"Assigns ONLY the FIFO winner (is_fifo_winner label), explicit 0 elsewhere. "
+				"Pair with action_sort=reverse_fifo (winner presented last) so DCL deviations "
+				"cover serve-alternative and serve-vs-idle counterfactuals; never pair "
+				"ascending sort with the greedy FIFO policy.");
 		}
 
 		DynaPlex::StateCategory MDP::GetStateCategory(const State& state) const

@@ -182,5 +182,21 @@ namespace DynaPlex::Models {
 			// is_rfq_winner=1: among top-capacity_k newest (lowest-FIL) jobs for this pool → assign.
 			return queue[(size_t)cnt].is_rfq_winner ? 1 : 0;
 		}
+
+		EnforcedFIFOPolicy::EnforcedFIFOPolicy(
+			std::shared_ptr<const MDP> mdp, const VarGroup& /*config*/)
+			: mdp{ mdp }
+		{
+		}
+
+		int64_t EnforcedFIFOPolicy::GetAction(const MDP::State& state) const
+		{
+			const auto& queue = state.server_manager.action_queue;
+			const int64_t cnt = state.server_manager.get_action_counter();
+			if (cnt < 0 || cnt >= (int64_t)queue.size())
+				return 0;
+			// is_fifo_winner=1: this candidate is the FIFO winner → assign; else explicit skip.
+			return queue[(size_t)cnt].is_fifo_winner ? 1 : 0;
+		}
 	}
 }

@@ -78,6 +78,21 @@ namespace DynaPlex::Models {
 			int64_t GetAction(const MDP::State& state) const;
 		};
 
+		/// Enforced-FIFO policy: assigns (action=1) ONLY on the FIFO winner
+		/// (is_fifo_winner label), explicit 0 on every other candidate — unlike the
+		/// greedy "FIFO policy" (always 1).  Designed to pair with
+		/// action_sort="reverse_fifo" (winner presented last): DCL's one-step
+		/// deviations then cover "serve this alternative instead" at non-winners and
+		/// "serve vs fully idle" at the winner (the strategic-idleness counterfactual).
+		/// NEVER pair ascending sort with the greedy FIFO policy (that gives LIFO).
+		class EnforcedFIFOPolicy
+		{
+			std::shared_ptr<const MDP> mdp;
+		public:
+			EnforcedFIFOPolicy(std::shared_ptr<const MDP> mdp, const VarGroup& config);
+			int64_t GetAction(const MDP::State& state) const;
+		};
+
 	}
 }
 
