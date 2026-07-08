@@ -77,8 +77,7 @@ namespace DynaPlex::Models {
 		VarGroup MDP::GetStaticInfo() const
 		{
 			VarGroup vars;
-			//Needs to update later:
-			vars.Add("valid_actions", 2);
+			vars.Add("valid_actions", enable_skip_all ? 3 : 2);
 			vars.Add("discount_factor", discount_factor);
 
 
@@ -290,6 +289,16 @@ namespace DynaPlex::Models {
 					return 0.0;
 				}
 
+				if (action == 2) {
+					// skip ALL remaining candidates: commit to idling until the next
+					// event.  Semantically identical to a chain of single skips, but as
+					// ONE decision — idleness gets a first-class action whose advantage
+					// is not smeared across an intra-tick chain.
+					state.server_manager.set_action_counter(0);
+					state.cat = StateCategory::AwaitEvent();
+					return 0.0;
+				}
+
 				// action == 0: skip this candidate, advance to next
 				int64_t next_cnt = acnt + 1;
 				if (next_cnt >= (int64_t)state.server_manager.action_queue.size()) {
@@ -391,6 +400,12 @@ namespace DynaPlex::Models {
 					}
 					
 				
+				}
+				else if (action == 2) {
+					// skip ALL remaining candidates: deterministic transition to idle
+					modified_state.server_manager.set_action_counter(0);
+					modified_state.cat = StateCategory::AwaitEvent();
+					out.push_back({ std::move(modified_state), 1 });
 				}
 				else {
 					// action == 0: skip this candidate, advance counter to next
@@ -667,6 +682,10 @@ namespace DynaPlex::Models {
 
 			if (config.HasKey("reward_type"))
 				config.Get("reward_type", reward_type);
+			if (config.HasKey("enable_skip_all"))
+				config.Get("enable_skip_all", enable_skip_all);
+			if (config.HasKey("macro_features"))
+				config.Get("macro_features", macro_features);
 			else
 				reward_type = 1;  // default: queue-lateness formula
 
@@ -961,6 +980,54 @@ namespace DynaPlex::Models {
 				if (label_cmu)  features.Add(current_action.is_cmu_winner);
 				if (label_rfq)  features.Add(current_action.is_rfq_winner);
 			}
+
+			// ----- (6) Macro/summary features (config "macro_features", default off) -----
+			// Summaries of the REMAINING action queue and idle-cost signals: they let a
+			// policy price "skip everything" (action 2) and justified single skips ("the
+			// winner is still pending") as linear reads instead of having to reconstruct
+			// the queue suffix from raw state (representable but hard to learn from
+			// noisy labels).
+			if (macro_features) {
+				int64_t remaining = 0, fifo_pending = 0, cmu_pending = 0;
+				std::vector<int64_t> type_pending(static_cast<size_t>(n_jobs), 0);
+				if (qsize > 0 && acnt >= 0 && acnt < qsize) {
+					for (int64_t i = acnt + 1; i < qsize; ++i) {
+						const Action& a = state.server_manager.action_queue.at(static_cast<size_t>(i));
+						++remaining;
+						if (a.is_fifo_winner) fifo_pending = 1;
+						if (a.is_cmu_winner)  cmu_pending = 1;
+						if (a.job_type >= 0 && a.job_type < n_jobs)
+							type_pending[static_cast<size_t>(a.job_type)] = 1;
+					}
+				}
+				features.Add(remaining);
+				features.Add(fifo_pending);
+				features.Add(cmu_pending);
+				for (int64_t j = 0; j < n_jobs; ++j)
+					features.Add(type_pending[static_cast<size_t>(j)]);
+
+				// free capacity a skip-all commits to idling
+				int64_t total_capacity = 0;
+				for (const auto& si : server_static_info) total_capacity += si.servers;
+				features.Add(total_capacity - total_busy_all);
+
+				// idle-cost signals: total urgency (the shaping potential, normalized by
+				// the summed cost rates) and minimum relative slack to the nearest deadline
+				double urg = 0.0, cr_sum = 0.0, min_slack = 1.0;
+				for (int64_t nn = 0; nn < n_jobs; ++nn) {
+					cr_sum += cost_rates[static_cast<size_t>(nn)];
+					const auto& q = state.queue_manager.waiting[static_cast<size_t>(nn)];
+					if (q.empty()) continue;
+					urg += JobUrgency(nn, q.front());
+					const double D = due_times[static_cast<size_t>(nn)];
+					if (D >= 1.0)
+						min_slack = std::min(min_slack, std::max(0.0, (D - (double)q.front()) / D));
+					else
+						min_slack = 0.0;
+				}
+				features.Add(cr_sum > 0.0 ? urg / cr_sum : 0.0);
+				features.Add(min_slack);
+			}
 		}
 
 
@@ -1021,8 +1088,12 @@ namespace DynaPlex::Models {
 			else if (action == 0) {
 		#if QUEUE_MDP_DEBUG
 				std::cout << "[QMDP]   IsAllowedAction -> true for action=0 (skip)\n";
-		#endif		
+		#endif
 				// do not assign job
+				return true;
+			}
+			else if (action == 2 && enable_skip_all) {
+				// skip ALL remaining candidates this tick (commit to idle until next event)
 				return true;
 			}
 			else {

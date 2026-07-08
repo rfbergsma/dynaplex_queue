@@ -122,7 +122,7 @@ namespace DynaPlex::Algorithms {
 				: out.narrow(1, 0, num_actions).contiguous();
 			scores = torch::nan_to_num(scores, 0.0, 30.0, -30.0).clamp(-30.0, 30.0);
 			if (serve_bias != 0.0 && num_actions >= 2)
-				scores.narrow(1, 1, num_actions - 1) += serve_bias;
+				scores.narrow(1, 1, 1) += serve_bias;   // bias ONLY action 1 (serve), not macro-skips
 
 			if (temperature > 0.0) {
 				torch::Tensor mask = torch::zeros({ B, num_actions }, torch::kBool);

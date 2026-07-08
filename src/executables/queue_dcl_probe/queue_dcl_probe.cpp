@@ -152,6 +152,10 @@ int main(int argc, char** argv)
     // SIGABRT) or silently REUSE each other's samples (non-independent seeds).
     const int64_t SALT = I("salt", 0);
     if (SALT != 0) cfg.Add("sample_salt", SALT);
+    // 2x2 experiment knobs: skip_all adds action 2 (skip all remaining candidates);
+    // macro_feat adds remaining-queue + idle-cost summary features.
+    if (I("skip_all", 0) != 0)   cfg.Set("enable_skip_all", true);
+    if (I("macro_feat", 0) != 0) cfg.Set("macro_features", true);
 
     const int64_t H = int64_t((double)BASE_H * TICK_RATE);
 

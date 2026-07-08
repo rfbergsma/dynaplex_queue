@@ -461,6 +461,12 @@ namespace DynaPlex::Models {
 			// Per-label inclusion in NN features (config "action_labels", e.g. "all"/"none"/"cmu"/"cmu+rfq").
 			// Defaults follow enable_action_labels; "action_labels" overrides if present.
 			bool label_fifo = true, label_cmu = true, label_rfq = true;
+			// action space extension: action 2 = skip ALL remaining candidates this tick
+			// (commit to idling until the next event).  Config "enable_skip_all", default off.
+			bool enable_skip_all = false;
+			// summary features of the remaining action queue + idle-cost signals that let
+			// a policy price macro skips.  Config "macro_features", default off.
+			bool macro_features = false;
 			int64_t max_queue_depth;  // tracked positions per job type: 1=FIL only (default)
 			int64_t feature_queue_depth; // NN feature slots per job type (>= max_queue_depth; pads with 0)
 			int64_t int_hash = 0;        // config hash — used by EvaluatePolicyRaw(Policy) to build type-erased states

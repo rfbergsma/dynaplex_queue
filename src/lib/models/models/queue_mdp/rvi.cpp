@@ -106,6 +106,10 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 		size_t i = bfs_queue.front(); bfs_queue.pop();
 		MDP::State s = states[i];
 
+		// NOTE: RVI deliberately stays on the binary action set {0,1} even when
+		// enable_skip_all adds action 2 for RL.  Skip-all is value-degenerate with a
+		// chain of single skips, so the {0,1}-optimal policy and g* are exactly
+		// optimal in the extended MDP too — the benchmark is unaffected.
 		int n_actions = (s.cat == DynaPlex::StateCategory::AwaitAction()) ? 2 : 1;
 		for (int a = 0; a < n_actions; ++a) {
 			if (a == 1 && !IsAllowedAction(s, 1)) continue;
