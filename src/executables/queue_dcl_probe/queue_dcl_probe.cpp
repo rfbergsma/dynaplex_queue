@@ -236,14 +236,17 @@ int main(int argc, char** argv)
             while (std::getline(ss, tok, ',')) if (!tok.empty()) probs.push_back(std::atof(tok.c_str()));
         }
         std::vector<DynaPlex::Policy> mpols = {
-            std::make_shared<MixActionPolicy>(mdp, probs) };
+            std::make_shared<MixActionPolicy>(mdp, probs),
+            mdp->GetPolicy("FIFO policy") };   // same-process reference
         std::cout << "\n================ mix_eval ================\n";
         std::cout << "  probs = " << S("mix_eval", "1,1,1") << "\n";
         auto res = comparer.Compare(mpols);
-        double m = 0.0; res[0].Get("mean", m);
-        std::cout << std::fixed << std::setprecision(4)
-                  << "  [mix] mean/period=" << m
-                  << "  NN*Lambda=" << m * Lambda << "\n" << std::flush;
+        for (size_t r = 0; r < mpols.size(); ++r) {
+            double m = 0.0; res[r].Get("mean", m);
+            std::cout << std::fixed << std::setprecision(4)
+                      << "  [" << (r == 0 ? "mix " : "FIFO") << "] mean/period=" << m
+                      << "  NN*Lambda=" << m * Lambda << "\n" << std::flush;
+        }
         std::cout << "==========================================\n";
         return 0;
     }
