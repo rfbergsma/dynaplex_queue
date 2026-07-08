@@ -682,12 +682,12 @@ namespace DynaPlex::Models {
 
 			if (config.HasKey("reward_type"))
 				config.Get("reward_type", reward_type);
+			else
+				reward_type = 1;  // default: queue-lateness formula
 			if (config.HasKey("enable_skip_all"))
 				config.Get("enable_skip_all", enable_skip_all);
 			if (config.HasKey("macro_features"))
 				config.Get("macro_features", macro_features);
-			else
-				reward_type = 1;  // default: queue-lateness formula
 
 			// action_sort: order in which routing candidates are presented.
 			//   "fifo"         -> FIL descending (oldest first)  [default]
