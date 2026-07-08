@@ -158,6 +158,7 @@ namespace DynaPlex::Algorithms {
 		double  gae_gamma, gae_lambda, clip_epsilon, entropy_coef, value_coef, learning_rate, max_grad_norm;
 		double  rho_step, temp_min, skip_all_bias;
 		bool    silent, normalize_advantages, entropy_anneal, average_reward, temp_anneal;
+		bool    dper_clamp, value_norm;   // ablation knobs; both true = the recipe
 		std::vector<int64_t> hidden_layers;
 
 		Impl(const DynaPlex::System& system, DynaPlex::MDP mdp, DynaPlex::Policy policy_0, const VarGroup& config)
@@ -193,6 +194,13 @@ namespace DynaPlex::Algorithms {
 			// attractor before learning starts.  A bias of -3 starts it at ~2%:
 			// rare enough not to poison the data, sampled enough to get gradient.
 			config.GetOrDefault("skip_all_bias",     skip_all_bias,     0.0);
+			// ABLATION knobs (default = the recipe).  dper_clamp=false restores the
+			// original semi-MDP discounting bug: intra-tick decisions (dperiods=0)
+			// discounted as if one period passed (gamma^max(1,dp)), subsidizing
+			// idleness.  value_norm=false disables running return-std normalization
+			// of value targets (value-scale domination).
+			config.GetOrDefault("dper_clamp",        dper_clamp,        true);
+			config.GetOrDefault("value_norm",        value_norm,        true);
 
 			if (config.HasKey("nn_architecture")) {
 				VarGroup arch; config.Get("nn_architecture", arch);
@@ -457,7 +465,9 @@ namespace DynaPlex::Algorithms {
 								delta = r_diff + next_val - val[idx];
 								decay = gae_lambda;
 							} else {
-								const double disc = std::pow(gae_gamma, (double)dp[idx]);
+								const double dpx = dper_clamp ? (double)dp[idx]
+								                              : std::max(1.0, (double)dp[idx]);
+								const double disc = std::pow(gae_gamma, dpx);
 								delta = rew[idx] + disc * next_val - val[idx];
 								decay = disc * gae_lambda;
 							}
@@ -476,12 +486,12 @@ namespace DynaPlex::Algorithms {
 				// Update the running return scale (used to normalise value targets and to
 				// rescale the value head's output back to raw units).  Initialise from the
 				// first rollout so even update 0 trains on O(1) value targets.
-				{
+				if (value_norm) {
 					double cur_std = buf_ret.std().item<double>();
 					if (cur_std < 1e-6) cur_std = 1e-6;
 					if (update == 0) ret_std_running = cur_std;
 					else             ret_std_running = 0.95 * ret_std_running + 0.05 * cur_std;
-				}
+				}   // else: ret_std_running stays 1.0 — raw value targets
 				torch::Tensor buf_ret_norm = buf_ret / ret_std_running;   // value-head target
 
 				// ----- PPO update: K epochs over minibatches -----
