@@ -128,7 +128,22 @@ decisions ≈ 25M decisions on Exp2. Budget larger instances proportionally, and
 3. **Average-reward PPO at large batch sizes** (envs≥128, rollout≥2048) — the
    Dai–Gluzman regime; our small-batch failure doesn't condemn it.
 4. Housekeeping: rename `is_rfq_winner`→`is_newest_winner`; Exp2 small-D RVI
-   truncation issue (dsweep artifact: RVI_L > FIFO_L at D<9).
+   truncation issue (dsweep artifact: RVI_L > FIFO_L at D<9; recurs at tick=1.5).
+
+## Design note: `action_sort` (correction from RB — this was NOT a bugfix)
+
+The ascending candidate order (`action_sort="reverse_fifo"`) is a deliberate design that
+pairs with the *enforced-FIFO* base policy (1 only on the FIFO winner, explicit 0
+elsewhere): non-winners are presented first, the winner last.  Intent: DCL's one-step
+deviations then cleanly cover both counterfactuals every tick — "serve this
+cμ-alternative instead" (at each non-winner) and "serve vs fully idle" (at the winner,
+isolating strategic idleness as a single decision point).  Likely failure causes:
+0-label imbalance (a classifier answering "0 everywhere" ≈ never-serve attractor and is
+barely punished by aggregate loss) and skip-labels being unlearnable without
+queue-position features (the later `is_*_winner` labels were the missing half — worth
+retrying the combination).  **Compatibility rule: never combine ascending order with
+GREEDY FIFO** (greedy + ascending = accept the newest head = LIFO).  Coherent pairs:
+greedy-FIFO ↔ descending (default), enforced-FIFO ↔ ascending.
 
 ## Grand result tables
 
