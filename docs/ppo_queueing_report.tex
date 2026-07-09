@@ -124,6 +124,22 @@ $\mathrm{cost}\times\Lambda$.  RVI supplies the exact optimal benchmark
 $g^*$ on both instances, and the greedy FIFO policy (always assign the
 oldest feasible candidate) is the natural heuristic baseline.
 
+\begin{remark}[Choice of objective]
+All experiments in this note use the \emph{binary} deadline cost
+\eqref{eq:bincost}, whereas parts of our earlier RVI analysis used the
+\emph{queue-lateness} cost (linear excess over the deadline, summed over
+the queue).  The two are different objectives with values on different
+scales; all RVI and FIFO reference values below are binary-cost values.
+The binary cost is the \emph{harder} learning target: as the RVI
+heatmap analysis showed, its near-zero gradient away from the deadline
+creates action-value near-ties across most of the state space, and
+these near-ties are precisely what makes policy-gradient learning and
+argmax extraction difficult (Sections~\ref{sec:shaping}
+and~\ref{sec:forgiveness}).  The reward shaping introduced below can be
+read as restoring, in a cost-neutral way, the pre-deadline signal
+density that the queue-lateness objective has natively.
+\end{remark}
+
 % ============================================================
 \section{PPO in general terms}
 \label{sec:ppo}
