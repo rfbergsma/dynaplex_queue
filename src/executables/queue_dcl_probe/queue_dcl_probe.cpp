@@ -358,6 +358,8 @@ int main(int argc, char** argv)
             ppo_cfg.Add("temp_min",          PPO_TEMP_MIN);
             ppo_cfg.Add("env_reset_every",   PPO_RESETS);
             ppo_cfg.Add("skip_all_bias",     D("skip_bias", 0.0));
+            ppo_cfg.Add("value_norm",        I("vnorm", 1) != 0);
+            ppo_cfg.Add("dper_clamp",        I("dper", 1) != 0);
             ppo_cfg.Add("rng_seed",          seed);
             ppo_cfg.Add("silent",            false);   // show training trace for diagnosis
             VarGroup parch; parch.Add("hidden_layers", VarGroup::Int64Vec{64, 32});

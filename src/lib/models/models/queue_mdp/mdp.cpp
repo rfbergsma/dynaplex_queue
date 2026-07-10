@@ -102,19 +102,21 @@ namespace DynaPlex::Models {
 				if (state.next_fil_job_type != -1) {
 					const int64_t n = state.next_fil_job_type;
 
-					// Shaping (reward_type 2): the served job is the current FIL; serving
-					// it swaps the potential term -u(t_old) for -u(t_new) of the revealed
-					// next head.  Charge Phi(s)-Phi(s') = u(t_new)-u(t_old): usually
-					// negative, i.e. an immediate reward for serving an urgent job.
+					// Shaping (reward_type 2 = binary base, 3 = queue-lateness base): the
+					// served job is the current FIL; serving it swaps the potential term
+					// -u(t_old) for -u(t_new) of the revealed next head.  Charge
+					// Phi(s)-Phi(s') = u(t_new)-u(t_old): usually negative, i.e. an
+					// immediate reward for serving an urgent job.
+					const bool shaped = (reward_type == 2 || reward_type == 3);
 					int64_t t_old = 0;
-					if (reward_type == 2 && !state.queue_manager.waiting[(size_t)n].empty())
+					if (shaped && !state.queue_manager.waiting[(size_t)n].empty())
 						t_old = state.queue_manager.waiting[(size_t)n].front();
 
 					// Pop head / reveal next head using your existing sampler
 					state.queue_manager.complete_job(n, uniform_rate_next_fil);
 
 					double shaping_cost = 0.0;
-					if (reward_type == 2) {
+					if (shaped) {
 						const auto& q = state.queue_manager.waiting[(size_t)n];
 						const int64_t t_new = q.empty() ? 0 : q.front();
 						shaping_cost = JobUrgency(n, t_new) - JobUrgency(n, t_old);
@@ -560,6 +562,16 @@ namespace DynaPlex::Models {
 						const double tail = (arrival_rates[n] / tick_rate)
 						                  * std::max(0.0, bottom_excess - 1.0) * bottom_excess / 2.0;
 						cost += cost_rates[n] * tail;
+					}
+
+					// Shaping (rtype 3): same FIL urgency potential as rtype 2 — the
+					// accrual spreads exactly one first-late-tick QL charge (c_n) over
+					// the pre-deadline window as c_n/D per tick; refunded on service.
+					if (rtype == 3) {
+						const int64_t t = q.front();
+						const int64_t D = (int64_t)due_times[n];
+						if (D >= 1 && t >= 1 && t <= D)
+							cost += cost_rates[n] / (double)D;
 					}
 				}
 			}
