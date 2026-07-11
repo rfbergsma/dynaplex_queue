@@ -276,7 +276,10 @@ int main(int argc, char** argv)
     double fifo_mean = 1.0, rvi_mean = 1.0, base_mean = 1.0;
     if (BENCH_MODE == 1) {
         auto fifo = mdp->GetPolicy("FIFO policy");
-        VarGroup rvi_cfg{{"id", std::string("RVI_optimal")}, {"rel_tol", 0.01}, {"silent", int64_t(1)}};
+        // rvi_tol: between-M convergence tolerance of the auto-truncation loop.
+        // The 0.01 default is too loose for queue-lateness rewards (cost keeps
+        // growing with FIL depth, so g* still drifts at the default stop).
+        VarGroup rvi_cfg{{"id", std::string("RVI_optimal")}, {"rel_tol", D("rvi_tol", 0.01)}, {"silent", int64_t(1)}};
         auto rvi = mdp->GetPolicy(rvi_cfg);
 
         auto bench = comparer.Compare({fifo, rvi});
