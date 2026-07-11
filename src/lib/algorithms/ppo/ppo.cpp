@@ -159,6 +159,12 @@ namespace DynaPlex::Algorithms {
 		double  rho_step, temp_min, skip_all_bias;
 		bool    silent, normalize_advantages, entropy_anneal, average_reward, temp_anneal;
 		bool    dper_clamp, value_norm;   // ablation knobs; both true = the recipe
+		// anneal-guard variants (heavy-tailed rewards defeat the stock guard):
+		// guard_tol_sigma > 0: tolerance = k*sigma_hat(health) instead of 5%*|ref|
+		// guard_robust: health = median over envs of per-period rates (tail-robust)
+		// guard_leak > 0: reference relaxes toward current EMA (un-poisons peaks)
+		double  guard_tol_sigma, guard_leak;
+		bool    guard_robust;
 		std::vector<int64_t> hidden_layers;
 
 		Impl(const DynaPlex::System& system, DynaPlex::MDP mdp, DynaPlex::Policy policy_0, const VarGroup& config)
@@ -201,6 +207,9 @@ namespace DynaPlex::Algorithms {
 			// of value targets (value-scale domination).
 			config.GetOrDefault("dper_clamp",        dper_clamp,        true);
 			config.GetOrDefault("value_norm",        value_norm,        true);
+			config.GetOrDefault("guard_tol_sigma",   guard_tol_sigma,   0.0);
+			config.GetOrDefault("guard_robust",      guard_robust,      false);
+			config.GetOrDefault("guard_leak",        guard_leak,        0.0);
 
 			if (config.HasKey("nn_architecture")) {
 				VarGroup arch; config.Get("nn_architecture", arch);
@@ -261,6 +270,7 @@ namespace DynaPlex::Algorithms {
 			double rew_ema = 0.0;           // EMA of rollout mean reward (health signal)
 			bool   rew_ema_init = false;
 			double ema_ref = 0.0;           // best EMA since annealing started (ratchet)
+			double health_var_ema = 0.0;    // EMA of squared health deviations (adaptive tol)
 
 			// best-sharp snapshot: the guard retreating late in training means the
 			// FINAL network is often not the BEST network — a sharp-and-healthy
@@ -315,12 +325,21 @@ namespace DynaPlex::Algorithms {
 					if (update == anneal_start) ema_ref = rew_ema;   // baseline at anneal start
 					if (update > anneal_start && rew_ema_init
 					    && (update - anneal_start) % 5 == 0) {
-						const double tol = 0.05 * (std::abs(ema_ref) + 1e-9);
+						// tolerance: fixed 5% of |ref| (stock), or k*sigma of the health
+						// signal itself (guard_tol_sigma) — heavy-tailed rewards make the
+						// fixed band read ordinary fluctuation as degradation.
+						const double tol = (guard_tol_sigma > 0.0)
+							? guard_tol_sigma * std::sqrt(health_var_ema)
+							: 0.05 * (std::abs(ema_ref) + 1e-9);
 						if (rew_ema >= ema_ref - tol) {
 							if (temp_T > temp_min) temp_T = std::max(temp_min, temp_T * 0.9);
 							if (rew_ema > ema_ref) ema_ref = rew_ema;     // ratchet reference up
 						} else {
 							temp_T = std::min(1.0, temp_T / 0.9);         // degrading: back off
+							// leaky ratchet: relax the reference toward the current EMA so
+							// one lucky peak cannot permanently poison the guard
+							if (guard_leak > 0.0)
+								ema_ref += guard_leak * (rew_ema - ema_ref);
 						}
 					}
 					T_now = temp_T;
@@ -398,10 +417,34 @@ namespace DynaPlex::Algorithms {
 				// decisions per tick and DILUTES the per-decision mean — a guard on that
 				// signal happily sharpens into idle-collapse while "improving".
 				{
-					const double sum_dp = buf_dp.sum().item<double>();
-					const double mr = buf_rew.sum().item<double>() / std::max(1.0, sum_dp);
+					double mr;
+					if (guard_robust) {
+						// median over envs of per-env per-period rates: a single
+						// deep-queue env cannot drag the health signal (heavy tails)
+						std::vector<double> rates;
+						rates.reserve((size_t)E);
+						auto racc = buf_rew.accessor<float, 1>();
+						auto dacc = buf_dp.accessor<float, 1>();
+						for (int64_t e = 0; e < E; ++e) {
+							double sr = 0.0, sd = 0.0;
+							for (int64_t t = 0; t < T; ++t) {
+								sr += racc[t * E + e];
+								sd += dacc[t * E + e];
+							}
+							rates.push_back(sr / std::max(1.0, sd));
+						}
+						std::nth_element(rates.begin(), rates.begin() + rates.size() / 2, rates.end());
+						mr = rates[rates.size() / 2];
+					} else {
+						const double sum_dp = buf_dp.sum().item<double>();
+						mr = buf_rew.sum().item<double>() / std::max(1.0, sum_dp);
+					}
 					if (!rew_ema_init) { rew_ema = mr; rew_ema_init = true; }
-					else               rew_ema = 0.9 * rew_ema + 0.1 * mr;
+					else {
+						const double dev = mr - rew_ema;
+						health_var_ema = 0.9 * health_var_ema + 0.1 * dev * dev;
+						rew_ema = 0.9 * rew_ema + 0.1 * mr;
+					}
 				}
 
 				// best-sharp snapshot: the rollout just taken measured (params, T_now);

@@ -363,6 +363,9 @@ int main(int argc, char** argv)
             ppo_cfg.Add("skip_all_bias",     D("skip_bias", 0.0));
             ppo_cfg.Add("value_norm",        I("vnorm", 1) != 0);
             ppo_cfg.Add("dper_clamp",        I("dper", 1) != 0);
+            ppo_cfg.Add("guard_tol_sigma",   D("gtol_sigma", 0.0));
+            ppo_cfg.Add("guard_robust",      I("grobust", 0) != 0);
+            ppo_cfg.Add("guard_leak",        D("gleak", 0.0));
             ppo_cfg.Add("rng_seed",          seed);
             ppo_cfg.Add("silent",            false);   // show training trace for diagnosis
             VarGroup parch; parch.Add("hidden_layers", VarGroup::Int64Vec{64, 32});
