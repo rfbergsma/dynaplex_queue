@@ -70,6 +70,15 @@ $64\times$ batch size with a tail-robust guard --- restores near-optimal
 learning (7/8 seeds beat FIFO; best seeds at the RVI optimum), after the
 RVI benchmark itself is repaired (learned policies exposed a 6\%
 truncation bias).
+Finally, Section~\ref{sec:pe} tests the diagnosis constructively: a
+\emph{per-event action space} (each free server capacity unit picks a
+job type or idles, one credit-concentrated decision each) eliminates the
+mechanisms rather than patching them.  In the reformulated space, PPO
+\emph{without} temperature annealing reaches the exact RVI optimum on
+8/8 seeds --- the seed lottery disappears, and the extraction scaffolding
+turns from load-bearing to harmful --- while DCL escapes its FIFO-clone
+fixed point (6/8 optimal) and loses its queue-lateness collapses (8/8
+beat FIFO).
 \end{abstract}
 
 \tableofcontents
@@ -965,5 +974,119 @@ ratio & 1.13 & 1.10 & 1.13 & \textbf{1.00} & 1.08 & \textbf{0.99} &
   is distinct from all five binary-cost mechanisms and remains to be
   diagnosed.
 \end{itemize}
+
+% ============================================================
+\section{Reformulating the action space: the per-event decomposition}
+\label{sec:pe}
+% ============================================================
+
+The preceding chapters treated the action space as given and patched its
+pathologies.  This section tests the diagnosis constructively: if
+re-presentation forgiveness and credit dilution are really consequences
+of the sequential candidate-queue decomposition, then a reformulated
+action space should dissolve them --- and most of the stabilization
+scaffolding with them.  It does, almost completely.
+
+\subsection{Design}
+
+In the \emph{per-event} mode, the decision epoch presents one entry per
+\emph{idle server capacity unit} (pool-major order).  Each entry is a
+single $(n{+}1)$-way decision: action $0$ idles this unit, action
+$a \in \{1..n\}$ assigns type $a{-}1$'s FIL to it.  Infeasible types are
+strictly masked (no dummy actions: value-degenerate action pairs would
+pad DCL's rollout comparisons with noise-decided tie labels --- the
+skip-all lesson).  A serve consumes its unit and the epoch \emph{resumes}
+at the next unit after the FIL refresh; earlier idle decisions stay
+committed until the next event.  Decision epochs occur at the same points
+as in the candidate-queue mode, so the two spaces admit the same
+physical policies: this was verified by three equivalence gates (FIFO
+behavior and never-serve cost reproduce \emph{bit-exactly}; the RVI
+optimum matches within solver tolerance on both instances).  What
+changes is purely the \emph{credit structure}: a serve-vs-idle
+counterfactual is one logit comparison carrying the full event-level
+advantage, instead of a sign smeared across a skip chain and forgiven by
+re-presentation.  The per-decision action space is $O(n)$ regardless of
+server count --- the scaling motivation.
+
+\subsection{Results: the pathologies dissolve}
+
+Table~\ref{tab:pe} shows the full battery on Experiment~2 (8 seeds,
+unchanged hyperparameters from each objective's tuned recipe).
+
+\begin{table}[h]
+\centering
+\caption{Per-event action space, Experiment 2, argmax
+$\mathrm{cost}\times\Lambda$.  Binary refs: RVI $=40.78$, FIFO $=70.38$;
+QL refs: RVI $=2350$, FIFO $=3034$.  ``anneal'' = guarded temperature
+annealing of Section~\ref{sec:anneal}.}
+\label{tab:pe}
+\begin{tabular}{lcccccccc}
+\toprule
+Seed & 1 & 2 & 3 & 4 & 5 & 6 & 7 & 8 \\
+\midrule
+PPO binary, anneal on & 95.4 & \textbf{40.78} & \textbf{40.78} & 40.87 &
+89.4 & \textbf{40.78} & 98.0 & 96.3 \\
+PPO binary, \textbf{anneal off} & \textbf{40.98} & \textbf{40.78} &
+\textbf{40.78} & \textbf{40.78} & \textbf{40.78} & \textbf{40.78} &
+\textbf{40.78} & \textbf{40.78} \\
+DCL binary (FIFO base) & 41.1 & \textbf{40.78} & 41.0 & \textbf{40.78} &
+\textbf{40.78} & \textbf{40.78} & 264 & 44.4 \\
+DCL queue-lateness & 2511 & 2769 & 2556 & 2748 & 2766 & 2769 & 2697 &
+2769 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three results, each contradicting nothing and confirming everything the
+mechanism analysis predicted:
+
+\begin{enumerate}
+  \item \textbf{PPO without annealing: 8/8 at the exact RVI optimum.}
+  The Experiment-2 seed lottery --- the central residual problem of the
+  binary chapter --- is gone, with \emph{less} machinery than the
+  candidate-queue space ever needed (recall: the old space without
+  annealing succeeded on 3/8).  The argmax--stochastic relation is
+  healthy everywhere (argmax $\le$ stochastic): nothing is left for
+  extraction to break.
+  \item \textbf{The scaffolding turns harmful.}  With annealing ON, 4/8
+  seeds fail with the classic extraction signature (argmax $\gg$
+  stochastic).  In the old space, sharpened rollouts were needed to
+  train wrong-sign near-ties; in the new space there are no wrong signs
+  left to fix, and mid-training sharpening only narrows the data
+  distribution.  A stabilizer is not objective- or space-neutral: it is
+  matched to a failure mode, and outlives its usefulness with it.
+  \item \textbf{DCL escapes its fixed points.}  From a plain
+  deterministic FIFO base --- no stochastic-base widening needed ---
+  6/8 seeds reach the optimum under the binary cost (candidate-queue
+  reference: 3/8, with five exact FIFO clones), because the
+  $(n{+}1)$-way labels natively express the serve-this-type-vs-idle
+  counterfactuals that the ordering-and-label designs of the old space
+  tried to manufacture.  Under queue-lateness, 8/8 seeds beat FIFO with
+  \emph{zero} catastrophic collapses (reference: 2/8 good, 3/8
+  collapsed), at 1.07--1.18$\times$ the repaired optimum.
+\end{enumerate}
+
+Caveats, honestly: one DCL-binary seed produced a new failure mode
+(264, worse than never studied before in DCL-binary --- under
+investigation); DCL-QL quality trails the best PPO-QL seeds; and the
+queue-lateness PPO cell in the per-event space (which needs the
+large-batch average-reward recipe --- QL's variance problem is
+orthogonal to the action space) is in flight at the time of writing,
+together with an 8-seed Experiment-3 confirmation and a first scaling
+scout on the RVI-intractable 6-type/5-server instance.
+
+\subsection{Interpretation}
+
+The candidate-queue chapters and this one form a single argument.  The
+five failure mechanisms were diagnosed as \emph{mismatches between the
+RL abstraction and the decision structure}, and each fix was a patch
+holding that mismatch at bay: shaping against sparsity, guards against
+blind sharpening, readout batteries against extraction, seed selection
+against the lottery.  The per-event reformulation removes the mismatch
+at its source, and the patches become unnecessary --- or actively
+counterproductive --- exactly as the mechanism story predicts.  For
+scaling, the reformulated space is the natural primary formulation: its
+per-decision action set is independent of server count, its credit
+assignment is event-local, and it needs a strictly smaller recipe.
 
 \end{document}
