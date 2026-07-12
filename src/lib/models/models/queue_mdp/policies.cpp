@@ -21,7 +21,7 @@ namespace DynaPlex::Models {
 				// feasible type with the OLDEST waiting FIL (ties -> lower type
 				// index, matching SortActionsFIFO's tie-breaks); idle only when
 				// nothing is feasible.
-				const Action& cur = state.server_manager.action_queue.at(
+				const auto& cur = state.server_manager.action_queue.at(
 					(size_t)state.server_manager.get_action_counter());
 				int64_t best = 0, best_fil = -1;
 				for (int64_t n = 0; n < mdp->n_jobs; ++n) {
