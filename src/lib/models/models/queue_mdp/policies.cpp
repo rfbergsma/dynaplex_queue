@@ -16,6 +16,22 @@ namespace DynaPlex::Models {
 
 		int64_t FIFOPolicy::GetAction(const MDP::State& state) const
 		{
+			if (mdp->per_event_mode) {
+				// FIFO in the per-event action space: this capacity unit serves the
+				// feasible type with the OLDEST waiting FIL (ties -> lower type
+				// index, matching SortActionsFIFO's tie-breaks); idle only when
+				// nothing is feasible.
+				const Action& cur = state.server_manager.action_queue.at(
+					(size_t)state.server_manager.get_action_counter());
+				int64_t best = 0, best_fil = -1;
+				for (int64_t n = 0; n < mdp->n_jobs; ++n) {
+					const auto& q = state.queue_manager.waiting[(size_t)n];
+					if (q.empty()) continue;
+					if (!state.server_manager.can_assign_job(cur.server_index, n)) continue;
+					if (q.front() > best_fil) { best_fil = q.front(); best = n + 1; }
+				}
+				return best;
+			}
 			//Implement custom policy, and remove below line.
 			//throw DynaPlex::NotImplementedError();
 			return 1; // always assign job
@@ -26,7 +42,8 @@ namespace DynaPlex::Models {
 		FIFOPolicySorted::FIFOPolicySorted(std::shared_ptr<const MDP> mdp, const VarGroup& config)
 			:mdp{ mdp }
 		{
-			//Here, you may initiate any policy parameters.
+			if (mdp->per_event_mode)
+				throw DynaPlex::Error("queue_mdp: FIFOPolicySorted is not ported to action_mode=per_event yet");
 		}
 
 		int64_t FIFOPolicySorted::GetAction(const MDP::State& state) const
@@ -130,6 +147,8 @@ namespace DynaPlex::Models {
 			std::shared_ptr<const MDP> mdp, const VarGroup& cfg)
 			: mdp{ mdp }, threshold{ 0.0 }
 		{
+			if (mdp->per_event_mode)
+				throw DynaPlex::Error("queue_mdp: StochasticFIFOPolicy is not ported to action_mode=per_event yet");
 			if (cfg.HasKey("threshold"))
 				cfg.Get("threshold", threshold);
 		}
@@ -152,6 +171,8 @@ namespace DynaPlex::Models {
 		CmuPolicy::CmuPolicy(std::shared_ptr<const MDP> mdp, const VarGroup& config)
 			: mdp{ mdp }
 		{
+			if (mdp->per_event_mode)
+				throw DynaPlex::Error("queue_mdp: CmuPolicy is not ported to action_mode=per_event yet");
 		}
 
 		int64_t CmuPolicy::GetAction(const MDP::State& state) const
@@ -171,6 +192,8 @@ namespace DynaPlex::Models {
 			std::shared_ptr<const MDP> mdp, const VarGroup& /*config*/)
 			: mdp{ mdp }
 		{
+			if (mdp->per_event_mode)
+				throw DynaPlex::Error("queue_mdp: ReverseFIFOPolicy is not ported to action_mode=per_event yet");
 		}
 
 		int64_t ReverseFIFOPolicy::GetAction(const MDP::State& state) const
@@ -187,6 +210,8 @@ namespace DynaPlex::Models {
 			std::shared_ptr<const MDP> mdp, const VarGroup& /*config*/)
 			: mdp{ mdp }
 		{
+			if (mdp->per_event_mode)
+				throw DynaPlex::Error("queue_mdp: EnforcedFIFOPolicy is not ported to action_mode=per_event yet");
 		}
 
 		int64_t EnforcedFIFOPolicy::GetAction(const MDP::State& state) const

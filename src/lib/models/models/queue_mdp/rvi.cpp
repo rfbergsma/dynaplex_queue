@@ -70,9 +70,13 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 
 	StateEncoder encoder(*this, M);
 
+	// Action-set size per decision state: 2 in candidate-queue mode
+	// (skip/serve), n_jobs+1 in per-event mode (idle / serve type a-1).
+	const int A_max = per_event_mode ? (int)n_jobs + 1 : 2;
+
 	std::unordered_map<uint64_t, size_t> state_index;
 	std::vector<MDP::State> states;
-	std::vector<std::array<std::vector<Transition>, 2>> transitions;
+	std::vector<std::vector<std::vector<Transition>>> transitions;
 	std::vector<double> immediate_cost;
 	std::queue<size_t> bfs_queue;
 
@@ -84,14 +88,16 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 		size_t idx = states.size();
 		state_index[key] = idx;
 		states.push_back(s);
-		transitions.push_back({});
+		transitions.push_back(std::vector<std::vector<Transition>>((size_t)A_max));
 
 		// Delegate to ComputeTickCost so reward_type is respected
 		// (reward_type=0 -> binary; reward_type=1 -> queue-lateness).
-		// reward_type=2 (potential-based shaping) deliberately uses the BINARY
-		// base cost: shaping preserves the optimal policy and long-run average,
-		// and RVI's state-cost structure cannot represent the action-tied terms.
-		const int64_t rvi_rtype = (reward_type == 2) ? 0 : reward_type;
+		// reward_type=2/3 (potential-based shaping) deliberately use the
+		// UNSHAPED base cost (0 resp. 1): shaping preserves the optimal policy
+		// and long-run average, and RVI's state-cost structure cannot
+		// represent the action-tied refund terms.
+		const int64_t rvi_rtype = (reward_type == 2) ? 0
+		                        : (reward_type == 3) ? 1 : reward_type;
 		if (s.cat == DynaPlex::StateCategory::AwaitEvent())
 			immediate_cost.push_back((tick_rate / uniformization_rate) * ComputeTickCost(s, rvi_rtype));
 		else
@@ -110,9 +116,10 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 		// enable_skip_all adds action 2 for RL.  Skip-all is value-degenerate with a
 		// chain of single skips, so the {0,1}-optimal policy and g* are exactly
 		// optimal in the extended MDP too — the benchmark is unaffected.
-		int n_actions = (s.cat == DynaPlex::StateCategory::AwaitAction()) ? 2 : 1;
+		// In per-event mode the action set is {0..n_jobs} (A_max slots).
+		int n_actions = (s.cat == DynaPlex::StateCategory::AwaitAction()) ? A_max : 1;
 		for (int a = 0; a < n_actions; ++a) {
-			if (a == 1 && !IsAllowedAction(s, 1)) continue;
+			if (a >= 1 && !IsAllowedAction(s, (int64_t)a)) continue;
 
 			auto dist = getNextStateProbability(s, (int64_t)a);
 			for (const auto& entry : dist) {
@@ -128,7 +135,7 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 	size_t n_await_event = 0, n_await_action = 0, total_transitions = 0;
 	for (size_t i = 0; i < states.size(); ++i) {
 		(states[i].cat == DynaPlex::StateCategory::AwaitAction()) ? ++n_await_action : ++n_await_event;
-		for (int a = 0; a < 2; ++a)
+		for (int a = 0; a < A_max; ++a)
 			total_transitions += transitions[i][a].size();
 	}
 	if (!silent) {
@@ -159,7 +166,7 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 			}
 			else {
 				double best = std::numeric_limits<double>::infinity();
-				for (int a = 0; a < 2; ++a) {
+				for (int a = 0; a < A_max; ++a) {
 					if (transitions[i][a].empty()) continue;
 					double val = 0.0;
 					for (const auto& t : transitions[i][a])
@@ -224,23 +231,25 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 	for (size_t i = 0; i < states.size(); ++i) {
 		if (states[i].cat != DynaPlex::StateCategory::AwaitAction()) continue;
 
-		// Compute Q(s, a) for both actions.
-		double q[2] = { std::numeric_limits<double>::infinity(),
-		                std::numeric_limits<double>::infinity() };
-		for (int a = 0; a < 2; ++a) {
+		// Compute Q(s, a) for all actions (A_max slots; unreachable = inf).
+		std::vector<double> q((size_t)A_max, std::numeric_limits<double>::infinity());
+		for (int a = 0; a < A_max; ++a) {
 			if (transitions[i][a].empty()) continue;
 			q[a] = 0.0;
 			for (const auto& t : transitions[i][a])
 				q[a] += t.probability * h[t.next_state_idx];
 		}
 
-		int64_t best_a = (q[0] <= q[1]) ? 0 : 1;
+		int64_t best_a = 0;
+		for (int a = 1; a < A_max; ++a)
+			if (q[a] < q[best_a]) best_a = a;
 		uint64_t key = encoder.encode(states[i]);
 		sol.action_map[key] = best_a;
 
 		// Store the action-value gap |Q(s,0) - Q(s,1)| whenever both actions
-		// are reachable.  A near-zero gap flags a potential numerical near-tie.
-		if (q[0] < std::numeric_limits<double>::infinity() &&
+		// are reachable (candidate-queue mode diagnostics only).
+		if (!per_event_mode &&
+		    q[0] < std::numeric_limits<double>::infinity() &&
 		    q[1] < std::numeric_limits<double>::infinity()) {
 			sol.gap_map[key] = std::abs(q[0] - q[1]);
 			sol.q_map[key]   = { q[0], q[1] };
@@ -346,7 +355,20 @@ int64_t MDP::EvaluateRVIPolicy(const RVISolution& sol, const State& state) const
 	// values the BFS never reached).  Default to assign (=1) rather than skip (=0):
 	// skipping in an unknown state is worse than FIFO and violates the RVI <= FIFO
 	// invariant that Section A checks.
-	if (it == sol.action_map.end()) return 1;
+	if (it == sol.action_map.end()) {
+		if (!per_event_mode) return 1;
+		// per-event fallback: FIFO choice (oldest feasible FIL; idle if none)
+		const Action& cur = state.server_manager.action_queue.at(
+			(size_t)state.server_manager.get_action_counter());
+		int64_t best = 0, best_fil = -1;
+		for (int64_t n = 0; n < n_jobs; ++n) {
+			const auto& qn = state.queue_manager.waiting[(size_t)n];
+			if (qn.empty()) continue;
+			if (!state.server_manager.can_assign_job(cur.server_index, n)) continue;
+			if (qn.front() > best_fil) { best_fil = qn.front(); best = n + 1; }
+		}
+		return best;
+	}
 	return it->second;
 }
 
