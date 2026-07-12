@@ -4,6 +4,63 @@
 Bergsma). Everything below is backed by committed code and reproducible runs; log
 references are in `Log/probe_*.out` on Snellius and the session transcripts.*
 
+---
+
+## ADDENDUM 2026-07-12 (supersedes parts of the original below)
+
+Full details and tables: `docs/ppo_queueing_report.tex` (binary chapter §1–4, QL
+chapter §5). What changed since 2026-07-07:
+
+1. **Critical bug found & fixed** (commit 3dfec38): a dangling-else introduced in
+   535f033 silently clobbered `reward_type` to 1 for every run without
+   `macro_feat=1`. **All runs between 2026-07-08 08:20 and the fix are invalid**
+   (except `macro_feat=1` ones). The skip-all "catastrophe" of that morning was an
+   artifact; retested clean, skip-all is safe but not beneficial (3/8 vs base 6/8),
+   and it *breaks extraction, not learning* (stoch fine, argmax catastrophic).
+2. **Controlled ablation matrix** (queue_ablation exe, 8 cells × 8 seeds): every
+   recipe ingredient confirmed with mechanism-consistent failure signatures.
+   base 6/8; dper 0/8 (→never-serve); vnorm 0/8 (exactly bimodal: never-serve /
+   FIFO-clone); resets0 1/8; shape0 2/8; anneal0 3/8 with the argmax-vs-stoch gap
+   made directly visible (stoch near-optimal, argmax bad).
+3. **QL chapter (reward_type 1)**: binary recipe → bit-exact FIFO clone 8/8
+   (heavy-tail variance, NOT extraction — the gap vanishes under QL). Working QL
+   recipe: **average-reward + 128×2048 batch + robust-median/leaky-ratchet guard**
+   (`avg=1 envs=128 rollout=2048 epochs=2 minibatch=4096 grobust=1 gleak=0.05`,
+   1000 updates): 7/8 beat FIFO, best ≈ optimum. Discounted destabilizes at
+   longer training (3/8 never-serve at 500u). rtype 3 = QL + urgency shaping
+   exists, verified cost-neutral, empirically unnecessary.
+4. **RVI benchmark repaired**: QL reference was 6% loose (learned policies beat
+   it). `rvi_tol=0.001` probe knob; Exp2-QL ref 2492→2350 (binary refs were fine).
+   Residual ~1–2% looseness remains. Also: **QL cost is NOT tick-rate invariant**
+   (scales ~ν; binary is flat) — do not run cross-tick QL studies before fixing.
+5. **Per-event action space implemented** (`action_mode=per_event`, probe
+   `mode=pe`; commits 1f0bb69/8e91d9f/2935d48): each idle capacity unit picks a
+   type or idles (valid_actions=n_jobs+1, strict masking). Equivalence gates
+   PASSED: FIFO and never-serve bit-exact vs old mode; RVI g* matches on exp2/exp3
+   (≤0.7%, solver tolerance). PPO smoke on binary Exp2/Exp3 in flight. This is
+   open thread #1 of the original document, now motivated also by scaling
+   (per-decision action space O(#types), credit concentration).
+6. **Roadmap agreed with RB**: per-event PPO battery → tick-invariance fix +
+   robustness grid (tick × due-date, frozen recipe, worst-cell scoring) → exp6
+   scaling probe → reward_type 4 = fraction-served-on-time (≈ binary-shaped flux
+   objective `c_n[1{FIL crosses d} + (λ_n/ν)1{FIL late}]`; needs reneging or an
+   ε·QL hybrid against the abandonment degeneracy; design in session transcript
+   2026-07-12).
+7. Practicalities: GitHub push works from RB's machine again (patch-over-scp is
+   fallback only); SURF rate-limits SSH (batch commands, few connections); Slurm
+   time limits should be right-sized (~4h) or jobs pend overnight; DCL
+   stochastic-base (ε=0.3) doubles gen-1 success under QL (4/8, three seeds
+   sub-reference) but catastrophic collapses remain — DCL sampling-skew fix
+   (period-anchored sampling) still open.
+
+Superseded below: the aux-head A/B remains valid; the "Open threads" list is
+replaced by item 6 above; grand tables remain valid for the original
+(entropy=0.01, temp_min=0.25) recipe — the tuned recipe (entropy=0.03,
+temp_min=0.1, rollout=512) achieves 7/8 within 6% and is the current default
+reference, reproducible bit-exactly.
+
+---
+
 ## Executive summary
 
 **The headline: the optimal policy is learnable.** Starting from PPO collapsing to
