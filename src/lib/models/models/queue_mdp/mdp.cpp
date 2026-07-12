@@ -77,7 +77,8 @@ namespace DynaPlex::Models {
 		VarGroup MDP::GetStaticInfo() const
 		{
 			VarGroup vars;
-			vars.Add("valid_actions", enable_skip_all ? 3 : 2);
+			vars.Add("valid_actions", per_event_mode ? (n_jobs + 1)
+			                        : (enable_skip_all ? 3 : 2));
 			vars.Add("discount_factor", discount_factor);
 
 
@@ -125,6 +126,23 @@ namespace DynaPlex::Models {
 					// clear pending refresh
 					state.next_fil_job_type = -1;
 
+					if (per_event_mode) {
+						// resume the epoch at the next capacity unit: the serving unit's
+						// entry was consumed (counter advanced in ModifyStateWithAction);
+						// earlier idle decisions stay committed.  No regeneration —
+						// remaining units' masks read the live state.
+						state.stochastic_draws = event.stochastic_draws;
+						if (state.server_manager.get_action_counter() <
+						    (int64_t)state.server_manager.action_queue.size()) {
+							state.cat = StateCategory::AwaitAction();
+						} else {
+							state.server_manager.set_action_counter(0);
+							state.cat = StateCategory::AwaitEvent();
+						}
+						state.last_event_category = "fil_refresh";
+						return shaping_cost;
+					}
+
 					// regenerate actions because FIL changed
 					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting(), cost_rates, sort_descending);
 					state.server_manager.set_action_counter(0);
@@ -161,8 +179,11 @@ namespace DynaPlex::Models {
 				#endif
 				
 					//state.queue_manager.complete_job(event_type.job_type, uniform_rate_next_fil); // job completed, remove from queue
-					
-					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting(), cost_rates, sort_descending);
+
+					if (per_event_mode)
+						state.server_manager.generate_actions_per_event(state.queue_manager.get_FIL_waiting());
+					else
+						state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting(), cost_rates, sort_descending);
 					state.server_manager.set_action_counter(0);
 					state.stochastic_draws = event.stochastic_draws;
 					if (!state.server_manager.action_queue.empty()) {
@@ -187,9 +208,12 @@ namespace DynaPlex::Models {
 
 				
 					state.queue_manager.arrival(event_type.arrival_index);
-				
-				
-					state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting(), cost_rates, sort_descending);
+
+
+					if (per_event_mode)
+						state.server_manager.generate_actions_per_event(state.queue_manager.get_FIL_waiting());
+					else
+						state.server_manager.generate_actions(state.queue_manager.get_FIL_waiting(), cost_rates, sort_descending);
 					state.server_manager.set_action_counter(0);
 					state.stochastic_draws = event.stochastic_draws;
 
@@ -283,6 +307,19 @@ namespace DynaPlex::Models {
 
 				Action current_action = state.server_manager.action_queue.at((size_t)acnt);
 
+				if (per_event_mode && action >= 1) {
+					// per-event serve: assign type (action-1) to this unit's pool and
+					// consume the unit by advancing the counter.  The queue is NOT
+					// regenerated: the FIL-refresh event resumes the epoch at the
+					// next unit (earlier idle decisions stay committed).
+					const int64_t n = action - 1;
+					state.server_manager.assign_job(current_action.server_index, n);
+					state.server_manager.set_action_counter(acnt + 1);
+					state.next_fil_job_type = n;
+					state.cat = StateCategory::AwaitEvent();
+					return 0.0;
+				}
+
 				if (action == 1) {
 					// Assign: trigger FIL refresh; ModifyStateWithEvent completes it
 					state.server_manager.take_action(1);
@@ -370,7 +407,38 @@ namespace DynaPlex::Models {
 
 				//modified the action queue and counter
 
-				
+				if (per_event_mode && action >= 1) {
+					// per-event serve twin: assign type (action-1) to this unit's pool,
+					// consume the unit, enumerate the FIL refresh inline, and RESUME
+					// the epoch (no queue regeneration — mirrors ModifyStateWithAction
+					// + the fil_refresh resume path).
+					const int64_t n = action - 1;
+					modified_state.server_manager.assign_job(current_server_type, n);
+					modified_state.server_manager.set_action_counter(action_counter + 1);
+
+					const int64_t i = state.queue_manager.get_FIL_waiting()[(size_t)n];
+					const double lambda = arrival_rates[(size_t)n];
+					const double gamma = state.queue_manager.total_tick_rate;
+
+					auto fil_dist = NextFILDistribution(i, lambda, gamma);
+
+					for (auto [next_fil, p_fil] : fil_dist) {
+						MDP::State s2 = modified_state;
+						s2.queue_manager.set_fil(n, next_fil);
+						s2.queue_manager.update_total_arrival_rate(arrival_rates);
+
+						if (s2.server_manager.get_action_counter() <
+						    (int64_t)s2.server_manager.action_queue.size()) {
+							s2.cat = StateCategory::AwaitAction();
+						} else {
+							s2.server_manager.set_action_counter(0);
+							s2.cat = StateCategory::AwaitEvent();
+						}
+						out.push_back({ std::move(s2), p_fil });
+					}
+					return out;
+				}
+
 				if (action == 1) {
 					// Generate vector of states, each equal to modified state, but with the FIL of the current action
 					modified_state.server_manager.take_action(action);
@@ -400,8 +468,8 @@ namespace DynaPlex::Models {
 
 						out.push_back({ std::move(s2), p_fil });
 					}
-					
-				
+
+
 				}
 				else if (action == 2) {
 					// skip ALL remaining candidates: deterministic transition to idle
@@ -442,7 +510,10 @@ namespace DynaPlex::Models {
 						s2.queue_manager.update_total_tick_rate(tick_rate);
 						s2.queue_manager.update_total_arrival_rate(arrival_rates);
 
-						s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting(), cost_rates, sort_descending);
+						if (per_event_mode)
+							s2.server_manager.generate_actions_per_event(s2.queue_manager.get_FIL_waiting());
+						else
+							s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting(), cost_rates, sort_descending);
 						s2.server_manager.set_action_counter(0);
 						
 						s2.cat = s2.server_manager.action_queue.empty()
@@ -482,7 +553,10 @@ namespace DynaPlex::Models {
 						// completion changes FIL(job) stochastically
 						s2.server_manager.complete_job(k, job);
 
-						s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting(), cost_rates, sort_descending);
+						if (per_event_mode)
+							s2.server_manager.generate_actions_per_event(s2.queue_manager.get_FIL_waiting());
+						else
+							s2.server_manager.generate_actions(s2.queue_manager.get_FIL_waiting(), cost_rates, sort_descending);
 						s2.server_manager.set_action_counter(0);
 						s2.cat = s2.server_manager.action_queue.empty()
 							? StateCategory::AwaitEvent()
@@ -700,6 +774,16 @@ namespace DynaPlex::Models {
 				config.Get("enable_skip_all", enable_skip_all);
 			if (config.HasKey("macro_features"))
 				config.Get("macro_features", macro_features);
+			if (config.HasKey("action_mode")) {
+				std::string am;
+				config.Get("action_mode", am);
+				if (am == "per_event")            per_event_mode = true;
+				else if (am == "candidate_queue") per_event_mode = false;
+				else throw DynaPlex::Error("queue_mdp: unknown action_mode '" + am +
+					"' (use \"candidate_queue\" or \"per_event\")");
+			}
+			if (per_event_mode && enable_skip_all)
+				throw DynaPlex::Error("queue_mdp: action_mode=per_event is incompatible with enable_skip_all");
 
 			// action_sort: order in which routing candidates are presented.
 			//   "fifo"         -> FIL descending (oldest first)  [default]
@@ -712,6 +796,10 @@ namespace DynaPlex::Models {
 			} else {
 				sort_descending = true;
 			}
+			if (per_event_mode && !sort_descending)
+				throw DynaPlex::Error("queue_mdp: action_mode=per_event is incompatible with action_sort=reverse_fifo (no candidate ordering exists in per-event mode)");
+			if (per_event_mode && macro_features)
+				throw DynaPlex::Error("queue_mdp: action_mode=per_event does not support macro_features yet (they summarize the candidate queue)");
 
 			// enable_action_labels: master toggle for the 3 policy-hint label features.
 			// Default true; set false to reproduce the pre-label (paper) feature vector.
@@ -972,6 +1060,24 @@ namespace DynaPlex::Models {
 			features.Add(qsize > 0 ? static_cast<double>(acnt) / static_cast<double>(qsize) : 0.0);
 
 			// ----- (5) Current candidate (server, job) + policy-hint labels -----
+			// per-event mode: the current decision is a capacity UNIT of one pool;
+			// features are the pool index plus the per-type feasibility mask (can
+			// this unit serve type n right now).  Constant width 1 + n_jobs.
+			if (per_event_mode) {
+				if (qsize <= 0 || acnt < 0 || acnt >= qsize) {
+					features.Add(-1); // no active decision unit
+					for (int64_t n = 0; n < n_jobs; ++n) features.Add(-1);
+				} else {
+					const Action& cur = state.server_manager.action_queue.at(static_cast<size_t>(acnt));
+					features.Add(cur.server_index);
+					for (int64_t n = 0; n < n_jobs; ++n) {
+						const bool ok = !state.queue_manager.waiting[(size_t)n].empty()
+							&& state.server_manager.can_assign_job(cur.server_index, n);
+						features.Add(ok ? 1 : 0);
+					}
+				}
+				return;
+			}
 			// The 3 policy-hint label features (is_fifo/cmu/rfq_winner) are included only
 			// when enable_action_labels is set (config key "enable_action_labels", default
 			// true).  Disable to reproduce the paper's no-label results and isolate the
@@ -1085,6 +1191,17 @@ namespace DynaPlex::Models {
 		#endif
 			
 			Action current_action = state.server_manager.action_queue.at(state.server_manager.get_action_counter());
+			if (per_event_mode) {
+				// per-event: 0 = idle this capacity unit (always allowed);
+				// a in 1..n_jobs = serve type a-1's FIL on this unit's pool —
+				// strict masking: allowed iff a job of that type waits and the
+				// pool can serve it with free capacity.
+				if (action == 0) return true;
+				const int64_t n = action - 1;
+				if (n < 0 || n >= n_jobs) return false;
+				if (state.queue_manager.waiting[(size_t)n].empty()) return false;
+				return state.server_manager.can_assign_job(current_action.server_index, n);
+			}
 			if (action == 1) {
 				bool ok = state.server_manager.can_assign_job(current_action.server_index, current_action.job_type);
 		#if QUEUE_MDP_DEBUG

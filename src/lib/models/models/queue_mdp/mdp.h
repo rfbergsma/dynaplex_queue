@@ -230,7 +230,34 @@ namespace DynaPlex::Models {
 					LabelActionQueue(FIL_waiting, cost_rates);
 
 				}
-	
+
+				// Per-event action space (action_mode="per_event"): one queue entry per
+				// IDLE CAPACITY UNIT (pool-major order), job_type = -1.  Each entry is a
+				// single decision "which type does this unit serve, or idle" — no
+				// sorting, no labels.  Entries only for pools with >= 1 feasible
+				// waiting type; the queue is built once per epoch and not regenerated
+				// mid-epoch (mid-epoch feasibility loss degrades an entry to idle-only,
+				// absorbed as a trivial state).
+				void generate_actions_per_event(std::vector<int64_t> FIL_waiting) {
+					action_queue.clear();
+
+					for (size_t k = 0; k < busy_on.size(); ++k) {
+						const int64_t cap = (*static_info)[k].servers - n_servers_busy_server_k((int64_t)k);
+						if (cap <= 0) continue;
+						bool feasible = false;
+						for (size_t n = 0; n < FIL_waiting.size(); ++n) {
+							if (FIL_waiting[n] >= 0 &&
+							    canServeIndex(*static_info, (int64_t)k, (int64_t)n) >= 0) {
+								feasible = true;
+								break;
+							}
+						}
+						if (!feasible) continue;
+						for (int64_t c = 0; c < cap; ++c)
+							action_queue.push_back(Action{ static_cast<int64_t>(k), -1 });
+					}
+				}
+
 				int64_t n_servers_busy_server_k(int64_t k) const {
 					int64_t total_busy = 0;
 
@@ -467,6 +494,11 @@ namespace DynaPlex::Models {
 			// summary features of the remaining action queue + idle-cost signals that let
 			// a policy price macro skips.  Config "macro_features", default off.
 			bool macro_features = false;
+			// action-space mode.  Config "action_mode": "candidate_queue" (default,
+			// the [server,job] skip/serve decomposition) or "per_event" (each idle
+			// capacity unit decides once per epoch: 0 = idle, a in 1..n_jobs = serve
+			// type a-1's FIL; valid_actions = n_jobs+1, strict masking).
+			bool per_event_mode = false;
 			int64_t max_queue_depth;  // tracked positions per job type: 1=FIL only (default)
 			int64_t feature_queue_depth; // NN feature slots per job type (>= max_queue_depth; pads with 0)
 			int64_t int_hash = 0;        // config hash — used by EvaluatePolicyRaw(Policy) to build type-erased states
