@@ -61,6 +61,15 @@ substantiates each ingredient of the recipe: removing any one of the four
 main stabilizers collapses the success rate from 6--7/8 to 0--3/8, with
 failures landing on two exactly reproducible attractors (never-serve and
 FIFO-clone).
+Section~\ref{sec:ql} extends the study to the \emph{queue-lateness}
+objective, where the failure landscape inverts: the extraction gap
+disappears but heavy-tailed returns defeat both the policy gradient and
+the annealing guard, and the binary-cost recipe converges to a FIFO clone
+on 8/8 seeds.  A different recipe --- the average-reward objective at
+$64\times$ batch size with a tail-robust guard --- restores near-optimal
+learning (7/8 seeds beat FIFO; best seeds at the RVI optimum), after the
+RVI benchmark itself is repaired (learned policies exposed a 6\%
+truncation bias).
 \end{abstract}
 
 \tableofcontents
@@ -723,6 +732,238 @@ deferring the problem to extraction.
   skip-all probe shows that naive action-space patches inherit the
   extraction problem; the per-event reformulation, which removes
   re-presentation by construction, is the principled next step.
+\end{itemize}
+
+% ============================================================
+\section{The queue-lateness objective}
+\label{sec:ql}
+% ============================================================
+
+Everything so far optimized the binary deadline cost.  This section
+repeats the program for the \emph{queue-lateness} (QL) objective ---
+arguably the more natural cost when the depth of lateness matters ---
+and finds an inverted failure landscape: the extraction machinery of
+Section~\ref{sec:anneal} becomes largely unnecessary, but the policy
+gradient itself drowns in the objective's heavy-tailed returns.  The
+recipe that works is materially different, and the benchmark itself
+required repair along the way.
+
+\subsection{The reward function}
+\label{sec:qlreward}
+
+Queue-lateness charges, at every tick, the \emph{current excess} of every
+waiting job (\texttt{reward\_type}~1):
+\begin{equation}
+  c_{\mathrm{QL}}(s) \;=\; \sum_n c_n \Bigl[
+    \underbrace{\textstyle\sum_{t \,\in\, \mathrm{tracked}(n)} \max(0,\, t - d_n)}_{\text{tracked positions}}
+    \;+\;
+    \underbrace{\tfrac{\lambda_n}{\nu}\,\tfrac{(B_n-1)\,B_n}{2}\,\mathbf{1}\{B_n > 0\}}_{\text{expected tail}}
+  \Bigr],
+  \qquad B_n = t^{\mathrm{last}}_n - d_n,
+  \label{eq:qlcost}
+\end{equation}
+where $t^{\mathrm{last}}_n$ is the deepest tracked age (the FIL itself at
+tracking depth 1).  The tail term is exact in expectation: under
+FIFO-within-type service, the jobs behind the FIL arrived as a Poisson
+stream (density $\lambda_n/\nu$ per tick-slot) during the FIL's waiting
+window, so a job that arrived $k$ ticks after the FIL has excess
+$B_n - k$, and summing the arithmetic series gives \eqref{eq:qlcost}.
+Because the cost is linear in per-job excesses, substituting the
+conditional expectation is unbiased.
+
+Two structural properties matter for everything that follows.  First,
+\emph{QL is pre-deadline flat but post-deadline dense}: like the binary
+cost it gives no signal before $d_n$, but past the deadline the per-tick
+charge grows linearly with depth and sums over the whole queue --- deep
+backlogs are punished superlinearly.  Second, a dimensional caveat found
+during this work: with the parameter scalings of
+Section~\ref{sec:setting}, QL cost levels are \emph{not} tick-rate
+invariant (they scale $\approx$ linearly with $\nu$; measured
+FIFO$\times\Lambda$ = 1781 / 3035 / 5266 at $\nu = 1.5/3/6$, versus the
+binary cost's flat 74/71/70).  All results below are at $\nu = 3$, where
+the objective is internally consistent; cross-tick-rate comparisons under
+QL measure the cost definition rather than the system, until the extra
+$1/\nu$ normalization is adopted.
+
+\paragraph{Shaped variant.}
+By direct analogy with Section~\ref{sec:shaping}, \texttt{reward\_type}~3
+adds the same FIL urgency potential
+$\Phi_n(t) = c_n \min(t, d_n)/d_n$: a constant accrual $c_n/d_n$ per
+pre-deadline tick --- spreading exactly one \emph{first-late-tick} QL
+charge ($c_n$) over the waiting window --- refunded in full when the job
+enters service.  Cost neutrality was verified to four decimals (FIFO
+evaluates to $722.5200$ per period under both rtype 1 and 3).
+
+\subsection{Repairing the benchmark}
+\label{sec:qlrvi}
+
+The RVI reference under QL initially came out at
+$\mathrm{RVI}\times\Lambda = 2492$ against
+$\mathrm{FIFO}\times\Lambda = 3035$ (gap $1.22$; Experiment~3: $194.6$ vs
+$152.0$, gap $1.28$, closely mirroring the binary gaps).  The repair was
+forced by the learning results themselves: \emph{seven independently
+trained policies evaluated below the computed optimum}, by up to 7\% ---
+impossible if the reference were tight.  The cause is the truncation
+loop's between-level criterion: the FIL clamp $M$ grows until $g^*$
+changes by less than \texttt{rel\_tol} = 1\% between $M$ and $M{+}2$,
+which is adequate for the binary cost (saturating in FIL) but stops too
+early for QL, whose cost keeps growing with FIL depth through the tail
+term in \eqref{eq:qlcost}.  Tightening to $10^{-3}$ moved the
+Experiment~2 reference from $2492$ to $\mathbf{2350}$ ($-5.7\%$;
+Experiment~3 moved only $0.2\%$ --- its reference was already sound).
+A residual $\sim$1--2\% looseness remains (the best learned policies sit
+at $0.98$--$0.99$ of the repaired reference), so within-$x$\% claims
+below carry that uncertainty.
+
+\subsection{What breaks: heavy-tailed returns, not extraction}
+\label{sec:qlfailure}
+
+Running the binary-cost recipe of Table~\ref{tab:hyper} on QL fails
+completely --- and diagnostically.  All 8 seeds (and all 8 shaped-variant
+seeds, and every ablation variant) converge to a \emph{bit-exact FIFO
+clone} ($3034.5839$); Experiment~3 under QL solves normally (2/4 seeds
+within 1\%), so the machinery is intact.  Three trace observations locate
+the mechanism:
+
+\begin{enumerate}
+  \item The \emph{stochastic} readout is also FIFO ($\approx 3100$):
+  unlike every binary-cost failure, this is a \textbf{learning} failure,
+  not an extraction failure.  Consistently, the argmax-vs-stochastic gap
+  that drove Section~\ref{sec:anneal} is essentially absent under QL ---
+  as predicted from the cleaner threshold structure of the QL optimal
+  policy.
+  \item Per-rollout reward rates swing by an order of magnitude
+  ($-380$ to $-7500$ per period) within healthy runs: QL returns are
+  dominated by rare deep-lateness excursions whose cost is quadratic in
+  depth via the tail term.  The 22\% FIFO-to-optimal improvement is
+  buried under this variance at the $16 \times 512$ batch size.
+  \item The temperature guard \emph{never engages} ($T = 1.0$ at the
+  final update): its health signal inherits the same heavy tail, so the
+  ``not degrading'' certificate is never issued (see
+  \S\ref{sec:qlguard}).  Shaping is irrelevant here --- the shaped runs
+  reproduce the unshaped results exactly, because the problem is noise,
+  not signal density.
+\end{enumerate}
+
+In short, the failure landscape \emph{inverts} relative to the binary
+cost: QL fixes the extraction problem for free and replaces it with a
+variance problem.
+
+\subsection{The QL recipe: average-reward objective at large batch}
+\label{sec:qlrecipe}
+
+The variance diagnosis points to the regime of Dai and Gluzman:
+average-cost PPO with very large batches, built for queueing networks
+with exactly this cost character.  Our implementation already contained
+the average-reward mode (differential rewards $r - \hat\rho\,\Delta$,
+$\gamma = 1$, with $\hat\rho$ a running estimate of the per-period
+average reward; the critic then learns an RVI-style relative value
+function).  A $2 \times 2$ scout --- \{discounted, average-reward\}
+$\times$ \{$16 \times 512$, $128 \times 2048$\} --- separates the two
+factors, and an 8-seed confirmation at 500 and 1000 updates completes the
+picture:
+
+\begin{itemize}
+  \item \textbf{Small batch}: both objectives fail (average-reward small
+  batch is the worst cell, confirming the earlier finding that the
+  differential mode needs batch size).
+  \item \textbf{Large batch, discounted}: partially works at 250 updates
+  (best seed $0.96\times$ reference) but \emph{destabilizes with more
+  training}: at 500 updates, 3/8 seeds collapse to never-serve and a
+  previously good seed regresses to FIFO.  The discount horizon and the
+  heavy tail interact badly once sharpening begins.
+  \item \textbf{Large batch, average-reward}: the robust cell.  6/8
+  seeds beat FIFO at 500 updates with a single collapse; at 1000 updates
+  the sharpened seeds cluster at 2365--2627.  The differential objective
+  measures every action against the current average cost rate, so a
+  drift toward idleness is charged immediately --- there is no discount
+  horizon for the tail catastrophe to hide behind.
+\end{itemize}
+
+At 1000 updates the bottleneck moved: \emph{every} seed whose behavior
+temperature reached $T \approx 0.1$ landed in the good cluster, and every
+seed stuck at $T = 1$ did not (4/8 engaged).  The remaining problem was
+the guard itself.
+
+\subsection{Guarding under heavy tails}
+\label{sec:qlguard}
+
+The guard of Section~\ref{sec:anneal} certifies health as
+$\mathrm{EMA} \ge \mathrm{ref} - 0.05\,|\mathrm{ref}|$, where the
+reference \emph{ratchets} up to the best EMA seen.  Under QL two
+mechanisms defeat it.  \emph{Ratchet poisoning}: one lucky quiet stretch
+(a few rollouts without deep-lateness excursions) sets an unrepeatable
+reference; ordinary fluctuation then reads as permanent degradation, and
+$T$ is pinned at 1 for the rest of training.  \emph{Non-arrival}:
+descending from $T{=}1$ to $0.1$ requires $\approx 22$ net certified
+steps; with the certificate failing half the time, the reflected random
+walk rarely arrives.  Three independent one-line fixes were A/B-tested on
+the four stock-guard-failing seeds:
+
+\begin{itemize}
+  \item \textbf{Noise-adaptive tolerance} ($\mathrm{tol} = 2\hat\sigma$
+  of the health signal): engages 4/4 --- but sharpened one genuinely
+  broken policy into a catastrophic deterministic one.  An
+  always-permissive guard is blind annealing again; rejected on that
+  ground despite two excellent rescues.
+  \item \textbf{Robust health signal} (median over the 128 environments'
+  per-period rates): engages 3/4 and, importantly, \emph{correctly
+  refuses} to sharpen the broken policy.
+  \item \textbf{Leaky ratchet} (reference relaxes 5\% toward the current
+  EMA on each failed check): same qualitative profile, including the
+  correct refusal.  The separation of speeds is the point: temperature
+  backs off immediately on degradation while the reference forgets only
+  slowly, so genuine decline is still caught.
+\end{itemize}
+
+The combined \textbf{robust + leaky} guard was confirmed on all 8 seeds
+(Table~\ref{tab:qlfinal}): engagement rises from 4/8 (stock) to 7/8, the
+$T{=}1$-stuck pathology disappears, and the one refusal is a seed whose
+policy genuinely dies mid-training under every guard variant --- a
+separate, unresolved failure mode that best-of-$k$ seed selection covers
+in practice.
+
+\begin{table}[h]
+\centering
+\caption{Final QL recipe on Experiment 2 (average-reward, $128 \times
+2048$ batch, 1000 updates, robust+leaky guard), argmax
+$\mathrm{cost}\times\Lambda$ vs repaired RVI $= 2350$, FIFO $= 3034$.}
+\label{tab:qlfinal}
+\begin{tabular}{lcccccccc}
+\toprule
+Seed & 1 & 2 & 3 & 4 & 5 & 6 & 7 & 8 \\
+\midrule
+$\times\Lambda$ & 2645 & 2588 & 2663 & \textbf{2359} & 2544 &
+\textbf{2333} & $\times$ & 2848 \\
+ratio & 1.13 & 1.10 & 1.13 & \textbf{1.00} & 1.08 & \textbf{0.99} &
+--- & 1.21 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Summary of the QL chapter}
+
+\begin{itemize}
+  \item QL inverts the binary failure landscape: extraction is free
+  (argmax $\approx$ stochastic throughout), but heavy-tailed returns
+  defeat small-batch policy gradients and fixed-tolerance guards; the
+  binary recipe converges to a bit-exact FIFO clone on 8/8 seeds.
+  \item The working recipe is \emph{average-reward + $64\times$ batch +
+  tail-robust guarded annealing}: 7/8 seeds beat FIFO, best seeds at the
+  (repaired) optimum, best-of-3 selection reliably $\approx$ optimal.
+  The two chapters are symmetric: each objective needs the stabilizer
+  matched to its own failure mode --- shaping against sparsity (binary),
+  batch and robust statistics against tails (QL).
+  \item Methodological yields: learned policies beating the benchmark
+  exposed a 6\% RVI truncation bias (repaired via a tighter
+  truncation-growth tolerance); the shaped QL variant is exactly
+  cost-neutral but empirically unnecessary; QL cost levels are not
+  tick-rate invariant under the current parameter scaling (flagged for
+  any cross-tick study).
+  \item Open: one seed exhibits mid-training policy death that no guard
+  variant rescues (guards correctly refuse to sharpen it); its mechanism
+  is distinct from all five binary-cost mechanisms and remains to be
+  diagnosed.
 \end{itemize}
 
 \end{document}
