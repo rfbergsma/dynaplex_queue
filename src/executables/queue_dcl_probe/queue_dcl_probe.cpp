@@ -213,6 +213,9 @@ int main(int argc, char** argv)
     // macro_feat adds remaining-queue + idle-cost summary features.
     if (I("skip_all", 0) != 0)   cfg.Set("enable_skip_all", true);
     if (I("macro_feat", 0) != 0) cfg.Set("macro_features", true);
+    // mode=pe: per-event action space (each idle capacity unit picks a type or
+    // idles; valid_actions = n_jobs+1).  Default: the candidate-queue space.
+    if (S("mode", "") == "pe")   cfg.Set("action_mode", std::string("per_event"));
 
     const int64_t H = int64_t((double)BASE_H * TICK_RATE);
 
