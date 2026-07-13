@@ -279,10 +279,15 @@ int main(int argc, char** argv)
     double fifo_mean = 1.0, rvi_mean = 1.0, base_mean = 1.0;
     if (BENCH_MODE == 1) {
         auto fifo = mdp->GetPolicy("FIFO policy");
-        // rvi_tol: between-M convergence tolerance of the auto-truncation loop.
-        // The 0.01 default is too loose for queue-lateness rewards (cost keeps
-        // growing with FIL depth, so g* still drifts at the default stop).
-        VarGroup rvi_cfg{{"id", std::string("RVI_optimal")}, {"rel_tol", D("rvi_tol", 0.01)}, {"silent", int64_t(1)}};
+        // RVI truncation control.  rvi_m>0 pins the FIL clamp to a FIXED M
+        // (bypasses the auto-select loop) so g*(M) can be swept directly — the
+        // clean way to map convergence for tail-heavy rewards (queue-lateness,
+        // tardiness flux) where the auto-loop's between-M criterion stops early.
+        // Otherwise rvi_tol drives the auto-select loop (default 0.01; too loose
+        // for tail-heavy rewards, whose g* keeps drifting with FIL depth).
+        VarGroup rvi_cfg{{"id", std::string("RVI_optimal")}, {"silent", int64_t(1)}};
+        if (I("rvi_m", 0) > 0) rvi_cfg.Add("M", I("rvi_m", 0));
+        else                   rvi_cfg.Add("rel_tol", D("rvi_tol", 0.01));
         auto rvi = mdp->GetPolicy(rvi_cfg);
 
         auto bench = comparer.Compare({fifo, rvi});
