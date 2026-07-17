@@ -619,22 +619,26 @@ namespace DynaPlex::Models {
 					// Tardiness flux ("fraction served late"): each job charges c_n
 					// ONCE, at the tick its age crosses the deadline.  Per tick:
 					// the FIL's own crossing (age exactly d+1) plus the expected
-					// crossings behind the FIL (Poisson density lambda_n/nu per
-					// tick-slot, one cohort of age d exists iff FIL age > d).
-					// Long-run average = c_n * (late jobs per unit time): the exact
-					// minimize-late-fraction objective, charged at the decision-
-					// relevant moment instead of at departure.  Tick-rate invariant
-					// by construction (c_real undoes the /nu storage scaling).
+					// crossings behind the FIL.  The behind-FIL density MUST match
+					// the simulator's own gap model (NextFILDistribution): at most
+					// one job per tick-slot, occupied w.p. alpha = lambda/(lambda+nu)
+					// — NOT the raw arrival density lambda/nu.  Using alpha makes
+					// reward, simulator reveals, and RVI transitions statements
+					// about one coherent FIL-projected MDP.
+					// Long-run average = c_n * (late jobs per unit time) under that
+					// model: the minimize-late-fraction objective, charged at the
+					// decision-relevant moment instead of at departure.
 					// NOTE: no abandonment degeneracy — a late FIL left unserved
 					// keeps the flux term charging indefinitely, so clearing late
 					// queues is strictly incentivized.
 					const int64_t t = q.front();
 					const int64_t D = (int64_t)due_times[n];
 					const double c_real = cost_rates[n] * tick_rate;
+					const double alpha  = arrival_rates[n] / (arrival_rates[n] + tick_rate);
 					if (t == D + 1)
 						cost += c_real;
 					if (t > D)
-						cost += c_real * (arrival_rates[n] / tick_rate);
+						cost += c_real * alpha;
 				}
 				else {
 					// Queue-lateness: exact excess summed over all tracked positions,
