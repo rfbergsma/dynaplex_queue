@@ -1,6 +1,7 @@
 #include "policies.h"
 #include "mdp.h"
 #include "dynaplex/error.h"
+#include <algorithm>
 #include <memory>
 #include <iostream>
 namespace DynaPlex::Models {
@@ -171,12 +172,27 @@ namespace DynaPlex::Models {
 		CmuPolicy::CmuPolicy(std::shared_ptr<const MDP> mdp, const VarGroup& config)
 			: mdp{ mdp }
 		{
-			if (mdp->per_event_mode)
-				throw DynaPlex::Error("queue_mdp: CmuPolicy is not ported to action_mode=per_event yet");
 		}
 
 		int64_t CmuPolicy::GetAction(const MDP::State& state) const
 		{
+			if (mdp->per_event_mode) {
+				const auto& cur = state.server_manager.action_queue.at(
+					(size_t)state.server_manager.get_action_counter());
+				const auto& info = mdp->server_static_info[(size_t)cur.server_index];
+				int64_t best_action = 0;
+				double best_cmu = -1.0;
+				for (int64_t n = 0; n < mdp->n_jobs; ++n) {
+					const int64_t action = n + 1;
+					if (!mdp->IsAllowedAction(state, action)) continue;
+					auto it = std::find(info.can_serve.begin(), info.can_serve.end(), n);
+					if (it == info.can_serve.end()) continue;
+					const size_t idx = (size_t)std::distance(info.can_serve.begin(), it);
+					const double value = mdp->cost_rates[(size_t)n] * info.mu_kj[idx];
+					if (value > best_cmu) { best_cmu = value; best_action = action; }
+				}
+				return best_action;
+			}
 			const auto& queue = state.server_manager.action_queue;
 			const int64_t cnt = state.server_manager.get_action_counter();
 			if (cnt < 0 || cnt >= (int64_t)queue.size())

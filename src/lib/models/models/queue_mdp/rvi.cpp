@@ -119,7 +119,8 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 		// In per-event mode the action set is {0..n_jobs} (A_max slots).
 		int n_actions = (s.cat == DynaPlex::StateCategory::AwaitAction()) ? A_max : 1;
 		for (int a = 0; a < n_actions; ++a) {
-			if (a >= 1 && !IsAllowedAction(s, (int64_t)a)) continue;
+			if (s.cat == DynaPlex::StateCategory::AwaitAction() &&
+			    !IsAllowedAction(s, (int64_t)a)) continue;
 
 			auto dist = getNextStateProbability(s, (int64_t)a);
 			for (const auto& entry : dist) {
