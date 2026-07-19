@@ -499,6 +499,13 @@ namespace DynaPlex::Models {
 			// capacity unit decides once per epoch: 0 = idle, a in 1..n_jobs = serve
 			// type a-1's FIL; valid_actions = n_jobs+1, strict masking).
 			bool per_event_mode = false;
+			// SLA escalation (config "force_late_service", per_event only): when a
+			// capacity unit can serve a LATE FIL (age > due), the assignment is
+			// FORCED via IsAllowedAction masking (oldest late first, ties -> lower
+			// type).  Forced states have exactly one allowed action, so the
+			// trivial-state machinery auto-plays them: the learned policy only
+			// ever decides pre-deadline.  Non-preemptive, per-pool.
+			bool force_late_service = false;
 			int64_t max_queue_depth;  // tracked positions per job type: 1=FIL only (default)
 			int64_t feature_queue_depth; // NN feature slots per job type (>= max_queue_depth; pads with 0)
 			int64_t int_hash = 0;        // config hash — used by EvaluatePolicyRaw(Policy) to build type-erased states

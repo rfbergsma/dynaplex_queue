@@ -216,6 +216,9 @@ int main(int argc, char** argv)
     // mode=pe: per-event action space (each idle capacity unit picks a type or
     // idles; valid_actions = n_jobs+1).  Default: the candidate-queue space.
     if (S("mode", "") == "pe")   cfg.Set("action_mode", std::string("per_event"));
+    // force_late=1: SLA escalation — late FILs are served with forced priority
+    // (per_event only); the learned policy decides pre-deadline only.
+    if (I("force_late", 0) != 0) cfg.Set("force_late_service", true);
 
     const int64_t H = int64_t((double)BASE_H * TICK_RATE);
 

@@ -809,6 +809,10 @@ namespace DynaPlex::Models {
 			}
 			if (per_event_mode && enable_skip_all)
 				throw DynaPlex::Error("queue_mdp: action_mode=per_event is incompatible with enable_skip_all");
+			if (config.HasKey("force_late_service"))
+				config.Get("force_late_service", force_late_service);
+			if (force_late_service && !per_event_mode)
+				throw DynaPlex::Error("queue_mdp: force_late_service requires action_mode=per_event (escalation semantics are defined on capacity-unit decisions)");
 
 			// action_sort: order in which routing candidates are presented.
 			//   "fifo"         -> FIL descending (oldest first)  [default]
@@ -1217,6 +1221,22 @@ namespace DynaPlex::Models {
 			
 			Action current_action = state.server_manager.action_queue.at(state.server_manager.get_action_counter());
 			if (per_event_mode) {
+				// SLA escalation: if this unit can serve a LATE FIL, the assignment
+				// is forced — exactly one action allowed (oldest late job, ties ->
+				// lower type index).  The trivial-state machinery then auto-plays
+				// it; the policy never decides in these states.
+				if (force_late_service) {
+					int64_t forced = -1, best_age = -1;
+					for (int64_t m = 0; m < n_jobs; ++m) {
+						const auto& qm = state.queue_manager.waiting[(size_t)m];
+						if (qm.empty()) continue;
+						if (qm.front() <= (int64_t)due_times[(size_t)m]) continue;  // not late
+						if (!state.server_manager.can_assign_job(current_action.server_index, m)) continue;
+						if (qm.front() > best_age) { best_age = qm.front(); forced = m; }
+					}
+					if (forced >= 0)
+						return action == forced + 1;
+				}
 				// per-event: 0 = idle this capacity unit (always allowed);
 				// a in 1..n_jobs = serve type a-1's FIL on this unit's pool —
 				// strict masking: allowed iff a job of that type waits and the
