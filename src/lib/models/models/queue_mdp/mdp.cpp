@@ -617,28 +617,37 @@ namespace DynaPlex::Models {
 				}
 				else if (rtype == 4) {
 					// Tardiness flux ("fraction served late"): each job charges c_n
-					// ONCE, at the tick its age crosses the deadline.  Per tick:
-					// the FIL's own crossing (age exactly d+1) plus the expected
-					// crossings behind the FIL.  The behind-FIL density MUST match
-					// the simulator's own gap model (NextFILDistribution): at most
-					// one job per tick-slot, occupied w.p. alpha = lambda/(lambda+nu)
-					// — NOT the raw arrival density lambda/nu.  Using alpha makes
-					// reward, simulator reveals, and RVI transitions statements
-					// about one coherent FIL-projected MDP.
-					// Long-run average = c_n * (late jobs per unit time) under that
-					// model: the minimize-late-fraction objective, charged at the
-					// decision-relevant moment instead of at departure.
-					// NOTE: no abandonment degeneracy — a late FIL left unserved
-					// keeps the flux term charging indefinitely, so clearing late
-					// queues is strictly incentivized.
-					const int64_t t = q.front();
+					// ONCE, at the tick its age crosses the deadline (age D -> D+1).
+					// Long-run average = c_n * (late jobs per unit time), i.e. the
+					// minimize-late-fraction objective charged at the decision-
+					// relevant moment instead of at departure.
+					//
+					// Two contributions per tick:
+					//   (a) tracked positions crossing right now (age == D+1), exact;
+					//   (b) untracked jobs behind the deepest tracked position.  The
+					//       coefficient is the EXPECTED NUMBER of arrivals per tick-slot,
+					//       lambda/nu — NOT alpha = lambda/(lambda+nu), which is only the
+					//       probability that a slot is non-empty.  A slot holding k jobs
+					//       produces k crossings, so a count needs a mean, not a
+					//       Bernoulli probability.  This also makes the objective
+					//       tick-rate invariant: nu ticks/time * (lambda/nu) = lambda
+					//       crossings per unit time whenever the queue stays backed up,
+					//       independent of nu (which is the whole design goal).
+					//       The slot reaching age D+1 lies strictly behind the deepest
+					//       tracked job only if that job is at least D+2 old; at exactly
+					//       D+1 the tracked job is the only one crossing.
+					//
+					// NOTE: no abandonment degeneracy — a late FIL left unserved keeps
+					// the flux term charging indefinitely, so clearing late queues is
+					// strictly incentivized.
 					const int64_t D = (int64_t)due_times[n];
-					const double c_real = cost_rates[n] * tick_rate;
-					const double alpha  = arrival_rates[n] / (arrival_rates[n] + tick_rate);
-					if (t == D + 1)
-						cost += c_real;
-					if (t > D)
-						cost += c_real * alpha;
+					const double c_real  = cost_rates[n] * tick_rate;
+					const double density = arrival_rates[n] / tick_rate;
+					for (const int64_t t : q)
+						if (t == D + 1)
+							cost += c_real;
+					if (q.back() >= D + 2)
+						cost += c_real * density;
 				}
 				else {
 					// Queue-lateness: exact excess summed over all tracked positions,
