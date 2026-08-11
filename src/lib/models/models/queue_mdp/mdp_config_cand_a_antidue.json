@@ -1,0 +1,44 @@
+/**
+ * Candidate A: chain topology with ANTI-ALIGNED deadlines.
+ *
+ * Design intent: break the accidental alignment that makes c-mu look good on
+ * the existing chains.  There, cost, service rate and deadline all increase
+ * (or decrease) with the type index, so the c*mu ordering happens to coincide
+ * with the urgency ordering.  Here the deadline ordering is REVERSED:
+ *
+ *   type 0: cheapest (50) but MOST urgent (D=3), and only pool 0 can serve it
+ *   type 2: most expensive (200) but LEAST urgent (D=9)
+ *
+ * c*mu for pool 0: type 0 -> 50*1.2 = 60, type 1 -> 75*1.1 = 82.5
+ * so c-mu always pulls pool 0 towards type 1, starving the one type that has
+ * a tight deadline and no alternative server.  FIFO is deadline-blind and
+ * misses it too.  A policy that reasons about slack should win.
+ *
+ * Chain: pool k serves {k, k+1}; the last pool is a dedicated end server.
+ */
+{
+    "id": "queue_mdp",
+    "discount_factor": 1.0,
+    "reward_type": 4,
+    "k_servers": 3,
+    "n_jobs": 3,
+    "tick_rate": 1.0,
+    "arrival_rates": [ 0.20, 0.20, 0.15 ],
+    "cost_rates":    [ 50.0, 75.0, 200.0 ],
+    "due_times":     [ 3.0,  5.0,  9.0   ],
+    "server_type_0": {
+        "servers": 1,
+        "can_serve": [ 0, 1 ],
+        "service_rates": [ 1.2, 1.1 ]
+    },
+    "server_type_1": {
+        "servers": 1,
+        "can_serve": [ 1, 2 ],
+        "service_rates": [ 1.1, 1.0 ]
+    },
+    "server_type_2": {
+        "servers": 1,
+        "can_serve": [ 2 ],
+        "service_rates": [ 1.0 ]
+    }
+}

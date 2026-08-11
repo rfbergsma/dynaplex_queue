@@ -1,0 +1,41 @@
+/**
+ * Candidate D: GENERALIST BOTTLENECK -- reward for strategic idling.
+ *
+ * Design intent: create a cell where the optimal policy must deliberately
+ * keep a server idle, which work-conserving heuristics cannot do by
+ * construction (FIFO, c-mu and EDF all assign whenever a feasible job waits).
+ *
+ *   pool 0: {0}        specialist, only type 0
+ *   pool 1: {0,1,2}    generalist, the ONLY server for types 1 and 2
+ *
+ * Type 0 carries most of the load (arrival 0.50 vs 0.15) and is cheap with a
+ * relaxed deadline (D=6).  Types 1 and 2 are rare, expensive and urgent
+ * (D=3).  Whenever the generalist accepts a type-0 job it is unavailable for
+ * the next urgent arrival, and since it is their only server, that arrival
+ * goes late.  The optimal policy holds the generalist back; every
+ * work-conserving rule burns it on overflow type-0 work.
+ *
+ * This isolates the one capability the per-event action space added over a
+ * purely greedy assignment: an explicit idle action per capacity unit.
+ */
+{
+    "id": "queue_mdp",
+    "discount_factor": 1.0,
+    "reward_type": 4,
+    "k_servers": 2,
+    "n_jobs": 3,
+    "tick_rate": 1.0,
+    "arrival_rates": [ 0.50, 0.15, 0.15 ],
+    "cost_rates":    [ 50.0, 150.0, 200.0 ],
+    "due_times":     [ 6.0,  3.0,   3.0   ],
+    "server_type_0": {
+        "servers": 1,
+        "can_serve": [ 0 ],
+        "service_rates": [ 1.0 ]
+    },
+    "server_type_1": {
+        "servers": 1,
+        "can_serve": [ 0, 1, 2 ],
+        "service_rates": [ 1.0, 1.0, 1.0 ]
+    }
+}

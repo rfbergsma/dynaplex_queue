@@ -117,8 +117,15 @@ int main(int argc, char** argv)
     }
 
     auto& dp = DynaPlexProvider::Get();
+    // cfg=<name> loads mdp_config_examples/queue_mdp/<name>.json and overrides the
+    // built-in levels.  Instance design is a modelling question that needs fast
+    // iteration, so candidate structures live in JSON, not in this file.
+    const std::string cfg_file = S("cfg", "");
     VarGroup cfg;
-    if (level == "small") {
+    if (!cfg_file.empty()) {
+        cfg = VarGroup::LoadFromFile(dp.FilePath(
+            {"mdp_config_examples", "queue_mdp"}, cfg_file + ".json"));
+    } else if (level == "small") {
         cfg = exp3_config();
     } else if (level == "large") {
         cfg = VarGroup::LoadFromFile(dp.FilePath(
@@ -155,8 +162,14 @@ int main(int argc, char** argv)
     base_results[0].Get("mean", fifo_mean);
     base_results[1].Get("mean", cmu_mean);
 
-	std::cout << "SCALE_RESULT kind=config level=" << level
-			  << " jobs=" << jobs << " pools=" << (level == "large" ? 5 : jobs)
+    // Read the true dimensions off the config: with cfg=<name> the level-derived
+    // jobs/pools counts do not apply.
+    int64_t n_jobs_cfg = jobs, k_pools_cfg = (level == "large" ? 5 : jobs);
+    if (cfg.HasKey("n_jobs"))    cfg.Get("n_jobs", n_jobs_cfg);
+    if (cfg.HasKey("k_servers")) cfg.Get("k_servers", k_pools_cfg);
+
+	std::cout << "SCALE_RESULT kind=config level=" << (cfg_file.empty() ? level : cfg_file)
+			  << " jobs=" << n_jobs_cfg << " pools=" << k_pools_cfg
               << " seed=" << seed << " preset=" << preset
               << " tick=" << tick << " load=" << load_scale
               << " reward=" << I("reward", 4)
@@ -168,11 +181,15 @@ int main(int argc, char** argv)
 
     const bool run_rvi = I("rvi", phase == "all" ? 1 : 0) != 0;
     if (run_rvi) {
-        if (level == "medium" || level == "large") {
-            std::cerr << "RVI is disabled for medium and large levels\n";
+        // Gate on the actual instance size, not the level name: RVI is only
+        // tractable up to 3 job types.
+        if (n_jobs_cfg > 3) {
+            std::cerr << "RVI is disabled for n_jobs > 3 (got " << n_jobs_cfg << ")\n";
             return 2;
         }
-        const int64_t default_m = level == "small" ? 40 : 16;
+        // M must exceed the deadline in ticks (D * tick_rate) or the truncated
+        // chain cannot represent a job reaching its deadline at all.
+        const int64_t default_m = 40;
         VarGroup rvi_cfg{{"id", std::string("RVI_optimal")},
                          {"M", I("rvi_m", default_m)}, {"silent", int64_t(0)}};
         auto rvi = mdp->GetPolicy(rvi_cfg);

@@ -1,0 +1,38 @@
+/**
+ * Candidate C: NON-INTERVAL overlap (the classic "W" network).
+ *
+ * Design intent: every structure we have tested so far is an interval
+ * structure -- each pool serves a contiguous block of types (fully flexible,
+ * nested specialist/generalist, or a chain).  This one is not:
+ *
+ *   pool 0: {0, 2}      pool 1: {1, 2}
+ *
+ * Type 2 is shared; types 0 and 1 each have exactly ONE server that can
+ * handle them.  Assigning a type-2 job greedily therefore destroys the only
+ * option for a dedicated type -- a lookahead conflict that myopic index rules
+ * (which score each assignment in isolation) cannot represent at all.
+ *
+ * Type 2 is made both more expensive and more relaxed (D=8), so c-mu prefers
+ * it exactly when the dedicated types are the ones at risk.
+ */
+{
+    "id": "queue_mdp",
+    "discount_factor": 1.0,
+    "reward_type": 4,
+    "k_servers": 2,
+    "n_jobs": 3,
+    "tick_rate": 1.0,
+    "arrival_rates": [ 0.25, 0.25, 0.20 ],
+    "cost_rates":    [ 100.0, 100.0, 150.0 ],
+    "due_times":     [ 4.0,   4.0,   8.0   ],
+    "server_type_0": {
+        "servers": 1,
+        "can_serve": [ 0, 2 ],
+        "service_rates": [ 1.2, 1.0 ]
+    },
+    "server_type_1": {
+        "servers": 1,
+        "can_serve": [ 1, 2 ],
+        "service_rates": [ 1.2, 1.0 ]
+    }
+}
