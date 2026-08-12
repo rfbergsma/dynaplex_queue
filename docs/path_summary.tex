@@ -1,0 +1,186 @@
+% ============================================================
+%  path_summary.tex
+%  Short overview of the route from the manuscript's unresolved
+%  Experiment 2 to the current state.  Deliberately compact:
+%  one page of narrative, the rest tables.
+% ============================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath,amssymb}
+\usepackage{geometry}
+\geometry{margin=2.3cm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{parskip}
+
+\title{From a failed experiment to a working method:\\the route taken}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-1.5em}
+
+\section*{1. Where the manuscript stops}
+
+Table~3 of the manuscript reports Experiment~2 with DCL at $4.4$--$9.3\times$
+the RVI optimum, and the text notes: \emph{``To be fixed in the future.''}
+That is the starting point.  The finding of the work since is that this was not
+a tuning problem: it was five distinct mismatches between the reinforcement
+learning abstraction and the semi-Markov structure of the model, four of which
+turned out to share a single root cause.
+
+\section*{2. Five failure mechanisms, each isolated by ablation}
+
+Every fix was validated by removing it from the otherwise complete recipe and
+re-running 8 seeds on Experiment~2 (binary cost).  ``Within 5\%'' is measured
+against the exact RVI optimum.
+
+\begin{center}
+\begin{tabular}{p{4.0cm}p{6.6cm}cc}
+\toprule
+\textbf{Mechanism} & \textbf{What goes wrong} & \textbf{Without} & \textbf{Failure mode} \\
+\midrule
+Semi-MDP discounting & Decisions are separated by a variable number of periods,
+including zero.  Discounting each decision as if a period passed subsidises
+idling, most strongly where the candidate list is longest. & 0/8 & never-serve \\[2pt]
+Value-target scale & Returns are $O(10^2$--$10^3)$, advantages $O(1)$; the value
+loss monopolises the shared trunk. & 0/8 & exactly bimodal:
+never-serve or FIFO clone \\[2pt]
+Data distribution & One deep-backlog excursion moves all environments into a
+region where the shaping term saturates; behaviour on deployment-relevant
+states degrades unobserved. & 1/8 & never-serve \\[2pt]
+Reward sparsity & Binary cost is flat before the deadline; the penalty arrives
+long after the decision that caused it. & 2/8 & never-serve \\[2pt]
+Extraction & The deployed policy is the \emph{argmax}; training only certifies
+the \emph{stochastic} policy. & 3/8 & argmax $\gg$ stochastic \\
+\midrule
+\textbf{Full recipe} & & \textbf{6/8} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The two attractors recur exactly across every failed cell --- never-serve at
+$9.876\times$ and the FIFO clone at $1.738\times$ the optimum --- which is what
+makes these diagnoses rather than symptoms.
+
+\section*{3. The root cause: the action decomposition}
+
+Mechanism~5 is the interesting one.  In the sequential candidate-queue
+formulation a skipped job returns at the next tick.  If a state offers $m$
+further presentations and the policy serves with probability $p$, the job is
+served in time with probability $1-(1-p)^{m+1}$ --- close to one even for $p$ well
+below $\tfrac12$.  The stochastic policy is therefore behaviourally fine where
+the logit sign is wrong, the advantage vanishes, and training never corrects
+it; but the argmax turns exactly those states into deterministic errors.  Most
+of the stabilisation apparatus (temperature annealing, snapshots, readout
+selection, seed selection) existed only to contain this.
+
+Reformulating so that each idle capacity unit makes one $(N{+}1)$-way decision
+(idle, or serve type $a$) removes it at the source.  The two formulations admit
+the same physical policies --- FIFO and never-serve reproduce bit-exactly, and
+the RVI optimum agrees on both instances --- so only the credit structure
+changes.  This is also what the supervisor's own comment on \S3.2 proposed.
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Experiment 2, binary cost & sequential space & per-event space \\
+\midrule
+with temperature annealing & 6/8 & 4/8 \\
+\textbf{without} temperature annealing & 3/8 & \textbf{8/8, exact optimum} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The apparatus is not merely unnecessary in the new space --- it is harmful there.
+On Experiment~3 the dissociation runs the other way (7/8 with annealing, 3/8
+without), so the honest statement is that a stabiliser is matched to a failure
+mode and outlives its usefulness with it.
+
+\section*{4. Three objectives}
+
+\begin{center}
+\begin{tabular}{p{3.0cm}p{5.4cm}p{3.4cm}cc}
+\toprule
+\textbf{Objective} & \textbf{Definition} & \textbf{Needs} & \textbf{Exp 2} & \textbf{Exp 3} \\
+\midrule
+Binary / FIL lateness & $c\,\mathbf{1}\{W>D\}$ per tick & shaping; small batch & 8/8 & 7/8 \\
+Queue lateness & $c\sum_j (A_j-D)^+$ per tick, with conditional tail for
+untracked jobs & average-reward; $64\times$ batch & 8/8 & 8/8 \\
+Fraction late (tardiness flux) & $c$ once, at the deadline crossing & escalation
+rule & 8/8 & 8/8 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Seeds within 5\% of RVI, per-event action space, no per-cell tuning.  The
+recipe follows from the tail of the cost function: queue lateness is the only
+objective with unbounded per-tick cost ($\Theta(B^2)$ in the excess $B$), and
+correspondingly the only one requiring the large-batch average-reward
+configuration.
+
+Two by-products worth recording.  \emph{Reward shaping} is potential-based and
+therefore cost-neutral: FIFO and RVI evaluate identically with and without it to
+four decimals, so the benchmark is preserved.  \emph{The escalation rule} ---
+overdue work is served with forced priority --- is what makes the fraction-late
+objective well posed: without it, letting a job rot suppresses its own arrival
+stream in the FIL projection, which RVI slowly discovers, so learned policies
+``beat'' the benchmark.  Escalation is implemented purely by restricting the
+admissible action set to a singleton, so no algorithm was modified.
+
+\section*{5. What the benchmark itself required}
+
+RVI is the yardstick for all of the above, and it needed correcting twice.  The
+truncation growth criterion ($1\%$ relative change in $g^*$) is adequate for the
+binary cost, which saturates in the waiting level, but stops too early for
+tail-heavy objectives: tightening it to $10^{-3}$ moved the queue-lateness
+reference on Experiment~2 from $2492$ to $2350$.  Both corrections were
+triggered by the same diagnostic --- a learned policy evaluating \emph{below} the
+computed optimum, which can only mean a loose benchmark.
+
+\section*{6. Current state and open questions}
+
+Scaling is the active question, and the most recent finding is that it is a
+modelling problem before it is an algorithmic one.  On a six-type chain the
+learned policy beat the best heuristic by only $2.9\%$; the reason is not
+under-training (a $2.5\times$ budget gives the same answer) but that on that
+instance the myopic $c\mu$ rule is nearly optimal, because cost, service rate
+and deadline all increase together, so the $c\mu$ ordering coincides with the
+urgency ordering.
+
+A screening of four candidate structures at three job types, where RVI is still
+computable, shows what actually creates headroom:
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Structure (3 types, load 2.0) & FIFO/RVI & c-$\mu$/RVI & $\min$ \\
+\midrule
+\textbf{cost and deadline anti-aligned} & \textbf{1.49} & \textbf{1.77} & \textbf{1.49} \\
+equal costs, deadlines heterogeneous & 1.10 & 1.16 & 1.10 \\
+non-interval skill overlap & 1.10 & 1.36 & 1.10 \\
+generalist bottleneck (rewards idling) & 1.21 & 1.01 & 1.01 \\
+\midrule
+existing chain (all quantities aligned) & 1.19 & 1.19 & 1.19 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Headroom comes from \emph{anti-alignment between cost and deadline}, not from
+instance size, topological complexity, or idling opportunity.  That structure
+has been scaled to four and six types and is the current experimental line.
+
+\paragraph{Open.}
+(i) A deadline-aware baseline (EDF / least slack, and a generalised $c\mu$
+index) is still missing --- FIFO and $c\mu$ are both deadline-blind, which makes
+them a weak comparison for a deadline objective.
+(ii) Beyond three job types there is no exact reference; a fluid or LP lower
+bound would be needed to say how much is left on the table.
+(iii) The network is a fixed-width MLP, which assigns a separate semantic role
+to each input position and so does not transfer across instance sizes;
+parameter sharing over job types and server pools is the natural next step.
+
+\end{document}

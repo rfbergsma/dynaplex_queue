@@ -1,0 +1,575 @@
+% ============================================================
+%  comment_response.tex
+%  Point-by-point response to the supervisor's comments on
+%  "Multi-server queueing with reinforcement learning"
+%  (version read up to Section 7.1).
+%
+%  Written in English so it can be reused directly for the paper
+%  revision; the original comments are quoted verbatim in Dutch.
+% ============================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{parskip}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\comment}[1]{\textcolor{red!70!black}{\textit{``#1''}}}
+
+\title{Response to comments on\\\emph{Multi-server queueing with reinforcement learning}}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+Point-by-point response to the comments on the manuscript version read up to
+Section~7.1.  The comments are quoted verbatim; responses give full
+derivations where a mathematical claim is at stake.  Three groups are
+distinguished: (A) genuine errors, with corrections; (B) modelling questions
+that have since been answered by experiments --- in one case the comment
+anticipates exactly the reformulation that was subsequently implemented; and
+(C) clarifications where the manuscript is correct but underexplained.
+Terminology and notation points are collected in (D).
+\end{abstract}
+
+% ============================================================
+\section*{A. Errors, with corrections}
+% ============================================================
+
+\subsection*{A.1 The arrival term in the exit rate is inverted}
+
+\comment{klopt de 1e term wel? bij aankomst krijg je alleen een verandering in
+toestand als W $-1$ is, dan gaat of W van 0 of een server gaat aan het werk}
+\hfill (\S2.3)
+
+\textbf{The comment is correct; the indicator is inverted.}  The manuscript
+states
+\[
+  \Lambda(x) \;=\; \sum_{n=1}^{N}\lambda_n \mathbf{1}\{W_n^1(x) > 0\}
+  \;+\; \sum_{k=1}^{K}\sum_{m\in G_k} y_{m,k}(x)\,\mu(m,k) \;+\; \gamma .
+\]
+
+In the FIL representation only one waiting job per type is tracked.  A type-$n$
+arrival therefore changes the state \emph{only} when queue $n$ is empty; if a
+job is already tracked ($W_n^1 \ge 0$), a further arrival is not represented in
+the state at all --- it is absorbed into the conditional model of the untracked
+queue and revealed later by the FIL-refresh distribution~(3).  Consequently the
+arrival stream of type $n$ contributes to the exit rate exactly when
+$W_n^1 = -1$:
+\[
+  \boxed{\;\Lambda(x) \;=\; \sum_{n=1}^{N}\lambda_n \mathbf{1}\{W_n^1(x) = -1\}
+  \;+\; \sum_{k=1}^{K}\sum_{m\in G_k} y_{m,k}(x)\,\mu(m,k) \;+\; \gamma\;}
+\]
+The accompanying sentence in \S3.2 (``if level $W_n^1 > 0$ \ldots arrivals do no
+longer take place'') should likewise read $W_n^1 \ge 0$.  The implementation
+uses the correct condition, so no numerical result is affected: this is an
+error in the write-up only.
+
+\subsection*{A.2 The M/M/1 validation cannot distinguish the two objectives}
+
+\comment{is g niet lambda * rho? komt op hetzelfde neer omdat mu=1}
+\hfill (\S6.4, Table 2)
+
+\comment{je moet toch vanaf 1 sommeren? dan krijg je g = rho. en g = lambda *
+P(vertraging)} \hfill (\S6.3)
+
+These two comments are one observation, and it identifies a real weakness in
+the validation experiment.  Both derivations below are correct; they describe
+\emph{different objectives} that happen to coincide numerically at $\mu = 1$.
+
+\paragraph{Lateness (what the manuscript computes).}
+Cost accrues continuously while a job is overdue.  With $D = 0$, cost $c_1/\gamma$
+is charged at each tick for which the FIL is overdue, and ticks occur at rate
+$\gamma$, so the cost per unit real time is $c_1\,\Prob(W^1 > 0)$.
+
+Two points deserve stating explicitly, because both were queried.  First, a job
+\emph{in service} has left the queue and is no longer the FIL; ``a job is
+waiting'' therefore requires $n \ge 2$ in M/M/1 (one in service, at least one
+queued), which is why the sum starts at $n = 2$ and not at $n = 1$.  Second,
+the tick \emph{first} advances all waiting-time levels and cost is charged
+\emph{afterwards}; a job present at the tick with level $0$ becomes level $1$
+and is charged.  Hence every queued job at a tick instant is charged, giving
+\[
+  \Prob(W^1 > 0) \;=\; \Prob(n \ge 2) \;=\; \sum_{n\ge2}(1-\rho)\rho^n
+  \;=\; \rho^2,
+  \qquad
+  g^{\text{lateness}} \;=\; c_1\rho^2 .
+\]
+
+\paragraph{Tardiness (what the comment describes).}
+Each job is charged once, at the moment it is found to be late.  With $D = 0$ a
+job is late iff it does not enter service immediately, i.e.\ iff the server is
+busy on arrival.  By PASTA the arriving customer sees the time-stationary
+distribution, so
+\[
+  \Prob(\text{delay}) \;=\; \Prob(n \ge 1) \;=\; \sum_{n\ge1}(1-\rho)\rho^n \;=\;\rho ,
+  \qquad
+  g^{\text{tardiness}} \;=\; c\,\lambda\,\rho .
+\]
+The factor $\lambda$ is a unit conversion: $\Prob(\text{delay})$ is a fraction
+\emph{of jobs}, and $g$ must be a cost \emph{per unit time}; multiplying by the
+arrival rate converts one into the other.  This is also the bridge to the
+service-level metric: with $A(T)$ arrivals and $L(T)$ of them late,
+\[
+  J \;=\; \lim_{T\to\infty}\frac{\E[L(T)]}{\E[A(T)]}
+  \;=\; \frac{\lambda\rho\,T}{\lambda T} \;=\; \rho ,
+\]
+so the \emph{fraction} late is $\rho$ while the \emph{rate} of late jobs is
+$\lambda\rho$; the two differ by the constant $\lambda$, and since $\lambda$ is
+exogenous, minimising the rate is equivalent to minimising the fraction.
+
+\paragraph{The degeneracy.}
+The ratio of the two expressions is
+\[
+  \frac{g^{\text{tardiness}}}{g^{\text{lateness}}}
+  \;=\; \frac{\lambda\rho}{\rho^2} \;=\; \frac{\lambda}{\rho} \;=\; \mu .
+\]
+\textbf{At $\mu = 1$ the two objectives predict exactly the same number.}
+Table~2 uses $\mu = 1$ throughout, so agreement with $\rho^2$ confirms that the
+cost normalisation is internally consistent but does \emph{not} confirm which
+of the two cost functions is implemented --- precisely the distinction raised in
+the introduction (see B.3).  Had tardiness been implemented by mistake,
+Table~2 would look identical.
+
+\paragraph{Correction.}
+Repeat Experiment~1 with $\mu \neq 1$; e.g.\ $\mu = 2$, $\rho = 0.4$ gives
+$\lambda = 0.8$ and the two predictions separate by a factor two:
+$g^{\text{lateness}} = 0.16$ versus $g^{\text{tardiness}} = 0.32$.  This makes
+the validation discriminating.  For $D > 0$ the tardiness benchmark also has a
+closed form in M/M/1--FIFO, $\Prob(\text{wait} > D) = \rho e^{-\mu(1-\rho)D}$,
+which reduces to $\rho$ at $D=0$ and provides a second, sharper test.
+
+% ============================================================
+\section*{B. Modelling questions answered by subsequent work}
+% ============================================================
+
+\subsection*{B.1 One event, several service starts --- the action space}
+
+\comment{kan een event tot meer dan 1 service start leiden? indien max 1 dan
+kies je de beste uit de toegelaten toewijzingen} \hfill (\S3.2)
+
+\comment{als idleness mogelijk is zou een tick een trigger voor een service
+start kunnen zijn} \hfill (\S3.2)
+
+Yes, one event can trigger several service starts (a completion may free a
+server while several types wait; a tick may make several assignments feasible
+at once).  The manuscript resolves this by presenting candidates
+\emph{sequentially} with binary accept/skip decisions.
+
+\textbf{The alternative proposed in the comment --- ``choose the best among the
+admissible assignments'' --- was subsequently implemented, and it resolves the
+central failure of the manuscript's Experiment~2.}  In this
+\emph{per-event} formulation each idle capacity unit makes a single
+$(N{+}1)$-way decision: idle, or serve type $a \in \{1,\dots,N\}$, with
+infeasible types masked.  Formally the two formulations admit the same physical
+policies --- verified by three equivalence gates: the FIFO policy and the
+never-serve policy reproduce bit-exactly, and the RVI optimum agrees on both
+benchmark instances --- so what changes is only the \emph{credit structure}.
+
+Why this matters is a property of the sequential decomposition that we have
+called \emph{re-presentation forgiveness}.  A skipped job returns at the next
+tick, so if a state is visited with slack for $m$ further presentations and the
+policy assigns probability $p$ to serving, the job is served in time with
+probability $1 - (1-p)^{m+1}$, which is close to $1$ even for $p$ well below
+$\tfrac12$.  The stochastic policy is therefore behaviourally near-optimal even
+where the sign of the logit is wrong; the advantage vanishes and training never
+corrects it --- but the deployed policy is the \emph{argmax}, which turns such a
+state into a deterministic error at every re-presentation.  In the per-event
+space the same trade-off is a single logit comparison carrying the full
+event-level advantage, and the pathology disappears.
+
+Empirically, on Experiment~2 with the binary cost: the sequential space needs a
+substantial stabilisation apparatus and reaches 6/8 seeds within 5\% of RVI; the
+per-event space reaches \textbf{8/8 at the exact optimum with \emph{less}
+machinery} (no temperature annealing).  The per-decision action set is also
+$O(N)$ irrespective of the number of servers, which is the relevant property for
+scaling.
+
+Regarding the second comment: ticks do re-present the action queue in the
+implementation, so a tick can indeed trigger a service start.  This is
+deliberate, but it has a consequence worth stating in the manuscript: a higher
+tick rate gives \emph{more} opportunities to reverse an idling decision, so
+$\gamma$ is not entirely neutral with respect to the policy space.
+
+\subsection*{B.2 Would queue lateness be better for reward shaping?}
+
+\comment{is het vanuit het oogpunt van reward shaping niet beter queue lateness
+te nemen?} \hfill (\S3)
+
+This was tested directly.  The answer is nuanced: queue lateness does not solve
+the shaping problem, and it introduces a harder one.
+
+\paragraph{It does not fix sparsity.}
+Queue lateness is denser than FIL lateness \emph{after} the deadline, but it is
+equally flat \emph{before} it: both charge zero while $W_n^1 \le D$.  Since the
+learning difficulty is the absence of gradient in the pre-deadline region, the
+extension does not address it.
+
+\paragraph{It introduces heavy tails.}
+Let $B = \max(0, W - D)$.  As derived in C.4, the per-tick queue-lateness cost
+is $\Theta(B^2)$.  Rare deep-backlog excursions therefore dominate the return
+distribution: measured per-rollout reward rates vary from $-380$ to $-7500$
+within otherwise healthy runs.  Under this variance the tuned recipe converges
+to a \emph{bit-exact FIFO clone on 8 out of 8 seeds}.  Recovering optimal
+behaviour required a different algorithmic configuration --- an average-reward
+(differential) objective with a $64\times$ larger batch --- after which 8/8 seeds
+reach the RVI optimum.
+
+\paragraph{What does fix sparsity.}
+A potential-based shaping term.  With $\Phi$ the accumulated urgency of the
+waiting FIL, accruing $c_n/D$ per pre-deadline tick and refunded in full on
+service, the shaped cost is $r' = r + \Phi(s) - \Phi(s')$.  This is
+cost-neutral --- the potential telescopes, so every stationary policy retains its
+long-run average, verified numerically for FIFO and RVI to four decimals --- while
+supplying dense pre-deadline gradient.  It raises the success rate on the binary
+cost from 2/8 to 6/8 seeds.
+
+\paragraph{A dimensional caveat.}
+The manuscript's normalisation by $\gamma$ (\S3.1) makes the FIL lateness cost
+tick-rate invariant.  This does \emph{not} extend to queue lateness in its
+excess-weighted form: measured FIFO cost is $1781 / 3035 / 5266$ at
+$\gamma = 1.5 / 3 / 6$, i.e.\ approximately linear in $\gamma$, against
+$74 / 71 / 70$ for the binary cost.  The reason is derived in C.4.
+
+\subsection*{B.3 Lateness or tardiness?}
+
+\comment{is dit niet tardiness?} \hfill (\S1)
+
+\comment{dus je wijkt af van wat je in de intro zegt} \hfill (\S3.1)
+
+The comments are justified: the introduction motivates the work by the fraction
+of customers served late (tardiness), while the model optimises FIL lateness.
+\S3 acknowledges the reason --- under tardiness, ``given fully flexible policy,
+there is an incentive to never serve certain jobs once their FIL exceeds the due
+date'' --- and defers the objective.
+
+\textbf{That obstacle has since been removed.}  Two components were needed.
+
+\paragraph{(i) An exact flux formulation.}
+Charging at departure gives arbitrarily delayed credit.  Instead charge $c_n$ at
+the instant a job crosses its deadline: the same total on every sample path, but
+at the decision-relevant moment.  In the FIL projection this gives the
+per-tick cost derived in C.5.
+
+\paragraph{(ii) A rule that removes the degeneracy.}
+The incentive identified in \S3 is real, and in the FIL projection it is worse
+than stated: letting a FIL rot suppresses that type's arrival stream (arrivals
+are only tracked when the queue is empty), so rotting is not merely free but
+actively profitable.  This is an artefact of the projection, and RVI discovers
+it: the computed optimum drifts below the achievable cost as the truncation
+level grows, and learned policies ``beat'' the benchmark.
+
+The remedy adopted is a modelling rule rather than a reward adjustment:
+\emph{SLA escalation}.  When a capacity unit can serve a job already past its
+deadline, the assignment is forced (oldest-late first, non-preemptive).  This is
+interpretable as a service rule --- overdue work escalates to priority --- and is
+implemented purely by restricting the admissible action set to a singleton, so
+that PPO, DCL and RVI all solve the restricted MDP without any algorithmic
+change.  Its effects are: the degeneracy disappears by construction; late states
+become transient, so RVI truncation converges immediately (the computed optimum
+is bit-identical at truncation levels $M = 30, 60, 90$, against a slow drift
+without it); and the learned policy decides only \emph{pre-deadline}.
+
+Under this objective the two-server benchmarks turn out to be trivially solvable
+(FIFO and c-$\mu$ are both within $0.01\%$ of the optimum), and headroom appears
+only on multi-hop routing structures.  This is a structural finding rather than
+an algorithmic one, and it is the reason the current work has moved to designing
+larger instances.
+
+\subsection*{B.4 The FIL state is not sufficient --- what else can be done?}
+
+\comment{eerst zeggen: \# bezette servers is niet voldoende info --- en ook:
+huidige keuze niet optimaal. verder nog iets mee doen?} \hfill (\S2.2)
+
+Agreed on both counts, and the manuscript should say so explicitly.  The
+implementation already supports a generalisation: the number of tracked queue
+positions per type is a parameter $d$ (\texttt{max\_queue\_depth}), with the
+untracked remainder handled by the conditional-expectation tail derived in C.4;
+at $d = 1$ it reduces exactly to the FIL model.  The observation supplied to the
+network is a separate parameter, so simulator fidelity and policy input can be
+varied independently.  This gives a natural sensitivity analysis --- how much does
+the FIL projection cost? --- which has not yet been run and would strengthen the
+paper.
+
+One point should be stated precisely, since it recurs below: the projected
+\emph{cost} is exact (see C.4), whereas the projected \emph{dynamics} are an
+approximation, because the untracked queue influences future transitions.  RVI,
+the simulator and the critic all use the same projection, so comparisons are
+internally consistent; but the optimum being computed is that of the projected
+model.
+
+% ============================================================
+\section*{C. Clarifications}
+% ============================================================
+
+\subsection*{C.1 Why truncation impedes the span criterion}
+
+\comment{dit snap ik niet: waarom zou deze afknotting de convergentie
+verhinderen?} \hfill (\S4)
+
+The manuscript's phrasing is too strong and should be weakened.  Two distinct
+convergence questions are involved.
+
+\paragraph{(i) Iteration at fixed $M$.}
+For a unichain aperiodic model the span seminorm
+$\mathrm{sp}(h_{t+1} - h_t)$ does converge to zero; truncation does not
+\emph{prevent} this.  What it does is slow it down: clamping at $W = M$ creates
+boundary states with a self-loop (a job at level $M$ remains at $M$ with high
+probability), and this slowly mixing region keeps a small residual spread alive
+for many iterations after $g_t$ has stabilised.  Since $g_t$ is an average it
+converges much faster.  The accurate statement is therefore that the span is
+\emph{too slow to be a practical stopping criterion within the iteration
+budget}, not that it never converges --- and the two-stage criterion is a
+pragmatic response to that.
+
+\paragraph{(ii) Convergence in $M$.}
+This is the more consequential issue and is not discussed in the manuscript.
+The truncation level is increased until the relative change in $g^*$ between
+successive levels falls below $1\%$.  For the binary cost this is adequate, since
+the cost saturates in $W$.  For tail-heavy objectives it is not: the cost keeps
+growing with queue depth, so $g^*$ still drifts at the stopping point.
+Tightening the tolerance to $10^{-3}$ moved the queue-lateness reference on
+Experiment~2 from $2492$ to $2350$, a $5.7\%$ correction.  This was discovered
+because \emph{learned policies evaluated below the computed optimum} --- a useful
+diagnostic worth reporting: any policy beating the benchmark indicates a loose
+benchmark, not a good policy.
+
+\subsection*{C.2 DCL versus standard deep RL}
+
+\comment{wat is het verschil tussen DCL en ``standaard'' deep RL? en waarom dan
+DCL?} \hfill (\S5.1)
+
+\comment{als ik het goed begrijp heb je alleen een NN om de policy te
+beschrijven, niet voor de waardefunctie} \hfill (Alg.~1)
+
+\comment{gebruik je verdiscontering?} \hfill (Alg.~1)
+
+\comment{zijn er convergentiegaranties met DCL?} \hfill (\S5.2)
+
+The second comment is correct: DCL trains a network for the policy only.  The
+distinctions are as follows.
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+ & \textbf{DCL} & \textbf{PPO (policy gradient)} \\
+\midrule
+Networks & policy only & policy (actor) + value (critic) \\
+Learning signal & best action per state, by rollouts & advantage estimates \\
+Loss & cross-entropy (classification) & clipped surrogate + value loss \\
+Discounting & none; undiscounted horizon $H$ & $\gamma^{\Delta}$, or average-reward \\
+Variance control & CRN + sequential halving & GAE, batching, normalisation \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+DCL replaces value regression by \emph{best-action identification}: it does not
+estimate how good actions are, only which is best, which is a statistically
+easier question and is why CRN and sequential halving are effective.  The price
+is that policy improvement is only as good as the labels, and that no value
+function is available for bootstrapping.
+
+\paragraph{Convergence guarantees.}
+None in this setting.  DCL is approximate policy iteration with classification
+error, and the standard guarantees require the classification error to be
+controlled uniformly, which is not verifiable here.  Empirically the failure
+mode is a \emph{fixed point}: started from a deterministic FIFO base, DCL
+frequently returns an exact FIFO clone, because on FIFO's own state
+distribution the deviations do not appear advantageous, and generation~2 starts
+from the same policy.  Widening the base distribution (a stochastic base
+policy) is a partial remedy.
+
+The same caveat applies to PPO: with neural function approximation there is no
+convergence proof.  What replaces guarantees in this work is (i) an exact
+benchmark on instances small enough for RVI, and (ii) reporting every claim as
+a seed distribution --- ``$k$ of 8 seeds within $x\%$ of RVI'' --- rather than a
+single run.
+
+\subsection*{C.3 What the value function is, in the PPO setting}
+
+Since the manuscript version predates the PPO work, this is background rather
+than a response, but it is the natural follow-up to the previous comment.
+
+PPO maintains a critic $V_\phi$ alongside the policy.  Under the discounted
+objective it approximates $V^\pi_\gamma$.  Under the average-reward
+(differential) objective --- which is what the queue-lateness configuration
+uses --- it approximates the \emph{differential value function} $h^\pi$ solving
+the Poisson equation
+\[
+  h^\pi(x) \;=\; r(x) - g^\pi \;+\; \sum_{x'} P^\pi(x'\mid x)\, h^\pi(x') ,
+\]
+with $g^\pi$ estimated online.  \textbf{This is the same object that RVI
+computes}: RVI solves it exactly by sweeps on a truncated state space, the
+critic approximates it by regression on simulated returns over the full space.
+That correspondence is what makes RVI a meaningful benchmark rather than merely
+a convenient one.
+
+Three implementation points are load-bearing and each was validated by ablation
+(8 seeds; the full recipe attains 6/8):
+\begin{itemize}
+  \item \textbf{Semi-MDP discounting.}  Consecutive decisions are separated by
+  a variable number $\Delta_t$ of uniformised periods, including
+  $\Delta_t = 0$ for two decisions within one tick.  The discount must be
+  $\gamma^{\Delta_t}$ with $\gamma^0 = 1$.  Using $\gamma^{\max(1,\Delta_t)}$
+  instead subsidises idling --- most strongly in busy states, where the
+  candidate list is longest --- and yields \textbf{0/8} successful seeds, with
+  failures at the never-serve policy.
+  \item \textbf{Value-target normalisation.}  Returns are $O(10^2$--$10^3)$
+  while the policy gradient operates on standardised advantages of order one.
+  Without normalising the value targets the value loss dominates the shared
+  trunk: \textbf{0/8}, and perfectly bimodal --- every seed converges either to
+  the exact never-serve policy or to an exact FIFO clone.  Normalisation does
+  not change the fixed point, only the conditioning of the optimisation.
+  \item \textbf{Staggered environment resets.}  With persistent environments a
+  deep-backlog excursion moves all data into a region where the shaping term
+  has saturated; the policy's behaviour on the states it will actually be
+  deployed in then degrades unobserved.  Resetting one environment per update
+  gives \textbf{1/8} $\to$ 6/8.
+\end{itemize}
+
+\subsection*{C.4 The queue-lateness cost, derived}
+
+This addresses \comment{hoe bereken je de kosten exact?} for the full-queue
+variant, and supplies the derivation underlying B.2.
+
+Condition on the FIL of type $n$ having level $W = w$.  Under FIFO within a
+type, no job that arrived after the FIL can have been served, so the jobs behind
+the FIL are exactly the type-$n$ arrivals of the last $w$ ticks; index the
+tick-slots $i = 0,\dots,w-1$ by the age of a job arriving in them.
+
+In the uniformised chain, arrivals and ticks compete, so the number $K$ of
+arrivals in one slot is geometric,
+\[
+  \Prob(K = k) \;=\; \alpha^k\beta,
+  \qquad \alpha = \frac{\lambda}{\lambda+\gamma},
+  \quad \beta = \frac{\gamma}{\lambda+\gamma},
+  \qquad \E[K] \;=\; \frac{\alpha}{\beta} \;=\; \frac{\lambda}{\gamma},
+\]
+consistent with continuous time ($\lambda/\gamma$ expected arrivals per slot of
+length $1/\gamma$).  Note this is exactly the model encoded by the FIL-refresh
+law~(3): $\Prob(K = 0) = \beta$ is the probability that a slot is empty.
+
+\paragraph{Two distinct quantities.}
+$\alpha$ is the probability that a slot is \emph{non-empty}; $\lambda/\gamma$ is
+the \emph{expected number} of jobs in it.  Which one is required depends on
+whether the cost counts jobs or detects presence --- a distinction that has
+practical consequences (C.5).
+
+With $B = \max(0, W-D)$, summing the excess over the untracked jobs:
+\[
+  \E\Big[\sum_{j\text{ behind}} \max(0, A_j - D)\Big]
+  \;=\; \sum_{i=0}^{w-1}\E[K]\max(0,i-D)
+  \;=\; \frac{\lambda}{\gamma}\sum_{j=1}^{B-1} j
+  \;=\; \frac{\lambda}{\gamma}\cdot\frac{(B-1)B}{2}.
+\]
+The same result follows from the conditional-uniformity property invoked in the
+manuscript: given $q$ arrivals in the window their ages are distributed as the
+order statistics of $q$ uniforms, so the expectation factorises as
+$\E[q]\cdot\E[\max(0,U-D)] = \frac{\lambda}{\gamma}w \cdot \frac{1}{w}\frac{(B-1)B}{2}$.
+Substituting the expectation is exact because the cost is \emph{linear} in the
+individual excesses; there is no Jensen gap.  Hence
+\[
+  \boxed{\;r_{\text{QL}} \;=\; \frac{c}{\gamma}\left[B \;+\;
+  \frac{\lambda}{\gamma}\cdot\frac{(B-1)B}{2}\right]\;}
+\]
+which generalises to tracking depth $d>1$ by charging the tracked positions
+exactly and anchoring the tail at the deepest tracked position.
+
+\paragraph{A discrepancy with Table~1.}
+The manuscript defines FIL lateness with an \emph{indicator},
+$\frac{c}{\gamma}\mathbf{1}\{W > D\}$, so its natural full-queue extension is a
+\emph{count} of overdue jobs, with tail $\frac{\lambda}{\gamma}(B-1)^+$.  The
+implementation instead weights by the \emph{excess}, as above.  These are
+different objectives: a job overdue for $T$ ticks accumulates $\Theta(T)$ under
+the count version but $\sum_{k\le T}k = \Theta(T^2)$ under the excess version.
+Both are defensible, but they must be named correctly --- and the choice explains
+two observations at once:
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+variant & cost per unit time & tick-rate invariant? \\
+\midrule
+count  & $c \cdot \#\{\text{overdue}\}$ & yes \\
+excess & $c\,\gamma \sum_j \tau_j$ & no, scales with $\gamma$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+Here $\tau_j$ is overdue time in physical units, and excess in ticks is
+$\tau\gamma$.  The excess variant is therefore both the source of the heavy
+tails (B.2) and of the tick-rate dependence, and an additional factor $1/\gamma$
+restores invariance.
+
+\subsection*{C.5 The tardiness flux cost, derived}
+
+For completeness, the objective discussed in B.3.  Crossings occur when a job's
+age passes from $D$ to $D+1$:
+\begin{itemize}
+  \item the FIL crosses exactly when $W = D+1$ after the tick;
+  \item jobs behind it occupy ages $0,\dots,W-1$, so the slot reaching $D+1$
+  lies strictly behind the FIL only when $W \ge D+2$; the expected number of
+  jobs in that slot is $\E[K] = \lambda/\gamma$.
+\end{itemize}
+\[
+  \boxed{\;r_{\text{QT}} \;=\; c\left[\mathbf{1}\{W = D+1\}
+  \;+\; \frac{\lambda}{\gamma}\,\mathbf{1}\{W \ge D+2\}\right]\;}
+\]
+Here the coefficient must be the expected \emph{number} $\lambda/\gamma$ and not
+the occupancy probability $\alpha$, since a slot containing $k$ jobs produces
+$k$ crossings.  The distinction is verifiable: if the queue stays backed up,
+every arriving job eventually crosses, so crossings per unit time must equal
+$\lambda$; and indeed $\gamma \cdot (\lambda/\gamma) = \lambda$ for every
+$\gamma$, whereas $\gamma\alpha = \lambda\beta$ depends on $\gamma$.  This makes
+the objective tick-rate invariant up to $O(1/\gamma)$ discretisation terms --- the
+crossing is registered at age $D + 1/\gamma$ rather than $D$, and the guard
+$W\ge D+2$ is $2/\gamma$ beyond the deadline; both vanish as $\gamma$ grows.
+
+% ============================================================
+\section*{D. Terminology and notation}
+% ============================================================
+
+\begin{center}
+\begin{tabular}{p{7.4cm}p{7.4cm}}
+\toprule
+\textbf{Comment} & \textbf{Response} \\
+\midrule
+\comment{deadline $d_n$? een vaste ``acceptable waiting time'' afh van het
+jobtype?} / \comment{het is niet echt een deadline, dat is de tijd waarop de
+job in bediening moet/klaar moet zijn}
+& Agreed.  $D_n$ is a type-dependent \emph{acceptable waiting time until
+service start}.  The manuscript should state ``service start'' explicitly, as
+the distinction from service completion is currently only implicit. \\[4pt]
+\comment{$N$ heb je al eerder gebruikt (\# job types)}
+& Trajectories per generation renamed to $T$. \\[4pt]
+\comment{$M$ heb je al 2 keer eerder gebruikt (voor \# server en voor
+afknottingsniveau)}
+& Truncation level renamed $\bar{W}$, simulation budget $B$; $M_k$ retained for
+the number of servers in group $k$. \\[4pt]
+\comment{ik geef de voorkeur aan wiskundige notatie: $=$ ipv $\leftarrow$,
+$\mathbb{P}$ (of blackboard P) ipv Pr}
+& Adopted throughout. \\[4pt]
+\comment{shaded $\to$ bold} (Table 1)
+& Adopted. \\[4pt]
+\comment{referentie} (Adam)
+& Kingma \& Ba (2015) added. \\[4pt]
+\comment{offers little room for suboptimal data}
+& Rephrased: in the single-server M/M/1 case the FIFO base policy already
+visits essentially the whole relevant state space, so the sampled data contain
+few informative deviations. \\[4pt]
+Repeated ``Hence'' (\S6.1)
+& Rewritten. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}
