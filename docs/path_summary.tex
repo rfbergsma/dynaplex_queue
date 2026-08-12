@@ -170,8 +170,38 @@ existing chain (all quantities aligned) & 1.19 & 1.19 & 1.19 \\
 \end{center}
 
 Headroom comes from \emph{anti-alignment between cost and deadline}, not from
-instance size, topological complexity, or idling opportunity.  That structure
-has been scaled to four and six types and is the current experimental line.
+instance size, topological complexity, or idling opportunity.
+
+Scaling that structure to four and six job types, with the recipe unchanged and
+8 seeds per instance, gives the following.
+
+\begin{center}
+\begin{tabular}{lcccccc}
+\toprule
+Instance & types & FIFO & c-$\mu$ & PPO (8 seeds) & vs FIFO & vs c-$\mu$ \\
+\midrule
+anti-aligned, 3 & 3 & $1.372$ & $1.626$ & $0.929$--$0.965$ & $-30\%$ & $-43\%$ \\
+anti-aligned, 4 & 4 & $1.518$ & $1.837$ & $1.124$--$1.201$ & $-21$ to $-26\%$ & $-35$ to $-39\%$ \\
+anti-aligned, 6 & 6 & $1.745$ & $2.124$ & $1.422$--$1.634$ & $-6$ to $-18\%$  & $-23$ to $-31\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+On the three-type instance, where the exact optimum is computable
+($\mathrm{RVI} = 0.920$), all 8 seeds land within $1.0$--$4.9\%$ of it, with no
+catastrophic seed.  The decisive comparison is at equal size: on the original
+six-type chain the learned policy improved on the best heuristic by $2.9\%$,
+whereas on the redesigned six-type instance it improves by $23$--$31\%$.  The
+algorithm and the recipe are identical; only the alignment of cost, service
+rate and deadline differs.  The earlier ceiling was a property of the
+benchmark, not of the method.
+
+Two honest qualifications.  The margin still narrows with instance size
+($-43\%$, $-38\%$, $-31\%$ against c-$\mu$), and the seed spread widens (from
+$0.9\%$ at three types to $15\%$ at six).  Moreover the two worst seeds across
+the family are exactly the two for which the argmax evaluates worse than the
+stochastic policy --- the extraction signature that the per-event reformulation
+largely removes, but which leaves a trace at larger sizes.
 
 \paragraph{Open.}
 (i) A deadline-aware baseline (EDF / least slack, and a generalised $c\mu$
