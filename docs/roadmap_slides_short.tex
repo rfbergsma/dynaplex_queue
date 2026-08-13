@@ -1,0 +1,313 @@
+% ============================================================
+%  roadmap_slides_short.tex
+%  Lean version: one slide per phase, numbers only.
+% ============================================================
+\documentclass[12pt,aspectratio=169]{beamer}
+
+\usetheme{Boadilla}
+\usecolortheme{seahorse}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+\setbeamercolor{block title}{bg=structure!20}
+
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+
+\newcommand{\good}[1]{\textbf{#1}}
+\newcommand{\Prob}{\mathbb{P}}
+
+\title[Queueing with RL]{Multi-server queueing with reinforcement learning}
+\subtitle{The route since the manuscript}
+\author{}
+\date{}
+
+\begin{document}
+
+\begin{frame}
+\titlepage
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Phase 0 --- where the manuscript stops}
+
+\begin{center}
+\large
+\begin{tabular}{lcc}
+\toprule
+Experiment 2 & $\bar g \cdot \Lambda$ & / RVI \\
+\midrule
+RVI (optimal)      & 40.79  & 1.00 \\
+FIFO               & 70.38  & 1.73 \\
+\midrule
+DCL from FIFO      & 180.3  & \good{4.42} \\
+DCL from StochFIFO & 325.7  & \good{7.99} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\begin{block}{}
+\centering \emph{``To be fixed in the future.''}
+\end{block}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Phase 1 --- DCL exhausted}
+
+\begin{itemize}
+  \item Classifier on best actions.  No value function, no discounting.
+  \vfill
+  \item \good{Fixed point:} FIFO base $\to$ FIFO's own state distribution $\to$
+        deviations never look good $\to$ FIFO clone
+  \vfill
+  \item Stochastic base, $\varepsilon$-greedy wrapper: not enough
+  \vfill
+  \item No convergence guarantees
+\end{itemize}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Phase 2 --- PPO: five mechanisms}
+
+\begin{center}
+\large
+\begin{tabular}{lcc}
+\toprule
+\textbf{Remove} & \textbf{seeds within 5\%} & \textbf{collapses to} \\
+\midrule
+semi-MDP discounting $\gamma^{\Delta}$ & \good{0/8} & never-serve \\
+value-target normalisation             & \good{0/8} & bimodal \\
+staggered resets                       & \good{1/8} & never-serve \\
+reward shaping                         & \good{2/8} & never-serve \\
+temperature annealing                  & \good{3/8} & argmax $\gg$ stoch \\
+\midrule
+\textbf{full recipe}                   & \good{6/8} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\centering
+\small
+Two attractors, exact every time: never-serve $9.876\times$, FIFO clone $1.738\times$
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Phase 3 --- queue lateness: the failure inverts}
+
+\begin{center}
+\large
+\begin{tabular}{ll}
+\toprule
+extraction gap & \good{gone} \\
+returns & \good{heavy-tailed}, $\Theta(B^2)$ per tick \\
+\midrule
+tuned recipe & \good{8/8 exact FIFO clones} \\
+$+$ average-reward, $64\times$ batch & 7/8 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\begin{itemize}
+  \item Guard never engages: \good{4/8 seeds end at $T = 1.0000$}
+  \item Ratchet poisoned by one lucky stretch $\to$ leaky ratchet $\to$ 7/8
+\end{itemize}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Phase 4 --- re-presentation forgiveness}
+
+\[
+  \Prob(\text{served in time}) = 1-(1-p)^{m+1}
+  \qquad p = 0.4,\; m = 8 \;\Rightarrow\; \good{0.99}
+\]
+
+\vfill
+\centering
+stochastic policy fine $\;\Rightarrow\;$ advantage $\approx 0$ $\;\Rightarrow\;$
+sign never trained $\;\Rightarrow\;$ \good{argmax fails}
+
+\vfill
+\begin{block}{Per-event action space}
+\centering
+one $(N{+}1)$-way decision per idle capacity unit
+\end{block}
+
+\vfill
+\centering
+\small
+FIFO 70.3802 $=$ 70.3802 \quad never-serve 399.9782 $=$ 399.9782 \quad RVI 40.786 $=$ 40.785
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Phase 4 --- the apparatus becomes unnecessary}
+
+\begin{center}
+\Large
+\begin{tabular}{lcc}
+\toprule
+Experiment 2, binary & sequential & per-event \\
+\midrule
+with annealing    & 6/8 & 4/8 \\
+without annealing & 3/8 & \good{8/8 exact} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\centering
+Experiment 3 runs the \emph{other} way: 7/8 with, 3/8 without
+
+\vfill
+\centering
+\small a stabiliser is matched to a failure mode --- and outlives its usefulness with it
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Phase 5 --- fraction served late}
+
+\[
+  r_4 \;=\; c_n\Big[\mathbf{1}\{W = D+1\} \;+\; \tfrac{\lambda_n}{\gamma}\,\mathbf{1}\{W \ge D+2\}\Big]
+\]
+
+\vfill
+\begin{alertblock}{Ill-posed without a rule}
+rotting a job \good{suppresses its own arrival stream} $\to$ profitable $\to$
+learned policies ``beat'' RVI
+\end{alertblock}
+
+\vfill
+\centering
+\good{Escalation:} late jobs served with forced priority \\[4pt]
+\small
+action masking only --- PPO, DCL, RVI unchanged \\
+RVI truncation now bit-identical at $M = 30, 60, 90$
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Three different ``deep queue'' problems}
+
+\begin{center}
+\large
+\begin{tabular}{lll}
+\toprule
+\textbf{Problem} & \textbf{Remedy} & \textbf{Applies to} \\
+\midrule
+data poisoning   & staggered resets            & all \\
+return variance  & average-reward, big batch   & queue lateness \\
+abandonment      & escalation rule             & \good{tardiness only} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\centering
+lateness keeps charging while late $\Rightarrow$ clearing is already rewarded \\[4pt]
+\good{all queue-lateness results: 8/8, without escalation}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Three objectives, two instances}
+
+\begin{center}
+\Large
+\begin{tabular}{lcc}
+\toprule
+seeds within 5\% of RVI & Exp 2 & Exp 3 \\
+\midrule
+binary / FIL lateness & 8/8 & 7/8 \\
+queue lateness        & 8/8 & 8/8 \\
+fraction late         & 8/8 & 8/8 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\centering
+per-event, no per-cell tuning \\[6pt]
+\small
+recipe follows from the tail of the cost function
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Phase 6 --- scaling is an instance-design problem}
+
+\begin{center}
+\large
+\begin{tabular}{lccc}
+\toprule
+3 types, load 2.0 & FIFO/RVI & $c\mu$/RVI & min \\
+\midrule
+\good{cost/deadline anti-aligned} & 1.49 & 1.77 & \good{1.49} \\
+equal costs                       & 1.10 & 1.16 & 1.10 \\
+non-interval overlap              & 1.10 & 1.36 & 1.10 \\
+generalist bottleneck             & 1.21 & 1.01 & 1.01 \\
+\midrule
+existing chain                    & 1.19 & 1.19 & 1.19 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\centering
+$c\mu$ was not clever --- cost, rate and deadline all pointed the same way
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Phase 6 --- scaled}
+
+\begin{center}
+\large
+\begin{tabular}{lccccc}
+\toprule
+types & FIFO & $c\mu$ & PPO (8 seeds) & vs $c\mu$ \\
+\midrule
+3 & 1.372 & 1.626 & 0.929--0.965 & \good{$-43\%$} \\
+4 & 1.518 & 1.837 & 1.124--1.201 & $-38\%$ \\
+6 & 1.745 & 2.124 & 1.422--1.634 & $-31\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\centering
+3 types: \good{8/8 within 1.0--4.9\%} of RVI $= 0.920$
+
+\vfill
+\begin{block}{}
+\centering
+same size, old chain: \good{$-2.9\%$} \quad $\longrightarrow$ \quad redesigned: \good{$-31\%$} \\[2pt]
+\small same algorithm, same recipe
+\end{block}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Open}
+
+\begin{itemize}
+  \Large
+  \item no deadline-aware baseline (EDF, least slack)
+  \vfill
+  \item no lower bound beyond 3 types
+  \vfill
+  \item MLP does not transfer across instance sizes
+  \vfill
+  \item compute is not the constraint: 96 core-hours of 77{,}000
+\end{itemize}
+
+\end{frame}
+
+\end{document}
