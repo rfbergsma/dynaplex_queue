@@ -1,0 +1,553 @@
+% ============================================================
+%  roadmap_slides.tex
+%  Supervisor meeting: the route from the manuscript's unresolved
+%  Experiment 2 to the current state.
+% ============================================================
+\documentclass[11pt,aspectratio=169]{beamer}
+
+\usetheme{Boadilla}
+\usecolortheme{seahorse}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+\setbeamerfont{frametitle}{size=\large}
+\setbeamercolor{block title}{bg=structure!20}
+
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+
+\newcommand{\good}[1]{\textbf{#1}}
+\newcommand{\Prob}{\mathbb{P}}
+
+\title[Queueing with RL: the route]{Multi-server queueing with reinforcement learning}
+\subtitle{The route from the manuscript's Experiment~2 to the current state}
+\author{}
+\date{}
+
+\begin{document}
+
+\begin{frame}
+\titlepage
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Where the manuscript stops}
+
+Table~3 of the manuscript, Experiment~2 (two flexible servers, $3\times$ cost
+asymmetry):
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Policy & $\bar g \cdot \Lambda$ & ratio to RVI \\
+\midrule
+RVI (optimal)      & 40.79  & 1.00 \\
+FIFO               & 70.38  & 1.73 \\
+\midrule
+DCL from FIFO      & 180.3  & 4.42 \\
+DCL from StochFIFO & 325.7--380.8 & 7.99--9.34 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\begin{block}{The manuscript's own note}
+\emph{``DCL however fails to capture to learn the desired behaviour.
+To be fixed in the future.''}
+\end{block}
+
+\vfill
+That is the starting point.  The finding since: this was not a tuning problem.
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{The route}
+
+\begin{center}
+\begin{tabular}{cp{9.2cm}}
+\toprule
+\textbf{1} & Exhaust DCL --- diagnose why it has a fixed point \\[2pt]
+\textbf{2} & Switch to PPO $\to$ \good{five failure mechanisms}, each isolated \\[2pt]
+\textbf{3} & Queue lateness as an alternative objective $\to$ the failure \good{inverts} \\[2pt]
+\textbf{4} & One diagnosis connects most mechanisms $\to$ \good{reformulate the action space} \\[2pt]
+\textbf{5} & Fraction served late $\to$ ill-posed $\to$ \good{escalation rule} \\[2pt]
+\textbf{6} & Scaling $\to$ turns out to be an \good{instance-design} problem \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+Throughout: RVI as the exact benchmark, and every claim reported as a
+\emph{seed distribution} (``$k$ of 8 seeds within $x\%$'') rather than a
+single run.
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{1. Why DCL gets stuck}
+
+DCL trains a \emph{classifier} on best actions identified by rollouts.  No value
+function, no discounting, undiscounted horizon $H$.
+
+\vfill
+\begin{block}{The fixed point}
+Started from a deterministic FIFO base, the states visited are FIFO-reachable
+states.  On \emph{FIFO's own} distribution the deviations do not look
+advantageous, so generation 1 reproduces FIFO --- and generation 2 starts from
+the same policy.
+\end{block}
+
+\vfill
+The manuscript already mitigates this (stochastic FIFO base, $\varepsilon$-greedy
+wrapper).  It was not enough on Experiment~2.
+
+\vfill
+\emph{No convergence guarantees exist here:} DCL is approximate policy iteration
+with classification error, and the standard guarantees need that error
+controlled uniformly.
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{2. PPO: five failure mechanisms}
+
+Each fix removed from the otherwise complete recipe, 8 seeds, Experiment~2.
+
+\begin{center}
+\small
+\begin{tabular}{p{3.4cm}p{5.4cm}cc}
+\toprule
+\textbf{Mechanism} & \textbf{What goes wrong} & \textbf{Without} & \textbf{Failure} \\
+\midrule
+Semi-MDP discounting & decisions separated by a variable number of periods,
+including zero; discounting each as if a period passed subsidises idling
+& \good{0/8} & never-serve \\[2pt]
+Value-target scale & returns $O(10^2$--$10^3)$ vs advantages $O(1)$; value loss
+monopolises the shared trunk & \good{0/8} & bimodal \\[2pt]
+Data distribution & one deep-backlog excursion moves all environments out of
+the deployment region & \good{1/8} & never-serve \\[2pt]
+Reward sparsity & binary cost flat before the deadline & \good{2/8} & never-serve \\[2pt]
+Extraction & deployed policy is the \emph{argmax}; training certifies the
+\emph{stochastic} policy & \good{3/8} & argmax $\gg$ stoch \\
+\midrule
+\textbf{Full recipe} & & \good{6/8} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\small
+Both attractors recur \emph{exactly} in every failed cell: never-serve at
+$9.876\times$, FIFO clone at $1.738\times$ the optimum.
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{A note on the reward: the objective did not change}
+
+\begin{columns}[T]
+\column{0.48\textwidth}
+\textbf{Evaluated} \\[2pt]
+The manuscript's binary FIL lateness
+\[ \tfrac{c_n}{\gamma}\mathbf{1}\{W_n > D\} \]
+RVI benchmark unchanged.
+
+\column{0.48\textwidth}
+\textbf{Trained on} \\[2pt]
+Same cost $+$ a potential
+\[ \Phi_n(t) = c_n \tfrac{\min(t,D)}{D} \]
+accrued per pre-deadline tick, refunded on service.
+\end{columns}
+
+\vfill
+\begin{block}{Why the benchmark survives}
+$r' = r + \Phi(s) - \Phi(s')$ telescopes, so every stationary policy keeps its
+long-run average.  Verified numerically: FIFO and RVI evaluate identically with
+and without shaping, to four decimals.
+\end{block}
+
+\vfill
+Effect: dense gradient before the deadline.  $2/8 \to 6/8$ seeds.
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{3. Queue lateness: the failure inverts}
+
+Motivated by the question in your comments --- would queue lateness be better for
+shaping?
+
+\vfill
+\begin{columns}[T]
+\column{0.48\textwidth}
+\textbf{What gets better} \\[2pt]
+The extraction gap disappears: argmax $\approx$ stochastic everywhere.  Cleaner
+threshold structure.
+
+\column{0.48\textwidth}
+\textbf{What gets worse} \\[2pt]
+Per-tick cost is $\Theta(B^2)$ in the excess $B$.  Rollout reward rates swing
+$-380$ to $-7500$ \emph{within healthy runs}.
+\end{columns}
+
+\vfill
+\begin{block}{Consequence}
+The tuned recipe converges to a \emph{bit-exact FIFO clone on 8 of 8 seeds}.
+A different configuration is required: average-reward (differential) objective
+with a $64\times$ larger batch.
+\end{block}
+
+\vfill
+\small
+It also does \emph{not} fix sparsity: queue lateness is equally flat before the
+deadline.  And the cost is no longer tick-rate invariant --- FIFO measures
+$1781 / 3035 / 5266$ at $\gamma = 1.5/3/6$ (binary: $74/71/70$).
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Why the annealing guard breaks under heavy tails}
+
+The guard lets the behaviour temperature $T$ fall only while an EMA of the
+reward rate does not degrade, measured against a \emph{ratchet} reference (best
+EMA so far).
+
+\vfill
+\begin{columns}[T]
+\column{0.47\textwidth}
+\textbf{Why a ratchet?} \\[2pt]
+Without it a slowly degrading policy drags the reference down with it --- each
+small decline stays within tolerance --- and the guard keeps sharpening a
+collapsing policy.
+
+\column{0.47\textwidth}
+\textbf{Its flaw under QL} \\[2pt]
+One lucky quiet stretch sets an unrepeatable reference.  It is stored forever,
+so the normal level then reads as ``degrading''.
+\end{columns}
+
+\vfill
+Result: \good{4 of 8 seeds finish 1000 updates still at $T = 1.0000$} --- and
+those are exactly the bad seeds.
+
+\vfill
+\begin{block}{Leaky ratchet}
+On each \emph{failed} check, relax the reference $5\%$ toward the current EMA.
+Separation of speeds: temperature backs off \emph{immediately} on degradation,
+the reference forgets only \emph{slowly} --- so genuine decline is still caught.
+Engagement $4/8 \to 7/8$.
+\end{block}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{4. The diagnosis that connects them}
+
+Why is the argmax the problem?  A skipped job \emph{returns at the next tick}.
+
+\vfill
+With serve-probability $p$ and $m$ further presentations before the deadline:
+\[
+  \Prob(\text{served in time}) \;=\; 1-(1-p)^{m+1}
+  \qquad\text{e.g. } p = 0.4,\ m = 8 \;\Rightarrow\; 0.99
+\]
+
+\vfill
+\begin{block}{Re-presentation forgiveness}
+The \emph{stochastic} policy is behaviourally near-optimal even where the logit
+sign is wrong.  The advantage vanishes, so training never corrects it --- but the
+\emph{argmax} turns exactly those states into deterministic errors, at every
+re-presentation.
+\end{block}
+
+\vfill
+Most of the stabilisation apparatus --- temperature annealing, snapshots, readout
+selection, seed selection --- existed only to contain this one mechanism.
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{The per-event action space}
+
+\begin{columns}[T]
+\column{0.47\textwidth}
+\textbf{Sequential (manuscript)} \\[2pt]
+Ordered candidate list; binary accept/skip at each position; a skipped job
+returns next tick.
+
+\column{0.47\textwidth}
+\textbf{Per-event} \\[2pt]
+Each idle capacity unit makes \emph{one} $(N{+}1)$-way decision: idle, or serve
+type $a$.  Infeasible types masked.
+\end{columns}
+
+\vfill
+\begin{block}{This is what your comment on \S3.2 proposed}
+\emph{``kan een event tot meer dan 1 service start leiden? indien max 1 dan kies
+je de beste uit de toegelaten toewijzingen''}
+\end{block}
+
+\vfill
+Same physical policies --- verified by three equivalence gates:
+
+\begin{center}
+\small
+\begin{tabular}{lcc}
+\toprule
+ & sequential & per-event \\
+\midrule
+FIFO, Exp 2         & 70.3802  & 70.3802 \quad(bit-exact) \\
+never-serve         & 399.9782 & 399.9782 \quad(bit-exact) \\
+RVI optimum         & 40.786   & 40.785 \quad(solver tolerance) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\small Only the \emph{credit structure} changes.  Per-decision action set is
+$O(N)$ regardless of the number of servers.
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{The apparatus becomes unnecessary --- and sometimes harmful}
+
+Experiment 2, binary cost, seeds within 5\% of RVI:
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+ & sequential & per-event \\
+\midrule
+with temperature annealing    & 6/8 & 4/8 \\
+\good{without} annealing      & 3/8 & \good{8/8, exact optimum} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\begin{block}{But it is problem-dependent}
+On Experiment~3 the dissociation runs the other way: 7/8 \emph{with} annealing,
+3/8 without.
+\end{block}
+
+\vfill
+The honest statement: a stabiliser is matched to a failure mode, and outlives
+its usefulness with it.  It should be a switchable ingredient, not a fixed part
+of the recipe.
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{5. The objective you actually want: fraction served late}
+
+Charging at departure gives delayed credit \emph{and} creates the incentive the
+manuscript already identified (\S3): once late, serving earns nothing.
+
+\vfill
+Instead charge $c_n$ \emph{at the deadline crossing} --- same total on every
+sample path, at the decision-relevant moment.  In the FIL projection:
+\[
+  r_4 \;=\; c_n\Big[\underbrace{\mathbf{1}\{W = D+1\}}_{\text{the FIL crosses}}
+  \;+\; \underbrace{\tfrac{\lambda_n}{\gamma}\,\mathbf{1}\{W \ge D+2\}}_{\text{expected crossings behind it}}\Big]
+\]
+
+\vfill
+\begin{block}{Why $\lambda_n/\gamma$ and not a probability}
+One \emph{slot} crosses per tick, and it may hold $0,1,2,\dots$ jobs.  We count,
+so we need the \emph{mean}.  Check: if the queue stays backed up every arrival
+eventually crosses, so crossings per unit time must equal $\lambda_n$ ---
+and $\gamma \cdot (\lambda_n/\gamma) = \lambda_n$ for every $\gamma$.
+\end{block}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{The escalation rule}
+
+\begin{alertblock}{The objective is ill-posed on the FIL projection}
+Letting a job rot \emph{suppresses that type's arrival stream} --- arrivals are
+only tracked when the queue is empty.  So rotting is not merely free, it is
+profitable.  RVI discovers this: the computed optimum drifts below the
+achievable cost, and learned policies ``beat'' the benchmark.
+\end{alertblock}
+
+\vfill
+\textbf{Remedy: a modelling rule, not a reward adjustment.}  When a capacity
+unit can serve a job already past its deadline, the assignment is forced
+(oldest-late first, non-preemptive) --- an SLA escalation rule.
+
+\vfill
+Implemented purely by restricting the admissible action set to a singleton, so
+PPO, DCL and RVI all solve the restricted MDP \emph{with no algorithmic change}.
+
+\vfill
+\begin{columns}[T]
+\column{0.47\textwidth}
+Degeneracy removed by construction.
+\column{0.47\textwidth}
+Late states become transient $\Rightarrow$ RVI truncation converges
+(bit-identical at $M = 30, 60, 90$).
+\end{columns}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Three different ``deep queue'' problems}
+
+Easily conflated --- they have different causes and different remedies.
+
+\vfill
+\begin{center}
+\small
+\begin{tabular}{p{3.2cm}p{4.6cm}p{3.0cm}p{2.6cm}}
+\toprule
+\textbf{Problem} & \textbf{What happens} & \textbf{Remedy} & \textbf{Applies to} \\
+\midrule
+Data poisoning & deep excursions dominate the training data; the deployment
+region disappears from it & staggered environment resets & all objectives \\[3pt]
+Return variance & deep queues make returns heavy-tailed & average-reward $+$
+large batch & queue lateness \\[3pt]
+Abandonment & letting a job rot is profitable & escalation rule & \good{tardiness only} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\begin{block}{Why escalation is not needed for lateness}
+Under binary and queue lateness the cost \emph{keeps accruing} while a job is
+late --- quadratically under QL.  Clearing late work is rewarded by the objective
+itself.  \emph{All queue-lateness results (8/8 on both instances) were obtained
+without escalation.}
+\end{block}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Where that leaves us: three objectives, two instances}
+
+Seeds within 5\% of RVI, per-event action space, no per-cell tuning.
+
+\begin{center}
+\begin{tabular}{p{3.2cm}p{4.2cm}cc}
+\toprule
+\textbf{Objective} & \textbf{Needs} & \textbf{Exp 2} & \textbf{Exp 3} \\
+\midrule
+Binary / FIL lateness   & shaping; small batch      & 8/8 & 7/8 \\
+Queue lateness          & average-reward; $64\times$ batch & 8/8 & 8/8 \\
+Fraction late           & escalation rule           & 8/8 & 8/8 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\begin{block}{The recipe follows from the tail of the cost function}
+Queue lateness is the only objective with unbounded per-tick cost
+($\Theta(B^2)$), and correspondingly the only one needing the large-batch
+average-reward configuration.
+\end{block}
+
+\vfill
+\small
+The benchmark itself needed correcting twice --- both times detected because a
+\emph{learned policy evaluated below the computed optimum}, which can only mean
+a loose benchmark.
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{6. Scaling turned out to be a modelling problem}
+
+First attempt on a six-type chain: the learned policy beat the best heuristic by
+only \good{2.9\%}.  Not under-training --- a $2.5\times$ budget gives the same
+answer.
+
+\vfill
+\begin{alertblock}{Why}
+On that instance cost, service rate and deadline all increase together, so the
+$c\mu$ ordering \emph{coincides} with the urgency ordering.  The heuristic was
+not clever; the instance was accommodating.
+\end{alertblock}
+
+\vfill
+Screening four candidate structures at three types, where RVI is still
+computable:
+
+\begin{center}
+\small
+\begin{tabular}{lccc}
+\toprule
+Structure (3 types, load 2.0) & FIFO/RVI & $c\mu$/RVI & $\min$ \\
+\midrule
+\good{cost and deadline anti-aligned} & \good{1.49} & \good{1.77} & \good{1.49} \\
+equal costs, deadlines heterogeneous  & 1.10 & 1.16 & 1.10 \\
+non-interval skill overlap            & 1.10 & 1.36 & 1.10 \\
+generalist bottleneck (rewards idling)& 1.21 & 1.01 & 1.01 \\
+\midrule
+existing chain (all aligned)          & 1.19 & 1.19 & 1.19 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Scaling the winning structure}
+
+Recipe unchanged, 8 seeds per instance.
+
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+Instance & types & FIFO & $c\mu$ & PPO (8 seeds) & vs $c\mu$ \\
+\midrule
+anti-aligned & 3 & 1.372 & 1.626 & 0.929--0.965 & \good{$-43\%$} \\
+anti-aligned & 4 & 1.518 & 1.837 & 1.124--1.201 & $-35$ to $-39\%$ \\
+anti-aligned & 6 & 1.745 & 2.124 & 1.422--1.634 & $-23$ to $-31\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+At three types, where the optimum is computable ($\mathrm{RVI} = 0.920$):
+\good{8/8 seeds within 1.0--4.9\%}.
+
+\vfill
+\begin{block}{The decisive comparison, at equal size}
+Original six-type chain: $-2.9\%$ over the best heuristic. \\
+Redesigned six-type instance: $-23$ to $-31\%$. \\[2pt]
+Same algorithm, same recipe.  \emph{The earlier ceiling was a property of the
+benchmark.}
+\end{block}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Open questions}
+
+\begin{enumerate}
+  \item \textbf{A deadline-aware baseline is missing.}  FIFO and $c\mu$ are both
+  deadline-blind, which makes them a weak comparison for a deadline objective.
+  EDF / least slack, and a generalised $c\mu$ index, should be added.
+
+  \vspace{4pt}
+  \item \textbf{No exact reference beyond three job types.}  A fluid or LP lower
+  bound would be needed to say how much is left on the table --- the margin
+  narrows with size ($-43\%$, $-38\%$, $-31\%$) and we cannot currently tell
+  whether that is the instance or the method.
+
+  \vspace{4pt}
+  \item \textbf{The network does not transfer across sizes.}  A fixed-width MLP
+  assigns a separate semantic role to each input position.  Parameter sharing
+  over job types and server pools (a bipartite encoder) is the natural next
+  step, and is what a $10\times10$ claim would require.
+
+  \vspace{4pt}
+  \item \textbf{Compute is not the constraint.}  The six-type experiment cost
+  $\approx$ 96 core-hours; the budget is 77{,}000.
+\end{enumerate}
+
+\end{frame}
+
+\end{document}
