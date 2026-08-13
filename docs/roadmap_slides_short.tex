@@ -310,4 +310,165 @@ same size, old chain: \good{$-2.9\%$} \quad $\longrightarrow$ \quad redesigned: 
 
 \end{frame}
 
+% ============================================================
+\appendix
+% ============================================================
+
+\begin{frame}{Appendix --- notation}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+$\lambda_n$ & arrival rate of type $n$ \\
+$\gamma$    & tick rate (ticks per unit time) \\
+$D_n$       & acceptable waiting time, in ticks \\
+$c_n$       & cost rate of type $n$ \\
+$W_n$       & waiting level of the first-in-line job, in ticks \\
+$B_n$       & $= \max(0,\, W_n - D_n)$, the FIL's excess \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+Cost is charged at \emph{tick} events only; the stored cost rate is $c_n/\gamma$,
+so that $\gamma$ ticks per unit time recover a rate of $c_n$.
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Appendix --- the queue behind the FIL}
+
+Only the FIL is tracked.  Condition on $W = w$; under FIFO within a type, the
+jobs behind it are \emph{exactly} the type-$n$ arrivals of the last $w$ ticks,
+occupying slots with ages $0,\dots,w-1$.
+
+\vfill
+Arrivals and ticks compete, so the number $K$ of arrivals per slot is geometric:
+\[
+  \Prob(K = k) = \alpha^k\beta,
+  \qquad
+  \alpha = \frac{\lambda_n}{\lambda_n+\gamma},
+  \quad
+  \beta = \frac{\gamma}{\lambda_n+\gamma},
+  \qquad
+  \good{\mathbb{E}[K] = \frac{\alpha}{\beta} = \frac{\lambda_n}{\gamma}}
+\]
+
+\vfill
+\begin{block}{Two different quantities}
+$\alpha$ = probability a slot is \emph{non-empty} \quad(used by the FIL-refresh law) \\
+$\lambda_n/\gamma$ = expected \emph{number} of jobs in a slot \quad(used whenever we count)
+\end{block}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Appendix --- reward types 0 and 2 (binary)}
+
+\textbf{Type 0 --- FIL lateness.}  Charge while the FIL is overdue:
+\[
+  r_0 \;=\; \frac{c_n}{\gamma}\,\mathbf{1}\{W_n > D_n\}
+\]
+Per unit time: $c_n \Prob(W_n > D_n)$.  Bounded, exactly tick-rate invariant.
+One job overdue for $T$ time units costs $c_n T$ --- linear.
+
+\vfill
+\textbf{Type 2 --- the same, plus potential-based shaping.}  With the urgency ramp
+\[
+  u_n(t) \;=\; c_n\,\frac{\min(t, D_n)}{D_n},
+\]
+charge $u_n(W) - u_n(W-1) = c_n/D_n$ per pre-deadline tick, and refund
+$u_n(t_{\text{new}}) - u_n(t_{\text{old}})$ when the FIL enters service.
+
+\vfill
+\begin{block}{}
+\centering
+$r' = r + \Phi(s) - \Phi(s')$ telescopes $\;\Rightarrow\;$ every stationary policy
+keeps its long-run average
+\end{block}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Appendix --- reward types 1 and 3 (queue lateness)}
+
+Charge the \emph{excess} of every waiting job, not just the FIL:
+\[
+  r_1 \;=\; \frac{c_n}{\gamma}\Big[\underbrace{B_n}_{\text{FIL, exact}}
+  \;+\; \underbrace{\frac{\lambda_n}{\gamma}\cdot\frac{(B_n-1)B_n}{2}}_{\text{expected, untracked}}\Big]
+\]
+
+\vfill
+The tail follows from summing over the slots:
+$\sum_{i=0}^{w-1}\mathbb{E}[K]\max(0,i-D) = \frac{\lambda_n}{\gamma}\sum_{j=1}^{B-1} j$.
+Exact, because the cost is \emph{linear} in the individual excesses.
+
+\vfill
+\textbf{Type 3} = type 1 with the same urgency ramp.
+
+\vfill
+\begin{alertblock}{Consequences of weighting by the excess}
+per-tick cost is $\Theta(B^2)$ --- one job overdue for $T$ ticks costs
+$\Theta(T^2)$ --- hence heavy-tailed returns, and cost per unit time scales with
+$\gamma$ (not tick-invariant).
+\end{alertblock}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Appendix --- reward type 4 (fraction served late)}
+
+Charge $c_n$ \emph{once}, at the tick a job's age crosses $D_n$:
+\[
+  r_4 \;=\; c_n\Big[\underbrace{\mathbf{1}\{W_n = D_n+1\}}_{\text{the FIL crosses}}
+  \;+\; \underbrace{\frac{\lambda_n}{\gamma}\,\mathbf{1}\{W_n \ge D_n+2\}}_{\text{expected crossings behind}}\Big]
+\]
+
+\vfill
+\begin{itemize}
+  \item one \emph{slot} crosses per tick; it holds $0,1,2,\dots$ jobs, so we need
+        the \good{mean} $\lambda_n/\gamma$, not the probability $\alpha$
+  \item the slot lies strictly behind the FIL only if $W \ge D+2$
+  \item check: backed-up queue $\Rightarrow$ every arrival eventually crosses
+        $\Rightarrow$ $\gamma\cdot\frac{\lambda_n}{\gamma} = \lambda_n$ per unit
+        time, for every $\gamma$
+\end{itemize}
+
+\vfill
+\begin{block}{Escalation is a constraint, not a reward}
+Late jobs must be served (oldest first).  Restricts the admissible action set to
+a singleton; no algorithm changes.
+\end{block}
+
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Appendix --- summary}
+
+\begin{center}
+\small
+\begin{tabular}{clcccl}
+\toprule
+\textbf{type} & \textbf{base cost} & \textbf{shaped} & \textbf{per tick} &
+\textbf{tick-inv.} & \textbf{needs} \\
+\midrule
+0 & FIL lateness   & no  & bounded          & yes  & --- \\
+2 & FIL lateness   & \good{yes} & bounded   & yes  & small batch \\
+1 & queue lateness & no  & $\Theta(B^2)$    & no   & avg-reward, $64\times$ batch \\
+3 & queue lateness & \good{yes} & $\Theta(B^2)$ & no & avg-reward, $64\times$ batch \\
+4 & tardiness flux & no  & bounded          & asympt. & escalation rule \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vfill
+\begin{block}{One rule}
+\centering
+The algorithmic recipe follows from the \emph{tail} of the cost function. \\[2pt]
+Queue lateness is the only unbounded one --- and the only one needing a
+different configuration.
+\end{block}
+
+\end{frame}
+
 \end{document}
