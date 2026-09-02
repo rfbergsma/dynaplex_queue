@@ -652,12 +652,27 @@ namespace DynaPlex::Models {
 				else {
 					// Queue-lateness: exact excess summed over all tracked positions,
 					// plus a Koole tail approximation for untracked positions beyond max_queue_depth.
+					//
+					// Tick-rate invariance: GetImmediateCost converts the value accumulated
+					// here into a physical rate via a factor of tick_rate (nu).  With excess
+					// measured in TICKS (B = tau*nu for physical overdue-time tau), the raw
+					// bracket below is B + (lambda/nu)(B-1)B/2 ~ tau*nu + lambda*tau^2*nu^2/2,
+					// so after the nu multiplication in GetImmediateCost the physical rate
+					// scales as ~nu (measured: FIFO*Lambda = 1781/3035/5266 at nu=1.5/3/6).
+					// The correct continuous-time target is c*[tau + lambda*tau^2/2] per unit
+					// time (the FIL term plus lambda*int_0^tau s ds for the tail); dividing
+					// the whole bracket by one more factor of tick_rate here recovers exactly
+					// that after GetImmediateCost's multiplication, restoring invariance.
+					// At fixed tick_rate this is a positive constant rescaling of the whole
+					// objective, so the optimal policy and every previously reported ratio
+					// (FIFO/RVI, NN/RVI, seed success) are UNCHANGED; only the raw magnitude
+					// (and any rvi_ref= comparisons against old absolute numbers) shifts.
 
 					// Exact contribution from tracked positions
 					for (const int64_t t : q) {
 						const double excess = (double)t - due_times[n];
 						if (excess > 0.0)
-							cost += cost_rates[n] * excess;
+							cost += cost_rates[n] * excess / tick_rate;
 					}
 
 					// Tail approximation for jobs beyond max_queue_depth:
@@ -669,7 +684,7 @@ namespace DynaPlex::Models {
 					if (bottom_excess > 0.0) {
 						const double tail = (arrival_rates[n] / tick_rate)
 						                  * std::max(0.0, bottom_excess - 1.0) * bottom_excess / 2.0;
-						cost += cost_rates[n] * tail;
+						cost += cost_rates[n] * tail / tick_rate;
 					}
 
 					// Shaping (rtype 3): same FIL urgency potential as rtype 2 — the
