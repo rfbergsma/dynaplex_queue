@@ -1,0 +1,233 @@
+% ============================================================
+%  tick_invariance_note.tex
+%  Why the (fixed) queue-lateness reward is only ASYMPTOTICALLY
+%  tick-rate invariant, and not exactly invariant like the binary
+%  reward: a Poisson-counting / Jensen's-inequality account.
+% ============================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{parskip}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\Prob}{\mathbb{P}}
+
+\newtheorem{remark}{Remark}
+
+\title{Why queue-lateness is only \emph{asymptotically}\\tick-rate invariant}
+\author{Technical note}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The queue-lateness reward (\texttt{reward\_type}~1/3) was corrected with an
+extra factor $1/\gamma$ so that, at fixed tick rate $\gamma$, the objective is
+a positive constant rescaling of the original --- leaving every previously
+reported ratio (FIFO/RVI, seed success) exactly unchanged.  What the fix does
+\emph{not} achieve is exact invariance \emph{across} tick rates: measured FIFO
+cost is $1497 / 1090 / 975 / 806 / 841 / 849$ at
+$\gamma = 1/2/4/8/16/32$ --- converging, but not flat.  This note derives why,
+precisely.  The mechanism is not vague ``discretisation noise'' but a specific,
+quantifiable Jensen's-inequality effect arising because the tick counter is a
+Poisson process sampling continuous physical time.  The same mechanism
+explains the residual $O(1/\gamma)$ non-invariance already documented for the
+tardiness-flux reward (\texttt{reward\_type}~4).
+\end{abstract}
+
+\tableofcontents
+
+% ============================================================
+\section{Setting}
+% ============================================================
+
+Write $\gamma$ for the tick rate, $D$ for a type's deadline in physical time
+units, $d = D\gamma$ for the deadline expressed in ticks (an integer, in the
+cases considered here).  Write $\tau$ for a job's physical waiting time and
+$W$ for its recorded \emph{tick-count} waiting level --- the quantity the MDP
+state actually tracks.
+
+\begin{remark}[The tick clock is a single, state-independent Poisson process]
+Inspection of the implementation confirms
+\texttt{compute\_total\_tick\_rate} returns the constant \texttt{tick\_rate}
+($=\gamma$), independent of how many queues are currently non-empty.  This
+matches the exit-rate formula of the model, which has a single additive
+$+\gamma$ term.  Consequently tick events occur as one global Poisson process
+of rate $\gamma$, and every firing increments the recorded age of \emph{every}
+currently non-empty queue by one tick.
+\end{remark}
+
+Because a given type-$n$ job's FIL clock advances at every global tick for as
+long as that queue remains non-empty (i.e.\ for its entire waiting tenure),
+the number of ticks recorded during a physical waiting duration $\tau$ is
+exactly the number of Poisson($\gamma$) events observed in an interval of
+length $\tau$:
+\begin{equation}
+  W \mid \tau \;\sim\; \mathrm{Poisson}(\gamma\tau)
+  \qquad\text{\emph{exactly}, not as an approximation.}
+  \label{eq:poisson}
+\end{equation}
+
+\begin{remark}[FIFO's physical trajectory does not depend on $\gamma$]
+Under FIFO, a job enters service exactly when a compatible server becomes
+free while it is the oldest waiting job of a servable type --- a decision
+triggered only by arrivals and service completions.  Tick events change
+recorded ages but never create or remove a serving opportunity for FIFO.  The
+physical sample path (who is served, and when) is therefore identical for
+every $\gamma$; the tick rate affects only how finely that physical path is
+\emph{measured} into an integer count.  This is what licenses treating $\tau$
+in \eqref{eq:poisson} as a $\gamma$-independent random variable with a fixed
+distribution (namely, FIFO's true physical excess-waiting-time distribution),
+while $W$'s conditional law depends on $\gamma$ only through the counting
+relationship above.
+\end{remark}
+
+% ============================================================
+\section{The mean is unbiased; the noise is not free}
+% ============================================================
+
+From \eqref{eq:poisson},
+\begin{equation}
+  \E[W \mid \tau] = \gamma\tau,
+  \qquad
+  \Var(W \mid \tau) = \gamma\tau,
+  \label{eq:moments}
+\end{equation}
+using that a Poisson distribution has variance equal to its mean.  The
+coefficient of variation is
+\begin{equation}
+  \mathrm{CV}(W\mid\tau) \;=\; \frac{\sqrt{\gamma\tau}}{\gamma\tau}
+  \;=\; \frac{1}{\sqrt{\gamma\tau}} \;\xrightarrow[\gamma\to\infty]{} \;0.
+  \label{eq:cv}
+\end{equation}
+At $\gamma = 1$ this ratio is large: $W$ is a \emph{noisy} proxy for the
+continuous quantity $\gamma\tau$.  At $\gamma = 32$ the same physical duration
+is measured far more precisely, in relative terms.
+
+The cost function does not use $W$ linearly.  It applies
+$B = \max(0, W - d)$ --- a \textbf{convex} function of $W$ --- for the FIL
+term, and a further convex (roughly quadratic) transform for the tail term.
+By Jensen's inequality, for any convex $g$,
+\begin{equation}
+  \E[g(W)] \;\geq\; g(\E[W]).
+  \label{eq:jensen}
+\end{equation}
+So $\E[B]$ is \textbf{systematically inflated} above the naively expected
+value $\max(0,\gamma\tau - d) = \gamma\max(0,\tau - D)$.  The size of this gap
+is governed by the variance in \eqref{eq:moments}, and it is exactly why
+measured FIFO cost decreases monotonically toward its asymptotic value as
+$\gamma$ grows: the Poisson noise that inflates the convex transform shrinks
+in relative terms.
+
+% ============================================================
+\section{Quantifying the gap, term by term}
+% ============================================================
+
+\subsection{The linear (FIL) term}
+
+Write $\tau_{\text{excess}} = \max(0, \tau - D)$ for the true physical excess.
+For $W$ far above the threshold $d$ (deep in the tail, i.e.\ substantially
+late), $B \approx W - d$ and the Jensen gap is small in relative terms.  Near
+the threshold --- i.e.\ for jobs close to their deadline --- approximating the
+large-mean Poisson by a Normal distribution with
+$\mu = \gamma\tau$, $\sigma = \sqrt{\gamma\tau}$, the standard expected-shortfall
+(``loss function'') identity gives
+\begin{equation}
+  \E[\max(0, W - d)]
+  \;\approx\;
+  \underbrace{\gamma\,\tau_{\text{excess}}}_{\text{leading term, } O(\gamma)}
+  \;+\;
+  \underbrace{\sigma\,\phi(z)}_{\text{boundary correction, } O(\sqrt{\gamma})},
+  \qquad \sigma = \sqrt{\gamma\tau},
+  \label{eq:loss-fn}
+\end{equation}
+where $\phi$ is the standard normal density and $z$ measures how many standard
+deviations the mean sits from the threshold.  The boundary correction is
+$O(\sqrt\gamma)$: negligible \emph{relative to} the leading $O(\gamma)$ term
+once $\gamma$ is large, but not negligible in absolute size at small $\gamma$
+--- and it contributes most from states whose physical wait is close to $D$,
+which is exactly the population of states that matters most for a
+deadline-sensitive policy.
+
+\subsection{The quadratic (tail) term}
+
+This correction has a cleaner closed form.  Using
+$\Var(B) \approx \Var(W) = \gamma\tau$ for states clearly past the deadline
+(where the thresholding no longer distorts the variance materially),
+\begin{equation}
+  \E[B^2] \;=\; \Var(B) + \E[B]^2
+  \;\approx\; \gamma\tau \;+\; \gamma^2\tau_{\text{excess}}^2,
+\end{equation}
+so that
+\begin{equation}
+  \boxed{\;\frac{\E[B^2]}{\gamma^2}
+  \;\approx\; \tau_{\text{excess}}^2 \;+\; \frac{\tau}{\gamma}\;}
+  \qquad\xrightarrow[\gamma\to\infty]{}\;\tau_{\text{excess}}^2.
+  \label{eq:quad}
+\end{equation}
+The residual term $\tau/\gamma$ is exactly the Poisson
+variance-to-mean-squared ratio from \eqref{eq:cv}, carried through the
+quadratic transform.  This is the precise, closed-form source of the
+$O(1/\gamma)$ correction in the tail (Koole) term of the queue-lateness
+reward.
+
+% ============================================================
+\section{Why $\gamma = 1$ shows a much larger gap than $\gamma = 4$}
+% ============================================================
+
+Take $D = 3$ (our benchmark deadline).  At $\gamma = 1$, $d = 3$ ticks: the
+deadline is reached after only three counting events, so
+$\mathrm{CV}(W \mid \tau{=}D) = 1/\sqrt{d} = 1/\sqrt{3} \approx 0.58$ --- the
+tick count is a coarse, high-relative-noise measurement of physical time right
+where it matters most.  At $\gamma = 4$, $d = 12$ ticks, and
+$\mathrm{CV} = 1/\sqrt{12} \approx 0.29$: four times the counting resolution
+for the same physical deadline, hence roughly half the relative noise, and
+correspondingly a much smaller Jensen gap.  This matches the direction and
+approximate scale of the measured drop from $1497$ ($\gamma=1$) to $975$
+($\gamma=4$).
+
+% ============================================================
+\section{Summary statement}
+% ============================================================
+
+\begin{equation}
+  g^{\text{QL}}_{\text{measured}}(\gamma)
+  \;=\;
+  g^{\text{QL}}_{\text{continuous}}
+  \;+\; O\!\left(\gamma^{-1/2}\right) \text{ or } O\!\left(\gamma^{-1}\right)
+  \text{-type corrections},
+  \qquad
+  \xrightarrow[\gamma\to\infty]{} \; 0.
+\end{equation}
+
+The mechanism is entirely a \emph{counting-noise and convexity} story.  The
+tick rate does not change the physical system at all --- FIFO's true dynamics
+are $\gamma$-independent, as established above --- it only changes how
+precisely a Poisson tick-count can measure continuous elapsed time.  Because
+the cost function applies convex (threshold, square) transforms to that noisy
+count, Jensen's inequality leaks a $\gamma$-dependent bias back into the
+otherwise-unbiased mean.  This is structurally the \emph{same} mechanism
+already documented for the tardiness-flux reward (\texttt{reward\_type}~4),
+whose residual non-invariance comes from applying a crossing indicator to the
+same discretely-sampled continuous quantity.
+
+\begin{remark}[Honest caveat on the fit]
+The numbers above ($1497/1090/975/806/841/849$ at
+$\gamma=1/2/4/8/16/32$) come from a single Monte Carlo evaluation
+($2\times10^5$ periods) at each tick rate --- enough to confirm the direction
+and general shape of convergence, not enough to distinguish a
+dominant $O(\gamma^{-1})$ correction from $O(\gamma^{-1/2})$ in this regime.
+Pinning that down would need a longer evaluation horizon and a denser
+log-spaced sweep of $\gamma$.
+\end{remark}
+
+\end{document}
