@@ -36,6 +36,7 @@
 #include "dynaplex/dynaplexprovider.h"
 #include "dynaplex/policy.h"
 #include "dynaplex/policycomparer.h"
+#include "dynaplex/retrievestate.h"
 #include "../../../lib/models/models/queue_mdp/mdp.h"
 
 using namespace DynaPlex;
@@ -95,6 +96,93 @@ public:
         }
     }
 };
+
+// Exhaustive policy comparison on the canonical two-job state slice used by
+// the queue diagnostics: pool 0 has one type-0 job in service, pool 1 is idle,
+// both queues are nonempty, and the next per-event decision belongs to pool 1.
+// Unlike the older heatmap printer, this understands per-event actions
+// directly (0=idle, 1=type 0, 2=type 1).
+static void PrintCanonicalPolicyAgreement(
+    const qm::MDP& raw_mdp,
+    const DynaPlex::MDP& fw_mdp,
+    const DynaPlex::Policy& ppo,
+    const DynaPlex::Policy& rvi,
+    int max_fil)
+{
+    if (!raw_mdp.per_event_mode || raw_mdp.n_jobs != 2 || raw_mdp.k_servers < 2) {
+        std::cout << "  [policy-compare] skipped: canonical grid requires "
+                     "per_event, two jobs, and at least two pools\n";
+        return;
+    }
+
+    DynaPlex::Trajectory traj;
+    traj.RNGProvider.SeedEventStreams(true, 42, 0, 0);
+    auto one = std::span<DynaPlex::Trajectory>(&traj, 1);
+    fw_mdp->InitiateState(one);
+
+    const int A = (int)raw_mdp.n_jobs + 1;
+    std::vector<std::vector<int64_t>> pair_counts(
+        (size_t)A, std::vector<int64_t>((size_t)A, 0));
+    int64_t total = 0, agree = 0;
+    std::vector<std::tuple<int,int,int64_t,int64_t>> examples;
+
+    for (int f0 = 0; f0 <= max_fil; ++f0) {
+        for (int f1 = 0; f1 <= max_fil; ++f1) {
+            auto& s = DynaPlex::RetrieveState<qm::MDP::State>(traj.GetState());
+            s = qm::MDP::State{};
+            s.queue_manager.initialize(raw_mdp.n_jobs, raw_mdp.tick_rate,
+                                       raw_mdp.arrival_rates, raw_mdp.max_queue_depth);
+            s.queue_manager.set_fil(0, (int64_t)f0);
+            s.queue_manager.set_fil(1, (int64_t)f1);
+            s.server_manager.initialize(&raw_mdp.server_static_info, raw_mdp.n_jobs);
+            s.server_manager.busy_on[0][0] = 1;
+            s.server_manager.generate_actions_per_event(s.queue_manager.get_FIL_waiting());
+            s.server_manager.set_action_counter(0);
+            s.server_manager.update_total_service_rate();
+            s.cat = DynaPlex::StateCategory::AwaitAction();
+            traj.Category = s.cat;
+
+            ppo->SetAction(one);
+            const int64_t a_ppo = traj.NextAction;
+            rvi->SetAction(one);
+            const int64_t a_rvi = traj.NextAction;
+
+            if (a_ppo < 0 || a_ppo >= A || a_rvi < 0 || a_rvi >= A) {
+                std::cout << "  [policy-compare] invalid action at FIL=("
+                          << f0 << "," << f1 << "): PPO=" << a_ppo
+                          << " RVI=" << a_rvi << "\n";
+                continue;
+            }
+            ++total;
+            ++pair_counts[(size_t)a_rvi][(size_t)a_ppo];
+            if (a_ppo == a_rvi) {
+                ++agree;
+            } else if (examples.size() < 30) {
+                examples.push_back({f0, f1, a_rvi, a_ppo});
+            }
+        }
+    }
+
+    const double pct = total > 0 ? 100.0 * (double)agree / (double)total : 0.0;
+    std::cout << "\n  [policy-compare] canonical FIL grid 0.." << max_fil
+              << ": agreement=" << agree << "/" << total
+              << " (" << std::fixed << std::setprecision(2) << pct << "%)\n";
+    std::cout << "  rows=RVI action, columns=PPO action (0=idle,1=type0,2=type1)\n      ";
+    for (int a = 0; a < A; ++a) std::cout << std::setw(10) << ("PPO" + std::to_string(a));
+    std::cout << "\n";
+    for (int r = 0; r < A; ++r) {
+        std::cout << "  RVI" << r << " ";
+        for (int a = 0; a < A; ++a)
+            std::cout << std::setw(10) << pair_counts[(size_t)r][(size_t)a];
+        std::cout << "\n";
+    }
+    if (!examples.empty()) {
+        std::cout << "  first disagreements (FIL0,FIL1:RVI->PPO):";
+        for (const auto& [f0, f1, ar, ap] : examples)
+            std::cout << " (" << f0 << "," << f1 << ":" << ar << "->" << ap << ")";
+        std::cout << "\n";
+    }
+}
 
 // Mirrors make_specialist_generalist_config() in mm1_baseline.cpp (Experiment 3).
 static VarGroup exp3_config()
@@ -284,6 +372,7 @@ int main(int argc, char** argv)
 
     // --- Benchmarks (bench=1: FIFO+RVI; bench=2: FIFO only; bench=0: none) ---
     double fifo_mean = 1.0, rvi_mean = 1.0, base_mean = 1.0;
+    DynaPlex::Policy rvi_policy;
     if (BENCH_MODE == 1) {
         auto fifo = mdp->GetPolicy("FIFO policy");
         // RVI truncation control.  rvi_m>0 pins the FIL clamp to a FIXED M
@@ -295,9 +384,9 @@ int main(int argc, char** argv)
         VarGroup rvi_cfg{{"id", std::string("RVI_optimal")}, {"silent", int64_t(1)}};
         if (I("rvi_m", 0) > 0) rvi_cfg.Add("M", I("rvi_m", 0));
         else                   rvi_cfg.Add("rel_tol", D("rvi_tol", 0.01));
-        auto rvi = mdp->GetPolicy(rvi_cfg);
+        rvi_policy = mdp->GetPolicy(rvi_cfg);
 
-        auto bench = comparer.Compare({fifo, rvi});
+        auto bench = comparer.Compare({fifo, rvi_policy});
         bench[0].Get("mean", fifo_mean);
         bench[1].Get("mean", rvi_mean);
     } else if (BENCH_MODE == 2) {
@@ -426,6 +515,15 @@ int main(int argc, char** argv)
             }
             const double nn_ratio = nn_mean / norm;
             ratios.push_back(nn_ratio);
+
+            const int compare_grid = (int)I("compare_grid", 0);
+            if (compare_grid > 0) {
+                if (!rvi_policy) {
+                    std::cout << "  [policy-compare] skipped: use bench=1 to construct RVI\n";
+                } else {
+                    PrintCanonicalPolicyAgreement(raw_mdp, mdp, nn, rvi_policy, compare_grid);
+                }
+            }
 
             std::cout << std::left << std::fixed << std::setprecision(4)
                       << std::setw(6)  << seed
