@@ -13,6 +13,7 @@
 //   S6  2 pools C=1 each, FIL=[8,4]     HARD: two independent pools
 //   S7  1 pool C=2, 3 job types          HARD: C=2 with 3 candidates
 //   S8  FIL tie FIL=[6,6] C=1           edge case: strict-inequality tie-breaking
+//   S9  per-event idle decision timing   tick/self-loop hold semantics
 //
 // Exit code: 0 = all assertions pass, 1 = at least one FAIL.
 
@@ -206,6 +207,41 @@ static MDP make_2pool_1server_each(const std::vector<double>& cost_rates)
     cfg.Add("server_type_0",  srv);
     cfg.Add("server_type_1",  srv);
     return MDP{cfg};
+}
+
+static MDP make_per_event_mdp(bool hold)
+{
+    VarGroup srv;
+    srv.Add("servers",       int64_t{1});
+    srv.Add("service_rates", VarGroup::DoubleVec{0.35, 0.35});
+    srv.Add("can_serve",     VarGroup::Int64Vec{0, 1});
+
+    VarGroup cfg;
+    cfg.Add("id",              std::string{"queue_mdp"});
+    cfg.Add("discount_factor", 1.0);
+    cfg.Add("reward_type",     int64_t{1});
+    cfg.Add("k_servers",       int64_t{1});
+    cfg.Add("n_jobs",          int64_t{2});
+    cfg.Add("tick_rate",       1.0);
+    cfg.Add("arrival_rates",   VarGroup::DoubleVec{0.25, 0.25});
+    cfg.Add("cost_rates",      VarGroup::DoubleVec{100.0, 300.0});
+    cfg.Add("due_times",       VarGroup::DoubleVec{3.0, 3.0});
+    cfg.Add("server_type_0",   srv);
+    cfg.Add("action_mode",     std::string{"per_event"});
+    cfg.Add("hold_actions_until_real_event", hold);
+    return MDP{cfg};
+}
+
+static MDP::State make_per_event_idle_state(const MDP& mdp)
+{
+    MDP::State s;
+    s.queue_manager.initialize(mdp.n_jobs, mdp.tick_rate, mdp.arrival_rates, 1);
+    s.queue_manager.set_fil(0, 2);
+    s.server_manager.initialize(&mdp.server_static_info, mdp.n_jobs);
+    s.server_manager.generate_actions_per_event(s.queue_manager.get_FIL_waiting());
+    s.cat = DynaPlex::StateCategory::AwaitAction();
+    mdp.ModifyStateWithAction(s, 0);
+    return s;
 }
 
 // =========================================================================
@@ -453,6 +489,56 @@ static void run_S8()
     CHECK(!rfq_acts.empty() && rfq_acts[0] == 1, "ReverseFIFOPolicy also assigns at alpha=0 (tie)");
 }
 
+static void run_S9()
+{
+    std::cout << "\n--- S9: per-event action hold across artificial events ---\n";
+    for (bool hold : {false, true}) {
+        MDP mdp = make_per_event_mdp(hold);
+        MDP::State idle = make_per_event_idle_state(mdp);
+        CHECK(idle.cat == DynaPlex::StateCategory::AwaitEvent(),
+              std::string(hold ? "hold" : "legacy") + ": idle action enters AwaitEvent");
+        CHECK(!idle.server_manager.action_queue.empty(),
+              std::string(hold ? "hold" : "legacy") + ": pending decision epoch is retained");
+
+        MDP::Event tick;
+        tick.event_sample = idle.queue_manager.total_arrival_rate
+                          + 0.5 * idle.queue_manager.total_tick_rate;
+        tick.uniform_rate_next_fil = 0.5;
+        MDP::State simulated_tick = idle;
+        mdp.ModifyStateWithEvent(simulated_tick, tick);
+        const auto expected = hold ? DynaPlex::StateCategory::AwaitEvent()
+                                   : DynaPlex::StateCategory::AwaitAction();
+        CHECK(simulated_tick.queue_manager.get_FIL_waiting()[0] == 3,
+              std::string(hold ? "hold" : "legacy") + ": tick advances FIL");
+        CHECK(simulated_tick.cat == expected,
+              std::string(hold ? "hold" : "legacy") + ": simulator uses configured tick timing");
+
+        bool saw_tick = false, saw_nothing = false;
+        for (const auto& next : mdp.getNextStateProbability(idle, 0)) {
+            const auto fil = next.next_state.queue_manager.get_FIL_waiting();
+            if (fil[0] == 3 && fil[1] < 0) {
+                saw_tick = true;
+                CHECK(next.next_state.cat == expected,
+                      std::string(hold ? "hold" : "legacy") + ": exact tick transition matches simulator");
+            } else if (fil[0] == 2 && fil[1] < 0) {
+                saw_nothing = true;
+                CHECK(next.next_state.cat == expected,
+                      std::string(hold ? "hold" : "legacy") + ": uniformization self-loop uses configured timing");
+            }
+        }
+        CHECK(saw_tick, std::string(hold ? "hold" : "legacy") + ": exact transition includes tick");
+        CHECK(saw_nothing, std::string(hold ? "hold" : "legacy") + ": exact transition includes self-loop");
+
+        MDP::Event arrival;
+        arrival.event_sample = 0.1;
+        arrival.uniform_rate_next_fil = 0.5;
+        MDP::State after_arrival = idle;
+        mdp.ModifyStateWithEvent(after_arrival, arrival);
+        CHECK(after_arrival.cat == DynaPlex::StateCategory::AwaitAction(),
+              std::string(hold ? "hold" : "legacy") + ": real arrival starts a fresh decision epoch");
+    }
+}
+
 // =========================================================================
 // main
 // =========================================================================
@@ -471,6 +557,7 @@ int main()
     run_S6();
     run_S7();
     run_S8();
+    run_S9();
 
     std::cout << "\n========================================\n";
     std::cout << "  Results: " << g_pass << " passed, " << g_fail << " failed\n";

@@ -499,6 +499,13 @@ namespace DynaPlex::Models {
 			// capacity unit decides once per epoch: 0 = idle, a in 1..n_jobs = serve
 			// type a-1's FIL; valid_actions = n_jobs+1, strict masking).
 			bool per_event_mode = false;
+			// Decision-timing experiment (config "hold_actions_until_real_event",
+			// per_event only).  After every idle capacity-unit decision, keep that
+			// decision in force across tick and uniformization self-loop events.
+			// A fresh action epoch then starts only after an arrival or service
+			// completion.  Default false preserves the legacy tick-reconsideration
+			// semantics.
+			bool hold_actions_until_real_event = false;
 			// SLA escalation (config "force_late_service", per_event only): when a
 			// capacity unit can serve a LATE FIL (age > due), the assignment is
 			// FORCED via IsAllowedAction masking (oldest late first, ties -> lower

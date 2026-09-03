@@ -16,6 +16,7 @@
 //   updates(300) envs(16) rollout(256) epochs(4) minibatch(256) lr(3e-4)
 //   gamma(0.99) lambda(0.95) entropy(0.01) avg(0) rho_step(1.0)
 //   temp_anneal(1) temp_min(0.25) resets(16)
+//   mode(candidate_queue; use pe for per-event) hold(0)
 //   N(20000) M(400) tick(3.0) base_h(100) eval_traj(100) eval_periods(50000)
 //
 // Output per seed: argmax row (NN*Lambda, NN/RVI) + [stoch] line; summary stats.
@@ -216,6 +217,9 @@ int main(int argc, char** argv)
     // mode=pe: per-event action space (each idle capacity unit picks a type or
     // idles; valid_actions = n_jobs+1).  Default: the candidate-queue space.
     if (S("mode", "") == "pe")   cfg.Set("action_mode", std::string("per_event"));
+    // hold=1: an idle capacity-unit decision remains in force until the next
+    // arrival or completion instead of being reconsidered at every tick.
+    if (I("hold", 0) != 0)        cfg.Set("hold_actions_until_real_event", true);
     // force_late=1: SLA escalation — late FILs are served with forced priority
     // (per_event only); the learned policy decides pre-deadline only.
     if (I("force_late", 0) != 0) cfg.Set("force_late_service", true);
@@ -326,6 +330,8 @@ int main(int argc, char** argv)
               << "  base=" << (METHOD == "ppo" ? std::string("(none)") : BASE)
               << "  sort=" << ACTION_SORT
               << "  labels=" << LABELS
+              << "  mode=" << S("mode", "candidate_queue")
+              << "  hold=" << (I("hold", 0) != 0 ? 1 : 0)
               << "  reward_type=" << REWARD_TYPE << "\n";
     if (METHOD == "ppo")
         std::cout << "updates=" << PPO_NUM_UPDATES

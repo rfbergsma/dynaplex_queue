@@ -244,7 +244,8 @@ namespace DynaPlex::Models {
 					// Charge tick cost using the configurable reward function (post-tick FIL)
 					double cost = ComputeTickCost(state);
 				
-					if (!state.server_manager.action_queue.empty()) {
+					if (!hold_actions_until_real_event &&
+					    !state.server_manager.action_queue.empty()) {
 						state.cat = StateCategory::AwaitAction();
 					}
 					else {
@@ -271,7 +272,8 @@ namespace DynaPlex::Models {
 					DebugPrintActionQueue(state, "[QMDP]   AFTER event");
 					#endif
 
-					if (!state.server_manager.action_queue.empty()) {
+					if (!hold_actions_until_real_event &&
+					    !state.server_manager.action_queue.empty()) {
 						state.cat = StateCategory::AwaitAction();
 					}
 					else {
@@ -530,8 +532,13 @@ namespace DynaPlex::Models {
 				if (T > 0.0) {
 					MDP::State s2 = state;
 					s2.queue_manager.tick();
-					// after tick, nothing changes about who is empty/full,
-					// but if you treat total_tick_rate as depending on #waiting, it stays the same here.
+					// Match ModifyStateWithEvent exactly: legacy mode reconsiders an
+					// outstanding idle decision after every tick; hold mode waits for
+					// an arrival or completion.
+					s2.cat = (!hold_actions_until_real_event &&
+					          !s2.server_manager.action_queue.empty())
+						? StateCategory::AwaitAction()
+						: StateCategory::AwaitEvent();
 					out.push_back({ std::move(s2), T / Lambda });
 				}
 
@@ -575,7 +582,12 @@ namespace DynaPlex::Models {
 				const double R = A + T + C;
 				const double r_nothing = std::max(0.0, Lambda - R);
 				if (r_nothing > 0.0) {
-					out.push_back({ state, r_nothing / Lambda }); // self-loop
+					MDP::State s2 = state;
+					s2.cat = (!hold_actions_until_real_event &&
+					          !s2.server_manager.action_queue.empty())
+						? StateCategory::AwaitAction()
+						: StateCategory::AwaitEvent();
+					out.push_back({ std::move(s2), r_nothing / Lambda });
 				}
 
 
@@ -833,6 +845,10 @@ namespace DynaPlex::Models {
 			}
 			if (per_event_mode && enable_skip_all)
 				throw DynaPlex::Error("queue_mdp: action_mode=per_event is incompatible with enable_skip_all");
+			if (config.HasKey("hold_actions_until_real_event"))
+				config.Get("hold_actions_until_real_event", hold_actions_until_real_event);
+			if (hold_actions_until_real_event && !per_event_mode)
+				throw DynaPlex::Error("queue_mdp: hold_actions_until_real_event requires action_mode=per_event");
 			if (config.HasKey("force_late_service"))
 				config.Get("force_late_service", force_late_service);
 			if (force_late_service && !per_event_mode)
