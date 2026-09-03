@@ -23,6 +23,7 @@
 #include <vector>
 #include <string>
 #include <cassert>
+#include <memory>
 
 #include "../../../lib/models/models/queue_mdp/mdp.h"
 #include "../../../lib/models/models/queue_mdp/policies.h"
@@ -269,19 +270,20 @@ static void run_S1()
     CHECK(q[1].is_rfq_winner   == 1,            "alpha=1 is_rfq_winner=1");
 
     // Policy trace
-    auto fifo_acts = trace_policy(mdp, s, [](const MDP::State& st){
-        DynaPlex::Models::queue_mdp::FIFOPolicy p(nullptr, VarGroup{});
+    auto mdp_ptr = std::make_shared<const MDP>(mdp);
+    auto fifo_acts = trace_policy(mdp, s, [mdp_ptr](const MDP::State& st){
+        DynaPlex::Models::queue_mdp::FIFOPolicy p(mdp_ptr, VarGroup{});
         return p.GetAction(st); });
     CHECK(!fifo_acts.empty() && fifo_acts[0] == 1, "FIFOPolicy assigns at alpha=0");
 
-    auto cmu_acts = trace_policy(mdp, s, [](const MDP::State& st){
-        DynaPlex::Models::queue_mdp::CmuPolicy p(nullptr, VarGroup{});
+    auto cmu_acts = trace_policy(mdp, s, [mdp_ptr](const MDP::State& st){
+        DynaPlex::Models::queue_mdp::CmuPolicy p(mdp_ptr, VarGroup{});
         return p.GetAction(st); });
     CHECK(cmu_acts.size() >= 2 && cmu_acts[0] == 0 && cmu_acts[1] == 1,
           "CmuPolicy skips alpha=0, assigns alpha=1");
 
-    auto rfq_acts = trace_policy(mdp, s, [](const MDP::State& st){
-        DynaPlex::Models::queue_mdp::ReverseFIFOPolicy p(nullptr, VarGroup{});
+    auto rfq_acts = trace_policy(mdp, s, [mdp_ptr](const MDP::State& st){
+        DynaPlex::Models::queue_mdp::ReverseFIFOPolicy p(mdp_ptr, VarGroup{});
         return p.GetAction(st); });
     CHECK(rfq_acts.size() >= 2 && rfq_acts[0] == 0 && rfq_acts[1] == 1,
           "ReverseFIFOPolicy skips alpha=0, assigns alpha=1");
@@ -342,20 +344,21 @@ static void run_S4()
     // So each policy takes exactly one action=1 in this phase; the second
     // job is assigned in the next phase (after the FIL-refresh event).
     // Here we verify the FIRST-PHASE decision only.
-    auto fifo_acts = trace_policy(mdp, s, [](const MDP::State& st){
-        DynaPlex::Models::queue_mdp::FIFOPolicy p(nullptr, VarGroup{});
+    auto mdp_ptr = std::make_shared<const MDP>(mdp);
+    auto fifo_acts = trace_policy(mdp, s, [mdp_ptr](const MDP::State& st){
+        DynaPlex::Models::queue_mdp::FIFOPolicy p(mdp_ptr, VarGroup{});
         return p.GetAction(st); });
     CHECK(fifo_acts.size() == 1 && fifo_acts[0] == 1,
           "FIFOPolicy assigns at alpha=0 (both fifo=1; first-phase decision)");
 
-    auto cmu_acts = trace_policy(mdp, s, [](const MDP::State& st){
-        DynaPlex::Models::queue_mdp::CmuPolicy p(nullptr, VarGroup{});
+    auto cmu_acts = trace_policy(mdp, s, [mdp_ptr](const MDP::State& st){
+        DynaPlex::Models::queue_mdp::CmuPolicy p(mdp_ptr, VarGroup{});
         return p.GetAction(st); });
     CHECK(cmu_acts.size() == 1 && cmu_acts[0] == 1,
           "CmuPolicy assigns at alpha=0 (both cmu=1; first-phase decision)");
 
-    auto rfq_acts = trace_policy(mdp, s, [](const MDP::State& st){
-        DynaPlex::Models::queue_mdp::ReverseFIFOPolicy p(nullptr, VarGroup{});
+    auto rfq_acts = trace_policy(mdp, s, [mdp_ptr](const MDP::State& st){
+        DynaPlex::Models::queue_mdp::ReverseFIFOPolicy p(mdp_ptr, VarGroup{});
         return p.GetAction(st); });
     CHECK(rfq_acts.size() == 1 && rfq_acts[0] == 1,
           "ReverseFIFOPolicy assigns at alpha=0 (both rfq=1; first-phase decision)");
@@ -443,18 +446,19 @@ static void run_S7()
     // FIFO: assigns j0 at alpha=0 (fifo=1) → phase trace {1}
     // Cmu:  skips j0 (cmu=0), assigns j1 (cmu=1) → phase trace {0,1}
     // RFQ:  skips j0 (rfq=0), assigns j1 (rfq=1) → phase trace {0,1}
-    auto fifo_acts = trace_policy(mdp, s, [](const MDP::State& st){
-        DynaPlex::Models::queue_mdp::FIFOPolicy p(nullptr, VarGroup{}); return p.GetAction(st); });
+    auto mdp_ptr = std::make_shared<const MDP>(mdp);
+    auto fifo_acts = trace_policy(mdp, s, [mdp_ptr](const MDP::State& st){
+        DynaPlex::Models::queue_mdp::FIFOPolicy p(mdp_ptr, VarGroup{}); return p.GetAction(st); });
     CHECK(fifo_acts.size() == 1 && fifo_acts[0] == 1,
           "FIFOPolicy phase trace: {1}  (j0 is fifo_winner)");
 
-    auto cmu_acts = trace_policy(mdp, s, [](const MDP::State& st){
-        DynaPlex::Models::queue_mdp::CmuPolicy p(nullptr, VarGroup{}); return p.GetAction(st); });
+    auto cmu_acts = trace_policy(mdp, s, [mdp_ptr](const MDP::State& st){
+        DynaPlex::Models::queue_mdp::CmuPolicy p(mdp_ptr, VarGroup{}); return p.GetAction(st); });
     CHECK(cmu_acts.size() == 2 && cmu_acts[0] == 0 && cmu_acts[1] == 1,
           "CmuPolicy phase trace: {0,1}  (skip j0 cmu=0, assign j1 cmu=1)");
 
-    auto rfq_acts = trace_policy(mdp, s, [](const MDP::State& st){
-        DynaPlex::Models::queue_mdp::ReverseFIFOPolicy p(nullptr, VarGroup{}); return p.GetAction(st); });
+    auto rfq_acts = trace_policy(mdp, s, [mdp_ptr](const MDP::State& st){
+        DynaPlex::Models::queue_mdp::ReverseFIFOPolicy p(mdp_ptr, VarGroup{}); return p.GetAction(st); });
     CHECK(rfq_acts.size() == 2 && rfq_acts[0] == 0 && rfq_acts[1] == 1,
           "ReverseFIFOPolicy phase trace: {0,1}  (skip j0 rfq=0, assign j1 rfq=1)");
 }
@@ -479,13 +483,14 @@ static void run_S8()
     CHECK(q[1].is_cmu_winner  == 1, "j1 cmu=1");
 
     // FIFO assigns whichever comes first in FIFO sort (j0 by tie-breaking on job index)
-    auto fifo_acts = trace_policy(mdp, s, [](const MDP::State& st){
-        DynaPlex::Models::queue_mdp::FIFOPolicy p(nullptr, VarGroup{}); return p.GetAction(st); });
+    auto mdp_ptr = std::make_shared<const MDP>(mdp);
+    auto fifo_acts = trace_policy(mdp, s, [mdp_ptr](const MDP::State& st){
+        DynaPlex::Models::queue_mdp::FIFOPolicy p(mdp_ptr, VarGroup{}); return p.GetAction(st); });
     CHECK(!fifo_acts.empty() && fifo_acts[0] == 1, "FIFOPolicy assigns at alpha=0");
 
     // ReverseFIFO: both rfq=1 → also assigns at alpha=0 (same as FIFO on tie)
-    auto rfq_acts = trace_policy(mdp, s, [](const MDP::State& st){
-        DynaPlex::Models::queue_mdp::ReverseFIFOPolicy p(nullptr, VarGroup{}); return p.GetAction(st); });
+    auto rfq_acts = trace_policy(mdp, s, [mdp_ptr](const MDP::State& st){
+        DynaPlex::Models::queue_mdp::ReverseFIFOPolicy p(mdp_ptr, VarGroup{}); return p.GetAction(st); });
     CHECK(!rfq_acts.empty() && rfq_acts[0] == 1, "ReverseFIFOPolicy also assigns at alpha=0 (tie)");
 }
 
