@@ -39,6 +39,10 @@ namespace DynaPlex::Utilities {
 		 * 
 		 * @param index_of_benchmark Index of the policy that will be used as a benchmarks -- all other performance will be reported relative to the benchmark. Defaults to -1 in which case
 		 * absolute performance of all policies is returned. 
+		 * @return One VarGroup per policy. `absolute_mean` and `absolute_error`
+		 * always contain that policy's own estimate. `mean` and `error` retain the
+		 * historical behavior: when index_of_benchmark is set they contain the
+		 * paired difference and paired standard error relative to the benchmark.
          */
 		std::vector<VarGroup> Compare(std::vector<DynaPlex::Policy> policies, int64_t index_of_benchmark = -1) const;
 

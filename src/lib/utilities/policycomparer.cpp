@@ -196,6 +196,13 @@ namespace DynaPlex::Utilities {
 			auto& policy = policies[i];
 			DynaPlex::VarGroup forPolicy{};
 			forPolicy.Add("policy", policy->GetConfig());
+			// Always expose the absolute estimate, even when a benchmark was
+			// requested.  The existing mean/error fields remain backward compatible:
+			// with a benchmark they contain the paired difference to that benchmark.
+			// Keeping both in one result lets callers audit an apples-to-apples
+			// comparison without running either policy through a second simulation.
+			forPolicy.Add("absolute_mean", comparison.mean(i));
+			forPolicy.Add("absolute_error", comparison.standardError(i));
 			forPolicy.Add("mean", comparison.mean(i,index_of_benchmark));
 			forPolicy.Add("error", comparison.standardError(i,index_of_benchmark));
 			if (i == index_of_benchmark)

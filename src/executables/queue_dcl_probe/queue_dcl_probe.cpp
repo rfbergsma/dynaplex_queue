@@ -18,6 +18,7 @@
 //   temp_anneal(1) temp_min(0.25) resets(16)
 //   mode(candidate_queue; use pe for per-event) hold(0)
 //   N(20000) M(400) tick(3.0) base_h(100) eval_traj(100) eval_periods(50000)
+//   eval_warmup(128) eval_seed(13021984) readout_battery(0)
 //   rvi_diag(0) rvi_post_tick_cost(0) rvi_policy_stable(0)
 //   visit_steps(0) visit_warmup(20000)
 //
@@ -432,6 +433,12 @@ int main(int argc, char** argv)
     const int64_t BASE_H       = I("base_h", 100);
     const int64_t EVAL_TRAJ    = I("eval_traj", 100);
     const int64_t EVAL_PERIODS = I("eval_periods", 50000);
+    const int64_t EVAL_WARMUP  = I("eval_warmup", 128);
+    const int64_t EVAL_SEED    = I("eval_seed", 13021984);
+    // Diagnostic-only.  The locked headline evaluation below always compares
+    // exactly the predeclared PPO argmax policy with RVI.  Keeping alternative
+    // readouts off by default prevents post-evaluation policy selection.
+    const bool    READOUT_BATTERY = I("readout_battery", 0) != 0;
     const bool    RVI_DIAG      = I("rvi_diag", 0) != 0;
     const int64_t RVI_DIAG_TRAJ = I("rvi_diag_traj", 32);
     const int64_t RVI_DIAG_STEPS= I("rvi_diag_steps", 200000);
@@ -498,6 +505,8 @@ int main(int argc, char** argv)
     VarGroup eval_cfg;
     eval_cfg.Add("number_of_trajectories", EVAL_TRAJ);
     eval_cfg.Add("periods_per_trajectory",  EVAL_PERIODS);
+    eval_cfg.Add("warmup_periods",          EVAL_WARMUP);
+    eval_cfg.Add("rng_seed",               EVAL_SEED);
     auto comparer = dp.GetPolicyComparer(mdp, eval_cfg);
 
     // --- mix_eval=p0,p1,p2: evaluate a fixed-probability random policy and exit ---
@@ -705,32 +714,74 @@ int main(int argc, char** argv)
             auto nn = ppo.GetPolicy();
             auto nn_stoch = ppo.GetStochasticPolicy();
 
-            // Readout battery: one training run, many extraction strategies.
-            std::vector<std::string> rnames = {
-                "argmax", "stoch T=1", "stoch T=0.1",
-                "bias 0.25", "bias 0.5", "bias 1.0",
-                "advhead", "advhead b.25" };
-            std::vector<DynaPlex::Policy> rpols = {
-                nn,
-                nn_stoch,
-                ppo.GetReadoutPolicy(0.1, 0.0, false),
-                ppo.GetReadoutPolicy(0.0, 0.25, false),
-                ppo.GetReadoutPolicy(0.0, 0.5,  false),
-                ppo.GetReadoutPolicy(0.0, 1.0,  false),
-                ppo.GetReadoutPolicy(0.0, 0.0,  true),
-                ppo.GetReadoutPolicy(0.0, 0.25, true) };
-
             double nn_mean = 0.0;
             try {
-                std::cout << "  [eval] readout battery (" << rpols.size() << " policies)...\n" << std::flush;
-                auto res = comparer.Compare(rpols);
-                res[0].Get("mean", nn_mean);
-                for (size_t r = 0; r < rpols.size(); ++r) {
-                    double m = 0.0; res[r].Get("mean", m);
-                    std::cout << "      [" << std::left << std::setw(12) << rnames[r] << "] "
-                              << std::fixed << std::setprecision(4)
-                              << "NN*Lambda=" << std::setw(10) << m * Lambda
-                              << "  NN/RVI=" << m / norm << "\n" << std::flush;
+                if (rvi_policy) {
+                    // Locked audit comparison: both already-frozen DynaPlex policy
+                    // objects enter ONE comparer call.  PolicyComparer resets every
+                    // policy to the same evaluation RNG streams and trajectory IDs,
+                    // so `error` for PPO is the paired SE of PPO-RVI.
+                    std::cout << "  [audit-eval] locked policies in one paired Compare() call...\n"
+                              << "      RVI type=" << rvi_policy->TypeIdentifier() << "\n"
+                              << "      PPO type=" << nn->TypeIdentifier() << " (fixed argmax)\n"
+                              << "      trajectories=" << EVAL_TRAJ
+                              << " periods=" << EVAL_PERIODS
+                              << " warmup=" << EVAL_WARMUP
+                              << " eval_seed=" << EVAL_SEED << "\n" << std::flush;
+
+                    auto audit = comparer.Compare({rvi_policy, nn}, 0);
+                    double rvi_audit_mean = 0.0, rvi_audit_error = 0.0;
+                    double nn_error = 0.0, paired_delta = 0.0, paired_error = 0.0;
+                    audit[0].Get("absolute_mean",  rvi_audit_mean);
+                    audit[0].Get("absolute_error", rvi_audit_error);
+                    audit[1].Get("absolute_mean",  nn_mean);
+                    audit[1].Get("absolute_error", nn_error);
+                    audit[1].Get("mean",            paired_delta);
+                    audit[1].Get("error",           paired_error);
+
+                    std::cout << std::fixed << std::setprecision(6)
+                              << "      RVI*Lambda=" << rvi_audit_mean * Lambda
+                              << "  SE=" << rvi_audit_error * Lambda << "\n"
+                              << "      PPO*Lambda=" << nn_mean * Lambda
+                              << "  SE=" << nn_error * Lambda << "\n"
+                              << "      paired(PPO-RVI)*Lambda=" << paired_delta * Lambda
+                              << "  paired_SE=" << paired_error * Lambda
+                              << "  CI95=[" << (paired_delta - 1.96 * paired_error) * Lambda
+                              << ',' << (paired_delta + 1.96 * paired_error) * Lambda << "]\n"
+                              << std::flush;
+                } else {
+                    // No RVI available (e.g. large instances): still evaluate the
+                    // one predeclared PPO policy through PolicyComparer.
+                    auto only_ppo = comparer.Compare({nn});
+                    only_ppo[0].Get("absolute_mean", nn_mean);
+                }
+
+                if (READOUT_BATTERY) {
+                    // Explicitly diagnostic and never used for the headline score.
+                    std::vector<std::string> rnames = {
+                        "argmax", "stoch T=1", "stoch T=0.1",
+                        "bias 0.25", "bias 0.5", "bias 1.0",
+                        "advhead", "advhead b.25" };
+                    std::vector<DynaPlex::Policy> rpols = {
+                        nn,
+                        nn_stoch,
+                        ppo.GetReadoutPolicy(0.1, 0.0, false),
+                        ppo.GetReadoutPolicy(0.0, 0.25, false),
+                        ppo.GetReadoutPolicy(0.0, 0.5,  false),
+                        ppo.GetReadoutPolicy(0.0, 1.0,  false),
+                        ppo.GetReadoutPolicy(0.0, 0.0,  true),
+                        ppo.GetReadoutPolicy(0.0, 0.25, true) };
+                    std::cout << "  [diagnostic-only] readout battery ("
+                              << rpols.size() << " policies; headline remains locked argmax)...\n"
+                              << std::flush;
+                    auto res = comparer.Compare(rpols);
+                    for (size_t r = 0; r < rpols.size(); ++r) {
+                        double m = 0.0; res[r].Get("absolute_mean", m);
+                        std::cout << "      [" << std::left << std::setw(12) << rnames[r] << "] "
+                                  << std::fixed << std::setprecision(4)
+                                  << "NN*Lambda=" << std::setw(10) << m * Lambda
+                                  << "  NN/RVI=" << m / norm << "\n" << std::flush;
+                    }
                 }
             } catch (const std::exception& e) {
                 std::cout << "  [eval EXCEPTION] " << e.what() << "\n" << std::flush;
