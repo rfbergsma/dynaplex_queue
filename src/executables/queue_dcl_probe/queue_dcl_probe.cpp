@@ -18,6 +18,8 @@
 //   temp_anneal(1) temp_min(0.25) resets(16)
 //   mode(candidate_queue; use pe for per-event) hold(0)
 //   N(20000) M(400) tick(3.0) base_h(100) eval_traj(100) eval_periods(50000)
+//   rvi_diag(0) rvi_post_tick_cost(0) rvi_policy_stable(0)
+//   visit_steps(0) visit_warmup(20000)
 //
 // Output per seed: argmax row (NN*Lambda, NN/RVI) + [stoch] line; summary stats.
 
@@ -33,6 +35,7 @@
 #include <sstream>
 #include <random>
 #include <thread>
+#include <tuple>
 #include "dynaplex/dynaplexprovider.h"
 #include "dynaplex/policy.h"
 #include "dynaplex/policycomparer.h"
@@ -96,6 +99,171 @@ public:
         }
     }
 };
+
+// Policy wrapper around a directly computed RVI solution.  The normal policy
+// factory intentionally hides the solution object; diagnostics need access to
+// g*, the stopping criterion, and the exact action map without solving RVI a
+// second time.
+class RVISolutionPolicy : public DynaPlex::PolicyInterface {
+    const qm::MDP* mdp;
+    std::shared_ptr<const qm::MDP::RVISolution> solution;
+    DynaPlex::VarGroup config;
+public:
+    RVISolutionPolicy(const qm::MDP* mdp,
+                      std::shared_ptr<const qm::MDP::RVISolution> solution)
+        : mdp(mdp), solution(std::move(solution))
+    {
+        config.Add("id", std::string("RVI_solution_diagnostic"));
+        config.Add("M", (int64_t)this->solution->M);
+    }
+    std::string TypeIdentifier() const override { return "RVI_solution_diagnostic"; }
+    const DynaPlex::VarGroup& GetConfig() const override { return config; }
+    void SetAction(std::span<DynaPlex::Trajectory> trajectories) const override {
+        for (auto& t : trajectories) {
+            const auto& s = DynaPlex::RetrieveState<qm::MDP::State>(t.GetState());
+            t.NextAction = mdp->EvaluateRVIPolicy(*solution, s);
+        }
+    }
+};
+
+static std::string DecisionContext(const qm::MDP::State& s)
+{
+    const int64_t counter = s.server_manager.get_action_counter();
+    int64_t pool = -1;
+    if (counter >= 0 && counter < (int64_t)s.server_manager.action_queue.size())
+        pool = s.server_manager.action_queue[(size_t)counter].server_index;
+
+    std::ostringstream out;
+    out << "pool=" << pool << ",counter=" << counter << ",busy=";
+    for (size_t k = 0; k < s.server_manager.busy_on.size(); ++k) {
+        if (k) out << '/';
+        out << '[';
+        for (size_t j = 0; j < s.server_manager.busy_on[k].size(); ++j) {
+            if (j) out << ',';
+            out << s.server_manager.busy_on[k][j];
+        }
+        out << ']';
+    }
+    const auto fil = s.queue_manager.get_FIL_waiting();
+    out << ",FIL=(";
+    for (size_t n = 0; n < fil.size(); ++n) {
+        if (n) out << ',';
+        out << fil[n];
+    }
+    out << ')';
+    return out.str();
+}
+
+// Compare PPO and RVI on the actual state distribution, rather than on one
+// hand-constructed canonical slice.  We run once under each driver policy;
+// every AwaitAction state is queried by both policies before the driver's
+// action is applied.  The result is therefore visitation weighted and includes
+// every server occupancy, empty-queue pattern, pool, and action_counter reached.
+static void PrintVisitedPolicyAgreement(
+    const qm::MDP& raw_mdp,
+    const DynaPlex::MDP& fw_mdp,
+    const DynaPlex::Policy& ppo,
+    const DynaPlex::Policy& rvi,
+    bool drive_with_ppo,
+    int64_t warmup_steps,
+    int64_t sample_steps,
+    int64_t rng_seed)
+{
+    DynaPlex::Trajectory traj;
+    traj.RNGProvider.SeedEventStreams(true, rng_seed, 0, 0);
+    auto one = std::span<DynaPlex::Trajectory>(&traj, 1);
+    fw_mdp->InitiateState(one);
+
+    const auto& driver = drive_with_ppo ? ppo : rvi;
+    for (int64_t step = 0; step < warmup_steps; ++step) {
+        if (traj.Category.IsAwaitAction())
+            fw_mdp->IncorporateAction(one, driver);
+        else
+            fw_mdp->IncorporateEvent(one);
+    }
+
+    const int A = (int)raw_mdp.n_jobs + 1;
+    std::vector<std::vector<int64_t>> pairs(
+        (size_t)A, std::vector<int64_t>((size_t)A, 0));
+    std::map<std::string, std::pair<int64_t,int64_t>> context_counts;
+    std::map<std::string, int64_t> mismatch_states;
+    int64_t decisions = 0, disagreements = 0, invalid = 0;
+
+    for (int64_t step = 0; step < sample_steps; ++step) {
+        if (!traj.Category.IsAwaitAction()) {
+            fw_mdp->IncorporateEvent(one);
+            continue;
+        }
+
+        const auto& state = DynaPlex::RetrieveState<qm::MDP::State>(traj.GetState());
+        const std::string full_context = DecisionContext(state);
+        const auto comma = full_context.find(",FIL=");
+        const std::string structural_context = full_context.substr(0, comma);
+
+        ppo->SetAction(one);
+        const int64_t a_ppo = traj.NextAction;
+        rvi->SetAction(one);
+        const int64_t a_rvi = traj.NextAction;
+
+        ++decisions;
+        auto& ctx = context_counts[structural_context];
+        ++ctx.first;
+        if (a_ppo < 0 || a_ppo >= A || a_rvi < 0 || a_rvi >= A) {
+            ++invalid;
+        } else {
+            ++pairs[(size_t)a_rvi][(size_t)a_ppo];
+            if (a_ppo != a_rvi) {
+                ++disagreements;
+                ++ctx.second;
+                ++mismatch_states[full_context + ":" +
+                    std::to_string(a_rvi) + "->" + std::to_string(a_ppo)];
+            }
+        }
+
+        traj.NextAction = drive_with_ppo ? a_ppo : a_rvi;
+        fw_mdp->IncorporateAction(one);
+    }
+
+    const double agreement = decisions > 0
+        ? 100.0 * (double)(decisions - disagreements - invalid) / (double)decisions
+        : 0.0;
+    std::cout << "\n  [visited-policy-compare] driver="
+              << (drive_with_ppo ? "PPO" : "RVI")
+              << " decisions=" << decisions
+              << " agreement=" << std::fixed << std::setprecision(3) << agreement << "%"
+              << " disagreements=" << disagreements
+              << " invalid=" << invalid << "\n";
+    std::cout << "  rows=RVI action, columns=PPO action\n      ";
+    for (int a = 0; a < A; ++a) std::cout << std::setw(10) << ("PPO" + std::to_string(a));
+    std::cout << "\n";
+    for (int r = 0; r < A; ++r) {
+        std::cout << "  RVI" << r << ' ';
+        for (int a = 0; a < A; ++a) std::cout << std::setw(10) << pairs[(size_t)r][(size_t)a];
+        std::cout << "\n";
+    }
+
+    std::vector<std::pair<std::string,std::pair<int64_t,int64_t>>> contexts(
+        context_counts.begin(), context_counts.end());
+    std::sort(contexts.begin(), contexts.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.second.second > rhs.second.second;
+    });
+    std::cout << "  structural contexts (visits, disagreements):\n";
+    for (const auto& [name, counts] : contexts) {
+        if (counts.second == 0) continue;
+        std::cout << "    " << name << "  visits=" << counts.first
+                  << "  disagree=" << counts.second
+                  << " (" << std::setprecision(3)
+                  << 100.0 * (double)counts.second / (double)counts.first << "%)\n";
+    }
+
+    std::vector<std::pair<std::string,int64_t>> top(mismatch_states.begin(), mismatch_states.end());
+    std::sort(top.begin(), top.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.second > rhs.second;
+    });
+    std::cout << "  most visited disagreement states:\n";
+    for (size_t i = 0; i < std::min<size_t>(20, top.size()); ++i)
+        std::cout << "    " << top[i].second << "x  " << top[i].first << "\n";
+}
 
 // Exhaustive policy comparison on the canonical two-job state slice used by
 // the queue diagnostics: pool 0 has one type-0 job in service, pool 1 is idle,
@@ -264,6 +432,13 @@ int main(int argc, char** argv)
     const int64_t BASE_H       = I("base_h", 100);
     const int64_t EVAL_TRAJ    = I("eval_traj", 100);
     const int64_t EVAL_PERIODS = I("eval_periods", 50000);
+    const bool    RVI_DIAG      = I("rvi_diag", 0) != 0;
+    const int64_t RVI_DIAG_TRAJ = I("rvi_diag_traj", 32);
+    const int64_t RVI_DIAG_STEPS= I("rvi_diag_steps", 200000);
+    const int64_t RVI_DIAG_WARM = I("rvi_diag_warmup", 20000);
+    const int64_t RVI_DIAG_THREADS = I("rvi_diag_threads", 8);
+    const int64_t VISIT_STEPS   = I("visit_steps", 0);
+    const int64_t VISIT_WARMUP  = I("visit_warmup", 20000);
     // bench=1 full (FIFO+RVI); bench=2 FIFO only (for cells where RVI is
     // intractable, e.g. exp=6); bench=0 none (RVI solve costs 30+ min per
     // process — ratios computed offline against known references).
@@ -373,6 +548,7 @@ int main(int argc, char** argv)
     // --- Benchmarks (bench=1: FIFO+RVI; bench=2: FIFO only; bench=0: none) ---
     double fifo_mean = 1.0, rvi_mean = 1.0, base_mean = 1.0;
     DynaPlex::Policy rvi_policy;
+    std::shared_ptr<qm::MDP::RVISolution> rvi_solution;
     if (BENCH_MODE == 1) {
         auto fifo = mdp->GetPolicy("FIFO policy");
         // RVI truncation control.  rvi_m>0 pins the FIL clamp to a FIXED M
@@ -381,14 +557,61 @@ int main(int argc, char** argv)
         // tardiness flux) where the auto-loop's between-M criterion stops early.
         // Otherwise rvi_tol drives the auto-select loop (default 0.01; too loose
         // for tail-heavy rewards, whose g* keeps drifting with FIL depth).
-        VarGroup rvi_cfg{{"id", std::string("RVI_optimal")}, {"silent", int64_t(1)}};
-        if (I("rvi_m", 0) > 0) rvi_cfg.Add("M", I("rvi_m", 0));
-        else                   rvi_cfg.Add("rel_tol", D("rvi_tol", 0.01));
-        rvi_policy = mdp->GetPolicy(rvi_cfg);
+        if (RVI_DIAG) {
+            qm::MDP::RVISolution sol;
+            if (I("rvi_m", 0) > 0) {
+                sol = raw_mdp.runRVI(
+                    (int)I("rvi_m", 0),
+                    (int)I("rvi_max_iter", 10000),
+                    false,
+                    (int)I("rvi_policy_stable", 0),
+                    I("rvi_post_tick_cost", 0) != 0);
+            } else {
+                sol = raw_mdp.runRVI(D("rvi_tol", 0.01), false);
+            }
+            rvi_solution = std::make_shared<qm::MDP::RVISolution>(std::move(sol));
+            rvi_policy = std::make_shared<RVISolutionPolicy>(&raw_mdp, rvi_solution);
+        } else {
+            VarGroup rvi_cfg{{"id", std::string("RVI_optimal")}, {"silent", int64_t(1)}};
+            if (I("rvi_m", 0) > 0) rvi_cfg.Add("M", I("rvi_m", 0));
+            else                   rvi_cfg.Add("rel_tol", D("rvi_tol", 0.01));
+            rvi_policy = mdp->GetPolicy(rvi_cfg);
+        }
 
         auto bench = comparer.Compare({fifo, rvi_policy});
         bench[0].Get("mean", fifo_mean);
         bench[1].Get("mean", rvi_mean);
+
+        if (RVI_DIAG && rvi_solution) {
+            const auto& sol = *rvi_solution;
+            const char* stop = sol.stopped_by_span ? "span"
+                : sol.stopped_by_g_stable ? "g_stable" : "max_iter";
+            std::cout << "\n  [rvi-diag] M=" << sol.M
+                      << " states=" << sol.state_count
+                      << " transitions=" << sol.transition_count
+                      << " iterations=" << sol.iterations
+                      << " stop=" << stop
+                      << " post_tick_cost=" << (sol.post_tick_cost ? 1 : 0)
+                      << " g*=" << std::setprecision(12) << sol.g_star
+                      << " final_span=" << sol.final_span
+                      << " final_policy_changes=" << sol.final_policy_changes
+                      << " policy_stable=" << sol.policy_stable_count << "\n"
+                      << "  [rvi-diag] evaluating extracted policy on raw simulator...\n"
+                      << std::flush;
+            auto raw = qm::EvaluatePolicyRawParallel(
+                raw_mdp, rvi_policy, RVI_DIAG_TRAJ, RVI_DIAG_STEPS,
+                RVI_DIAG_WARM, 4242, RVI_DIAG_THREADS);
+            std::cout << "  [rvi-diag] raw policy evaluation:"
+                      << " event_cost/rvi_step=" << raw.mean_cost_per_rvi_step
+                      << " explicit_rvi_cost/rvi_step=" << raw.mean_cost_per_rvi_step_rvi
+                      << " immediate_cost/rvi_step=" << raw.mean_cost_per_step_gic
+                      << " gic_minus_g*=" << (raw.mean_cost_per_step_gic - sol.g_star)
+                      << " std_error=" << raw.std_error
+                      << " action_steps=" << raw.total_action_steps
+                      << " real_events=" << raw.total_real_event_steps
+                      << " fil_refresh=" << raw.total_fil_refresh_steps << "\n"
+                      << std::flush;
+        }
     } else if (BENCH_MODE == 2) {
         auto fifo = mdp->GetPolicy("FIFO policy");
         comparer.Compare({fifo})[0].Get("mean", fifo_mean);
@@ -523,6 +746,13 @@ int main(int argc, char** argv)
                 } else {
                     PrintCanonicalPolicyAgreement(raw_mdp, mdp, nn, rvi_policy, compare_grid);
                 }
+            }
+
+            if (VISIT_STEPS > 0 && rvi_policy) {
+                PrintVisitedPolicyAgreement(raw_mdp, mdp, nn, rvi_policy,
+                                            true, VISIT_WARMUP, VISIT_STEPS, seed + 7000);
+                PrintVisitedPolicyAgreement(raw_mdp, mdp, nn, rvi_policy,
+                                            false, VISIT_WARMUP, VISIT_STEPS, seed + 8000);
             }
 
             std::cout << std::left << std::fixed << std::setprecision(4)

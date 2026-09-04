@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 
 namespace DynaPlex::Models {
 	namespace queue_mdp /*must be consistent everywhere for complete mdp definition and associated policies and states (if not defined inline).*/
@@ -836,6 +837,19 @@ namespace DynaPlex::Models {
 			struct RVISolution {
 				double g_star;  // optimal average cost per time unit
 				int M;          // truncation level used
+				// Solver diagnostics.  These make it possible to distinguish a
+				// genuinely converged relative value iteration from the pragmatic
+				// g*-stability fallback used for truncated queue models.
+				int iterations = 0;
+				double final_span = std::numeric_limits<double>::infinity();
+				int final_policy_changes = -1;
+				int policy_stable_count = 0;
+				bool stopped_by_span = false;
+				bool stopped_by_g_stable = false;
+				bool reached_max_iterations = false;
+				bool post_tick_cost = false;
+				size_t state_count = 0;
+				size_t transition_count = 0;
 				std::unordered_map<uint64_t, int64_t> action_map;  // encoded state key -> optimal action
 				// Action-value gap |Q(s,0) - Q(s,1)| for every AwaitAction state.
 				// Large gap = confident decision; near-zero gap = near-tie (potential noise).
@@ -846,7 +860,9 @@ namespace DynaPlex::Models {
 				// Stored for every AwaitAction state where both actions are reachable.
 				std::unordered_map<uint64_t, std::pair<double,double>> q_map;
 			};
-			RVISolution runRVI(int M, int max_iter = 10000, bool silent = false) const;  // solve at fixed M
+			RVISolution runRVI(int M, int max_iter = 10000, bool silent = false,
+			                       int min_policy_stable = 0,
+			                       bool post_tick_cost = false) const;  // solve at fixed M
 			RVISolution runRVI(double rel_tol = 1e-4, bool silent = false) const;       // auto-select M via heuristic + convergence check
 			int64_t EvaluateRVIPolicy(const RVISolution& sol, const State& state) const;
 			// Returns |Q(s,0)-Q(s,1)| for the canonical encoding of 'state'.

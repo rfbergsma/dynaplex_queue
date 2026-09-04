@@ -62,7 +62,9 @@ struct StateEncoder {
 } // anonymous namespace
 
 // ---- runRVI(int M, int max_iter): BFS + RVI at a fixed truncation level ----
-MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
+MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent,
+	                         int min_policy_stable,
+	                         bool post_tick_cost) const {
 	if (max_queue_depth > 1 && !silent)
 		std::cout << "[RVI] WARNING: max_queue_depth=" << max_queue_depth
 		          << " > 1.  RVI operates on FIL projection only.\n"
@@ -98,9 +100,21 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 		// represent the action-tied refund terms.
 		const int64_t rvi_rtype = (reward_type == 2) ? 0
 		                        : (reward_type == 3) ? 1 : reward_type;
-		if (s.cat == DynaPlex::StateCategory::AwaitEvent())
-			immediate_cost.push_back((tick_rate / uniformization_rate) * ComputeTickCost(s, rvi_rtype));
-		else
+		if (s.cat == DynaPlex::StateCategory::AwaitEvent()) {
+			// The simulator charges queue cost after applying a tick.  The legacy
+			// RVI state-cost used the pre-tick state, which is a different reward
+			// whenever cost depends on age.  Keep both paths available for a clean
+			// diagnostic A/B comparison.
+			if (post_tick_cost) {
+				State after_tick = s;
+				after_tick.queue_manager.tick();
+				immediate_cost.push_back(
+					(tick_rate / uniformization_rate) * ComputeTickCost(after_tick, rvi_rtype));
+			} else {
+				immediate_cost.push_back(
+					(tick_rate / uniformization_rate) * ComputeTickCost(s, rvi_rtype));
+			}
+		} else
 			immediate_cost.push_back(0.0);
 		bfs_queue.push(idx);
 		return idx;
@@ -154,9 +168,18 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 	double g_star = 0.0;
 	double g_prev = 0.0;
 	int g_stable_count = 0;
+	std::vector<int16_t> previous_policy(states.size(), -1);
+	std::vector<int16_t> current_policy(states.size(), -1);
+	int policy_stable_count = 0;
+	int final_policy_changes = -1;
+	double final_span = std::numeric_limits<double>::infinity();
+	int iterations = 0;
+	bool stopped_by_span = false;
+	bool stopped_by_g_stable = false;
 
 	for (int iter = 0; iter < max_iter; ++iter) {
 		std::vector<double> h_new(states.size());
+		int policy_changes = 0;
 
 		for (size_t i = 0; i < states.size(); ++i) {
 			if (states[i].cat == DynaPlex::StateCategory::AwaitEvent()) {
@@ -167,14 +190,20 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 			}
 			else {
 				double best = std::numeric_limits<double>::infinity();
+				int16_t best_a = -1;
 				for (int a = 0; a < A_max; ++a) {
 					if (transitions[i][a].empty()) continue;
 					double val = 0.0;
 					for (const auto& t : transitions[i][a])
 						val += t.probability * h[t.next_state_idx];
-					best = std::min(best, val);
+					if (val < best) {
+						best = val;
+						best_a = (int16_t)a;
+					}
 				}
 				h_new[i] = best;
+				current_policy[i] = best_a;
+				if (iter > 0 && best_a != previous_policy[i]) ++policy_changes;
 			}
 		}
 
@@ -196,13 +225,23 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 			if (d < min_diff) min_diff = d;
 		}
 		const double span = max_diff - min_diff;
+		final_span = span;
+		final_policy_changes = (iter > 0) ? policy_changes : -1;
+		iterations = iter + 1;
+		if (iter > 0 && policy_changes == 0)
+			++policy_stable_count;
+		else
+			policy_stable_count = 0;
+		previous_policy.swap(current_policy);
 
 		std::swap(h, h_new);
 
 		if (!silent && iter % 500 == 0)
 			std::cout << "iter " << std::setw(6) << iter
 				      << "  g*=" << std::setprecision(10) << g_star
-				      << "  span=" << std::setprecision(6) << span << "\n";
+				      << "  span=" << std::setprecision(6) << span
+				      << "  policy_changes=" << policy_changes
+				      << "  policy_stable=" << policy_stable_count << "\n";
 
 		// Primary criterion: span < eps (theoretically correct for ergodic MDPs).
 		// Fallback: g_stable_count -- span does NOT converge to zero for truncated
@@ -215,11 +254,19 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 			g_stable_count = 0;
 		g_prev = g_star;
 
-		if (span < eps || g_stable_count >= 5) {
+		const bool span_converged = span < eps;
+		const bool g_fallback_converged = g_stable_count >= 5 &&
+			policy_stable_count >= min_policy_stable;
+		if (span_converged || g_fallback_converged) {
+			stopped_by_span = span_converged;
+			stopped_by_g_stable = !span_converged && g_fallback_converged;
 			if (!silent)
 				std::cout << "\nConverged at iter " << iter
-					      << (span < eps ? "  [span]" : "  [g_stable]")
-					      << "  g* = " << std::setprecision(12) << g_star << "\n";
+					      << (span_converged ? "  [span]" : "  [g_stable]")
+					      << "  g* = " << std::setprecision(12) << g_star
+					      << "  span=" << final_span
+					      << "  policy_changes=" << final_policy_changes
+					      << "  policy_stable=" << policy_stable_count << "\n";
 			break;
 		}
 	}
@@ -228,6 +275,16 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent) const {
 	RVISolution sol;
 	sol.g_star = g_star;
 	sol.M = M;
+	sol.iterations = iterations;
+	sol.final_span = final_span;
+	sol.final_policy_changes = final_policy_changes;
+	sol.policy_stable_count = policy_stable_count;
+	sol.stopped_by_span = stopped_by_span;
+	sol.stopped_by_g_stable = stopped_by_g_stable;
+	sol.reached_max_iterations = !stopped_by_span && !stopped_by_g_stable;
+	sol.post_tick_cost = post_tick_cost;
+	sol.state_count = states.size();
+	sol.transition_count = total_transitions;
 
 	for (size_t i = 0; i < states.size(); ++i) {
 		if (states[i].cat != DynaPlex::StateCategory::AwaitAction()) continue;
