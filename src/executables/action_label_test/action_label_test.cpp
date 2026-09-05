@@ -14,6 +14,7 @@
 //   S7  1 pool C=2, 3 job types          HARD: C=2 with 3 candidates
 //   S8  FIL tie FIL=[6,6] C=1           edge case: strict-inequality tie-breaking
 //   S9  per-event idle decision timing   tick/self-loop hold semantics
+//   S10 FIL refresh timing               service bookkeeping is zero-duration
 //
 // Exit code: 0 = all assertions pass, 1 = at least one FAIL.
 
@@ -544,6 +545,33 @@ static void run_S9()
     }
 }
 
+static void run_S10()
+{
+    std::cout << "\n--- S10: service-triggered FIL refresh is zero-duration ---\n";
+    MDP mdp = make_per_event_mdp(/*hold=*/false);
+
+    MDP::State s;
+    s.queue_manager.initialize(mdp.n_jobs, mdp.tick_rate, mdp.arrival_rates, 1);
+    s.queue_manager.set_fil(0, 2);
+    s.server_manager.initialize(&mdp.server_static_info, mdp.n_jobs);
+    s.server_manager.generate_actions_per_event(s.queue_manager.get_FIL_waiting());
+    s.cat = DynaPlex::StateCategory::AwaitAction();
+
+    mdp.ModifyStateWithAction(s, 1);  // serve type 0
+    CHECK(s.next_fil_job_type == 0, "serve schedules a FIL refresh");
+    CHECK(s.cat.IsAwaitEvent(), "FIL refresh is represented as an event");
+    CHECK(s.cat.Index() == 1,
+          "FIL refresh uses non-period event stream 1 (stream 0 alone advances time)");
+
+    MDP::Event refresh;
+    refresh.event_sample = 0.5;
+    refresh.uniform_rate_next_fil = 0.5;
+    mdp.ModifyStateWithEvent(s, refresh);
+    CHECK(s.next_fil_job_type == -1, "FIL refresh clears the pending marker");
+    CHECK(!s.cat.IsAwaitEvent() || s.cat.Index() == 0,
+          "after refresh, subsequent timed events use stream 0");
+}
+
 // =========================================================================
 // main
 // =========================================================================
@@ -563,6 +591,7 @@ int main()
     run_S7();
     run_S8();
     run_S9();
+    run_S10();
 
     std::cout << "\n========================================\n";
     std::cout << "  Results: " << g_pass << " passed, " << g_fail << " failed\n";

@@ -161,10 +161,55 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent,
 			      << "Total transitions: " << total_transitions << "\n";
 	}
 
+	// Action decisions are instantaneous in the queue model.  Build a
+	// topological ordering of the action-only part of the transition graph so
+	// each decision epoch can be solved exactly inside one event-time Bellman
+	// update.  Treating AwaitAction states as ordinary discrete-time states would
+	// charge one unit of average-cost time per decision, even though no physical
+	// time passes.  Since the number of decisions depends on the policy, that
+	// changes the objective and can make strategic idling look attractive.
+	std::vector<size_t> action_topological_order;
+	action_topological_order.reserve(n_await_action);
+	std::vector<size_t> action_indegree(states.size(), 0);
+	for (size_t i = 0; i < states.size(); ++i) {
+		if (states[i].cat != DynaPlex::StateCategory::AwaitAction()) continue;
+		for (int a = 0; a < A_max; ++a) {
+			for (const auto& t : transitions[i][a]) {
+				if (states[t.next_state_idx].cat == DynaPlex::StateCategory::AwaitAction())
+					++action_indegree[t.next_state_idx];
+			}
+		}
+	}
+	std::queue<size_t> zero_indegree;
+	for (size_t i = 0; i < states.size(); ++i)
+		if (states[i].cat == DynaPlex::StateCategory::AwaitAction() &&
+		    action_indegree[i] == 0)
+			zero_indegree.push(i);
+	while (!zero_indegree.empty()) {
+		const size_t i = zero_indegree.front();
+		zero_indegree.pop();
+		action_topological_order.push_back(i);
+		for (int a = 0; a < A_max; ++a) {
+			for (const auto& t : transitions[i][a]) {
+				if (states[t.next_state_idx].cat != DynaPlex::StateCategory::AwaitAction())
+					continue;
+				if (--action_indegree[t.next_state_idx] == 0)
+					zero_indegree.push(t.next_state_idx);
+			}
+		}
+	}
+	if (action_topological_order.size() != n_await_action)
+		throw DynaPlex::Error(
+			"queue_mdp RVI: zero-time action transitions contain a cycle; "
+			"the decision epoch cannot be embedded into the event-time chain");
+
 	// ---- RVI loop ----
 	const size_t ref = 0;
+	if (states[ref].cat != DynaPlex::StateCategory::AwaitEvent())
+		throw DynaPlex::Error("queue_mdp RVI: the reference state must await a timed event");
 	const double eps = 1e-10;
 	std::vector<double> h(states.size(), 0.0);
+	std::vector<double> action_h(states.size(), 0.0);
 	double g_star = 0.0;
 	double g_prev = 0.0;
 	int g_stable_count = 0;
@@ -177,38 +222,65 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent,
 	bool stopped_by_span = false;
 	bool stopped_by_g_stable = false;
 
+	// Given relative values on timed AwaitEvent states, solve every zero-time
+	// decision epoch backwards.  Successor AwaitAction values are already known
+	// in reverse topological order; successor AwaitEvent values come from event_h.
+	auto solve_action_epochs = [&](const std::vector<double>& event_h,
+	                               std::vector<double>& values,
+	                               std::vector<int16_t>* policy) {
+		for (auto rit = action_topological_order.rbegin();
+		     rit != action_topological_order.rend(); ++rit) {
+			const size_t i = *rit;
+			double best = std::numeric_limits<double>::infinity();
+			int16_t best_a = -1;
+			for (int a = 0; a < A_max; ++a) {
+				if (transitions[i][a].empty()) continue;
+				double val = 0.0;
+				for (const auto& t : transitions[i][a]) {
+					const bool next_is_action =
+						states[t.next_state_idx].cat == DynaPlex::StateCategory::AwaitAction();
+					val += t.probability *
+						(next_is_action ? values[t.next_state_idx] : event_h[t.next_state_idx]);
+				}
+				if (val < best) {
+					best = val;
+					best_a = (int16_t)a;
+				}
+			}
+			if (best_a < 0)
+				throw DynaPlex::Error("queue_mdp RVI: reachable action state has no allowed transition");
+			values[i] = best;
+			if (policy != nullptr) (*policy)[i] = best_a;
+		}
+	};
+
 	for (int iter = 0; iter < max_iter; ++iter) {
 		std::vector<double> h_new(states.size());
 		int policy_changes = 0;
+		solve_action_epochs(h, action_h, &current_policy);
 
 		for (size_t i = 0; i < states.size(); ++i) {
 			if (states[i].cat == DynaPlex::StateCategory::AwaitEvent()) {
 				double val = immediate_cost[i];
-				for (const auto& t : transitions[i][0])
-					val += t.probability * h[t.next_state_idx];
+				for (const auto& t : transitions[i][0]) {
+					const bool next_is_action =
+						states[t.next_state_idx].cat == DynaPlex::StateCategory::AwaitAction();
+					val += t.probability *
+						(next_is_action ? action_h[t.next_state_idx] : h[t.next_state_idx]);
+				}
 				h_new[i] = val;
 			}
-			else {
-				double best = std::numeric_limits<double>::infinity();
-				int16_t best_a = -1;
-				for (int a = 0; a < A_max; ++a) {
-					if (transitions[i][a].empty()) continue;
-					double val = 0.0;
-					for (const auto& t : transitions[i][a])
-						val += t.probability * h[t.next_state_idx];
-					if (val < best) {
-						best = val;
-						best_a = (int16_t)a;
-					}
-				}
-				h_new[i] = best;
-				current_policy[i] = best_a;
-				if (iter > 0 && best_a != previous_policy[i]) ++policy_changes;
-			}
+			else if (iter > 0 && current_policy[i] != previous_policy[i])
+				++policy_changes;
 		}
 
 		g_star = h_new[ref];
-		for (auto& v : h_new) v -= g_star;
+		// One RVI step is one uniformized, timed event.  AwaitAction states have
+		// duration zero and were eliminated above, so g* is subtracted only from
+		// event-state Bellman updates.
+		for (size_t i = 0; i < states.size(); ++i)
+			if (states[i].cat == DynaPlex::StateCategory::AwaitEvent())
+				h_new[i] -= g_star;
 
 		// Span seminorm: max(h_new[i] - h[i]) - min(h_new[i] - h[i]).
 		// This is the theoretically correct RVI convergence criterion.
@@ -220,6 +292,7 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent,
 		double max_diff = -std::numeric_limits<double>::infinity();
 		double min_diff =  std::numeric_limits<double>::infinity();
 		for (size_t i = 0; i < states.size(); ++i) {
+			if (states[i].cat != DynaPlex::StateCategory::AwaitEvent()) continue;
 			const double d = h_new[i] - h[i];
 			if (d > max_diff) max_diff = d;
 			if (d < min_diff) min_diff = d;
@@ -286,6 +359,10 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent,
 	sol.state_count = states.size();
 	sol.transition_count = total_transitions;
 
+	// Align the zero-time continuation values and final greedy policy with the
+	// last normalized event-state bias vector before extracting the action map.
+	solve_action_epochs(h, action_h, &current_policy);
+
 	for (size_t i = 0; i < states.size(); ++i) {
 		if (states[i].cat != DynaPlex::StateCategory::AwaitAction()) continue;
 
@@ -294,8 +371,12 @@ MDP::RVISolution MDP::runRVI(int M, int max_iter, bool silent,
 		for (int a = 0; a < A_max; ++a) {
 			if (transitions[i][a].empty()) continue;
 			q[a] = 0.0;
-			for (const auto& t : transitions[i][a])
-				q[a] += t.probability * h[t.next_state_idx];
+			for (const auto& t : transitions[i][a]) {
+				const bool next_is_action =
+					states[t.next_state_idx].cat == DynaPlex::StateCategory::AwaitAction();
+				q[a] += t.probability *
+					(next_is_action ? action_h[t.next_state_idx] : h[t.next_state_idx]);
+			}
 		}
 
 		int64_t best_a = 0;

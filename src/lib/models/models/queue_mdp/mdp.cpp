@@ -318,7 +318,10 @@ namespace DynaPlex::Models {
 					state.server_manager.assign_job(current_action.server_index, n);
 					state.server_manager.set_action_counter(acnt + 1);
 					state.next_fil_job_type = n;
-					state.cat = StateCategory::AwaitEvent();
+					// Event stream 1 is an internal, zero-duration FIL refresh.  DynaPlex
+					// increments PeriodCount only for stream 0, so serving a job does not
+					// manufacture an extra unit of elapsed time.
+					state.cat = StateCategory::AwaitEvent(1);
 					return 0.0;
 				}
 
@@ -326,7 +329,7 @@ namespace DynaPlex::Models {
 					// Assign: trigger FIL refresh; ModifyStateWithEvent completes it
 					state.server_manager.take_action(1);
 					state.next_fil_job_type = current_action.job_type;
-					state.cat = StateCategory::AwaitEvent();
+					state.cat = StateCategory::AwaitEvent(1);
 					return 0.0;
 				}
 
